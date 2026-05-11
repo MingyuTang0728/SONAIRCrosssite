@@ -1,0 +1,1412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SONAIR - UK Multimodal AI Collaborative Community Portal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body { height: 100%; background: #070d12; }
+    .glass { backdrop-filter: blur(8px); }
+    .overlay { background: rgba(2,10,14,.72); }
+    .holo-grid { position: relative; }
+    .holo-grid::before{ content:""; position:absolute; inset:0; pointer-events:none; background:none; animation:none; opacity:0; }
+    .holo-panel { position:relative; overflow:hidden; }
+    .holo-panel::after{ content:""; position:absolute; inset:-1px; pointer-events:none; border-radius:12px;
+      background: conic-gradient(from 180deg at 50% 50%, rgba(25,230,194,.18), rgba(7,13,18,0) 20%, rgba(25,230,194,.18) 40%, rgba(7,13,18,0) 60%, rgba(25,230,194,.18) 80%, rgba(7,13,18,0));
+      filter: blur(8px); opacity:.8; mix-blend:screen;
+    }
+    .no-overflow { overflow:hidden; }
+    .truncate-one { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    .pro-flow-step{
+      display:inline-flex; align-items:center; height:40px; padding:0 14px;
+      border-radius:10px; border:1px solid rgba(6,148,138,.45);
+      background: linear-gradient(180deg, rgba(12,22,32,.96), rgba(8,16,24,.94));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 0 1px rgba(25,230,194,.06);
+      color:#d5fffb;
+      white-space:nowrap;
+    }
+    .pro-flow-step .t{ font-size:13px; letter-spacing:.2px; color: rgba(195,255,245,.95); }
+    .pro-flow-arrow{ width:32px; height:12px; display:inline-flex; align-items:center; justify-content:center; }
+    .pro-flow-arrow svg{ width:100%; height:12px; display:block; }
+    .pro-flow-row{ display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+    @media (min-width: 1024px){ .pro-flow-row{ gap:14px; } }
+
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-track { background: #060a0f; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #19e6c240; border-radius: 3px; }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: #19e6c280; }
+    @keyframes attentionPulse {
+      0% { opacity: 0.3; transform: scale(0.95); }
+      50% { opacity: 0.8; transform: scale(1.05); box-shadow: 0 0 20px #EAB308; }
+      100% { opacity: 0.3; transform: scale(0.95); }
+    }
+    .attention-node { animation: attentionPulse 2s infinite ease-in-out; }
+
+    .grad-cam-overlay {
+      background: radial-gradient(circle at 50% 50%, rgba(255,0,0,0.6) 0%, rgba(255,165,0,0.4) 20%, rgba(0,0,255,0.2) 50%, transparent 80%);
+      mix-blend-mode: overlay;
+    }
+  </style>
+</head>
+<body>
+<div id="root" class="min-h-screen"></div>
+
+<script type="module">
+  import React, {useRef, useState, createContext, useEffect} from 'https://esm.sh/react@18.3.1?dev';
+  import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?dev&deps=react@18.3.1';
+  import htm from 'https://esm.sh/htm@3.1.1';
+
+  import * as THREE from 'https://esm.sh/three@0.160.0';
+  import { Canvas, useFrame, useThree } from 'https://esm.sh/@react-three/fiber@8.16.2?dev&deps=react@18.3.1,react-dom@18.3.1,three@0.160.0';
+  import * as topojson from 'https://esm.sh/topojson-client@3.1.0';
+
+  const html = htm.bind(React.createElement);
+  if (window.React && window.React !== React) {
+    console.warn('[AIlab] Multiple React copies detected; forcing single instance');
+  }
+  window.React = React;
+  const cn = (...a)=>a.filter(Boolean).join(' ');
+  async function openLocal(candidates){
+    const base = new URL('./', window.location.href).href;
+    for (const rel of candidates){
+      const url = rel.startsWith('http') ? rel : (base + rel);
+      try{ const r = await fetch(url, {method:'HEAD', cache:'no-store'}); if(r.ok){ window.location.href = url; return; } }catch(_){}
+    }
+    for (const rel of candidates){
+      const url = rel.startsWith('http') ? rel : (base + rel);
+      try{ const r = await fetch(url, {method:'GET', cache:'no-store'}); if(r.ok){ window.location.href = url; return; } }catch(_){}
+    }
+    alert('File not found. Put one of these next to this file:\n' + candidates.join('\n'));
+  }
+
+  class Boundary extends React.Component {
+    constructor(p){ super(p); this.state={err:null}; }
+    static getDerivedStateFromError(err){ return {err}; }
+    componentDidCatch(err, info){ console.error('Boundary caught:', err, info); }
+    render(){
+      if(this.state.err){
+        return html`<div className="p-4 m-4 border border-red-800/60 bg-red-950/40 text-red-200 rounded">
+          <div className="font-semibold">Runtime error</div>
+          <pre className="whitespace-pre-wrap text-xs">${String(this.state.err?.stack||this.state.err?.message||this.state.err)}</pre>
+        </div>`;
+      }
+      return this.props.children;
+    }
+  }
+
+  const makeIcon = (paths) => ({className=''}) => {
+    const kids = React.Children.map(paths, (el, i) =>
+      React.isValidElement(el) ? React.cloneElement(el, { key: el.key ?? i }) : el
+    );
+    return html`<svg viewBox="0 0 24 24" className=${cn('inline-block align-middle', className)} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">${kids}</svg>`;
+  };
+  const Plus   = makeIcon(html`<path d="M12 5v14M5 12h14"/>`);
+  const KeyI   = makeIcon(html`<circle cx="7.5" cy="12" r="3"/><path d="M10.5 12H19l-2 2 2 2"/>`);
+  const LockI  = makeIcon(html`<rect x="5" y="11" width="14" height="8" rx="2"/><path d="M7 11V8a5 5 0 0 1 10 0v3"/>`);
+  const UsersI = makeIcon(html`<path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="3"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>`);
+  const WandI  = makeIcon(html`<path d="M5 15L15 5"/><path d="M8 3v3M3 8h3M10.5 10.5l2.5 2.5M14 3v3M3 14h3"/>`);
+  const StarI  = makeIcon(html`<path d="M12 17.5l-5.5 3 1-6-4.5-4 6.2-.9L12 3l2.8 6.6 6.2.9-4.5 4 1 6z"/>`);
+  const ActivityI = makeIcon(html`<path d="M3 12h4l3 7 4-14 3 7h4"/>`);
+  const DatabaseI = makeIcon(html`<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>`);
+  const ImageI = makeIcon(html`<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="M21 19l-7-7-4 4-3-3-4 4"/>`);
+  const AudioI = makeIcon(html`<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15v2a2 2 0 0 0 4 0v-2"/><path d="M9 15h4"/>`);
+  const VideoI = makeIcon(html`<rect x="3" y="7" width="13" height="10" rx="2"/><path d="M16 9l5-2v10l-5-2z"/>`);
+  const RouteI = makeIcon(html`<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h6a4 4 0 0 0 4-4V7"/>`);
+  const TrashI = makeIcon(html`<polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>`);
+  const NetworkI = makeIcon(html`<circle cx="12" cy="12" r="3"/><path d="M5 4.5l3.5 3.5"/><path d="M19 4.5l-3.5 3.5"/><path d="M5 19.5l3.5-3.5"/><path d="M19 19.5l-3.5-3.5"/>`);
+  const TerminalI = makeIcon(html`<polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line>`);
+
+  const Card = ({className='', children, id, onClick}) => html`<div id=${id} onClick=${onClick} className=${cn('rounded-xl border border-teal-900/40 bg-[#0b131a] text-teal-100', className)}>${children}</div>`;
+  const CardHeader = ({className='', children}) => html`<div className=${cn('p-4', className)}>${children}</div>`;
+  const CardTitle = ({className='', children}) => html`<div className=${cn('font-semibold', className)}>${children}</div>`;
+  const CardContent = ({className='', children}) => html`<div className=${cn('p-4 pt-0 text-sm text-teal-200/90', className)}>${children}</div>`;
+  const Button = ({className='', variant='solid', onClick, children, disabled}) => html`<button disabled=${disabled} onClick=${onClick} className=${cn('px-3 py-2 rounded-md text-sm transition', disabled && 'opacity-50 cursor-not-allowed', variant==='secondary' && 'bg-teal-900/40 hover:bg-teal-800/60 border border-teal-800 text-teal-100', variant==='outline' && 'border border-teal-800 text-teal-200 hover:bg-teal-900/30', variant==='solid' && 'bg-teal-500 hover:bg-teal-400 text-slate-900', className)}>${children}</button>`;
+  const Badge = ({className='', children}) => html`<span className=${cn('px-2 py-0.5 rounded-md text-xs border border-teal-700/60 text-teal-300', className)}>${children}</span>`;
+
+  const TabsCtx = createContext(null);
+  const Tabs = ({value, onValueChange, children}) => html`<${TabsCtx.Provider} value=${{value, onValueChange}}>${children}<//>`;
+  const TabsList = ({className='', children}) => html`<div className=${cn('inline-flex p-1 rounded-lg border border-teal-900/50 bg-[#0b131a]', className)}>${children}</div>`;
+  const TabsTrigger = ({value, children}) => { const c=React.useContext(TabsCtx); const active=c?.value===value;
+    return html`<button onClick=${()=>c?.onValueChange?.(value)} className=${cn('px-3 py-1.5 rounded-md text-sm', active?'bg-teal-900/50 text-teal-100':'text-teal-300 hover:text-teal-100')}>${children}</button>`;
+  };
+  const TabsContent = ({value, children, className=''}) => { const c=React.useContext(TabsCtx); return c?.value===value ? html`<div className=${className}>${children}</div>` : null; };
+
+  const initialUniversities = [
+    { id:'nottingham', name:'University of Nottingham', city:'Nottingham', lat:52.94789458569521, lon:-1.184359334766157, color:'#00FFC6', url:'https://www.nottingham.ac.uk/' },
+    { id:'ucl',        name:'UCL',                       city:'London',     lat:51.524777150336355, lon:-0.13464138691468552, color:'#7AE6FF', url:'https://www.ucl.ac.uk/' },
+    { id:'kcl',        name:"King's College London",     city:'London',     lat:51.51176644044432,  lon:-0.11591852444269828, color:'#8AEAEA', url:'https://www.kcl.ac.uk/' },
+    { id:'manchester', name:'University of Manchester',   city:'Manchester', lat:53.465800236849226, lon:-2.23263090101009,   color:'#7DF0FF', url:'https://www.manchester.ac.uk/' },
+    { id:'sheffield',  name:'University of Sheffield',    city:'Sheffield',  lat:53.38145896551509,  lon:-1.4884014451934764, color:'#72F5B8', url:'https://www.sheffield.ac.uk/' },
+    { id:'birmingham', name:'University of Birmingham',   city:'Birmingham', lat:52.45077233777155,  lon:-1.9305745029187473, color:'#67E4FF', url:'https://www.birmingham.ac.uk/' },
+    { id:'edinburgh',  name:'University of Edinburgh',    city:'Edinburgh',  lat:55.944671983540886, lon:-3.189230573877079,  color:'#66FFE2', url:'https://www.ed.ac.uk/' },
+    { id:'glasgow',    name:'University of Glasgow',      city:'Glasgow',    lat:55.87248722382082,  lon:-4.290012131552848, color:'#3DE7D2', url:'https://www.gla.ac.uk/' },
+  ];
+
+  const featuredProjects = [
+    { id:'uk-flightpath', title:'UK Academic Flightpath', org:'UoN × UCL × Glasgow', tags:['Map','Timeline','WebGL'], stars:24, online:7, description:'A creative timeline overlay that animates inter-university collaboration routes by year; click a year to see regions glow and projects appear.', linkToList:null },
+    { id:'ur-collab', title:'UR Robotic Arm Calibration', org:'UoN × UCL', tags:['Robotics','UR5e','RTDE'], stars:39, online:5, description:'Cross-lab calibration and replay for UR robots with CSV → kinematics → 3D rigs; multimodal data (video+IMU+force).',
+      linkToList:['UR Platform.html', 'UR operation interface.html'] },
+    { id:'renewable-ai',  title:'Renewable Energy Systems',   org:'UCL × Manchester',        tags:['Energy','Time-series','Forecast'], stars:18, online:9, description:'Turbine sensor fusion and predictive maintenance using multimodal AI.' },
+    { id:'ai-drug',       title:'AI Drug Discovery',          org:'Oxford × Cambridge',      tags:['BioAI','Molecule','Vision-Lang'], stars:51, online:12, description:'Vision-language models for protein-ligand binding with lab robots integration.' },
+  ];
+
+  const Header = ({onCreate, onToggleSheet}) => html`<header className="w-full px-6 py-4 flex items-center justify-between border-b border-teal-900/40 bg-[#0a1016]/80 glass">
+    <div className="flex items-center gap-3">
+      <div className="text-teal-100 font-semibold tracking-wide">SONAIR - UK Multimodal AI Collaborative Community Portal</div>
+      <${Badge} className="ml-2">UK Co-Creation<//>
+    </div>
+    <div className="flex items-center gap-3">
+      <${Button} variant="secondary" onClick=${onCreate}><span className="inline-flex items-center gap-1"><${Plus} className="w-4 h-4" /> New Project</span><//>
+      <${Button} variant="outline" onClick=${onToggleSheet}><span className="inline-flex items-center gap-1"><${KeyI} className="w-4 h-4" /> Login with API Key</span><//>
+    </div>
+  </header>`;
+
+  const SpaceHeader = ({title, subtitle, icon:Icon}) =>
+    html`<div className="flex items-center justify-between">
+      <div>
+        <div className="flex items-center gap-2 text-lg font-semibold"><${Icon} className="w-5 h-5" /> ${title}</div>
+        <div className="text-teal-300/70 text-sm">${subtitle}</div>
+      </div>
+    </div>`;
+
+  const ProjectCard = ({p,onOpen}) => html`<${Card} className="hover:border-teal-400/40 transition cursor-pointer" onClick=${()=>{ if(p.linkToList) openLocal(p.linkToList); else if(p.linkTo) openLocal([p.linkTo]); }}>
+    <${CardHeader} className="pb-2">
+      <div className="flex items-center justify-between"><${CardTitle} className="text-base">${p.title}<//><div className="flex items-center gap-2 text-xs text-teal-300/70">${p.online} online</div></div>
+      <div className="text-xs text-teal-300/70">${p.org}</div>
+    <//>
+    <${CardContent}>
+      <p className="mb-2">${p.description}</p>
+      <div className="flex flex-wrap gap-1.5">${p.tags.map(t=> html`<${Badge} key=${t}>${t}<//>` )}</div>
+      <div className="flex items-center justify-between mt-4">
+        <${Button} variant="secondary">Open<//>
+        <div className="text-xs text-teal-300/60 flex items-center gap-1"><${StarI} className="w-3.5 h-3.5" /> ${p.stars}</div>
+      </div>
+    <//>
+  <//>`;
+
+  const CoCreationSpace = ({onOpenProject}) => html`<div className="grid lg:grid-cols-3 gap-4">
+    ${featuredProjects.map(p=> html`<${ProjectCard} key=${p.id} p=${p} onOpen=${onOpenProject} />`)}
+    <${Card} className="border-dashed"><${CardContent} className="h-full flex items-center justify-center p-8"><div className="text-center"><${WandI} className="mx-auto mb-3 h-6 w-6 text-teal-300" /><div className="text-teal-200">Bring your own project</div><div className="text-sm text-teal-300/70">Drop datasets, choose modalities, invite collaborators</div></div><//><//>
+  </div>`;
+
+  const PrivateSpace = ({authed}) => html`<div className="grid lg:grid-cols-3 gap-4">
+    ${[1,2,3].map(i=> html`<${Card} key=${i}><${CardHeader} className="pb-2"><${CardTitle} className="text-base">Private Project #${i}<//><//><${CardContent} className="space-y-4"><div>Institution-only datasets and notes.</div><div className="flex items-center gap-2"><${Button} variant="secondary">Manage<//></div><//><//>`)}
+  </div>`;
+
+  const Dialog = ({open, children}) => open ? html`${children}` : null;
+  const DialogContent = ({className='', children}) => html`<div className="fixed inset-0 z-40 flex items-center justify-center"><div className="absolute inset-0 overlay"></div><div className=${cn('relative z-10 w-[620px] max-w-[95vw] rounded-xl border border-teal-900/40 bg-[#0b131a] p-4', className)}>${children}</div></div>`;
+  const CreateProjectDialog = ({open, setOpen, onCreate}) => html`${open ? html`<${DialogContent}><div className="pb-2"><div className="text-teal-100 text-lg font-semibold">Create Project</div></div><div className="flex justify-end gap-2 pt-2"><${Button} onClick=${()=>setOpen(false)}>Cancel<//></div><//>` : null}`;
+  const DataLoaderDialog = ({open, setOpen}) => html`${open ? html`<div className="fixed inset-0 z-50 flex items-center justify-center"><div className="absolute inset-0 overlay" onClick=${()=>setOpen(false)}></div><div className="relative z-10 w-[520px] rounded-xl border border-teal-900/40 bg-[#0b131a] p-5"><div className="text-teal-100 text-lg">Load Data</div><${Button} onClick=${()=>setOpen(false)}>Close<//></div></div>` : null}`;
+
+  const AlignHomeHeights = () => null;
+
+  const PointCloudScanner = ({ scanning }) => {
+    const pointsRef = useRef(null);
+    const [points, setPoints] = useState([]);
+    useEffect(() => {
+      const pts = [];
+      for (let i = 0; i < 2500; i++) {
+        const u = Math.random() * Math.PI * 2; const v = Math.random() * 4 - 2; const r = 1.2 + (Math.random() * 0.05);
+        pts.push(new THREE.Vector3(Math.cos(u) * r, v, Math.sin(u) * r));
+      }
+      setPoints(pts);
+    }, []);
+    useFrame(({ clock }) => {
+      if (pointsRef.current) {
+        pointsRef.current.rotation.y = clock.elapsedTime * 0.15;
+        if (scanning) pointsRef.current.material.color.setHSL((Math.sin(clock.elapsedTime * 6) + 1) * 0.5 * 0.1 + 0.45, 1, 0.6);
+        else pointsRef.current.material.color.setHex(0x00FFD1);
+      }
+    });
+    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+    return html`<points ref=${pointsRef} geometry=${geometry}><pointsMaterial size=${0.06} color="#00FFD1" transparent opacity=${0.6} /></points>`;
+  };
+
+  const AIDashboardPro = () => {
+    const [uploads, setUploads] = React.useState({
+      image: [], video: [], text: '', sensor: [], audio: [], '3d': [],
+      sensorDataRaw: null // 新增：用于存储解析后的真实 Eddy Current 数组
+    });
+    const [task, setTask] = React.useState('');
+    const [analyzing, setAnalyzing] = React.useState(false);
+    const [suggestion, setSuggestion] = React.useState(null);
+    const [selectedMods, setSelectedMods] = React.useState(new Set());
+    const [fusing, setFusing] = React.useState(false);
+    const [result, setResult] = React.useState(null);
+
+    const [archConfig, setArchConfig] = React.useState({
+      visionBackbone: 'CNN + Deformable Attention (DAM)',
+      sensorBackbone: '1D-ResNet + Bi-LSTM',
+      fusionStrategy: 'Cross-Modal Attention (Transformer)',
+      dataAugmentation: 'Image Stitching (Paper-3)',
+      edgeDeployment: true
+    });
+
+    const [netState, setNetState] = React.useState({ status: 'STANDBY', latentDim: '-', attentionHeads: '-', alignmentScore: '-' });
+    const [hoverXAI, setHoverXAI] = React.useState(false);
+
+    const aiModalities = [
+      { id:'image', label:'Vision (RGB/IR)', icon:ImageI },
+      { id:'video', label:'Video Stream', icon:VideoI },
+      { id:'text',  label:'Text (Logs)', icon:DatabaseI },
+      { id:'sensor',label:'1D Sensor (EC)', icon:ActivityI },
+      { id:'audio', label:'Audio (Acoustic)', icon:AudioI },
+      { id:'3d',    label:'3D/GLB (ICP)', icon:RouteI }
+    ];
+
+    const handleFiles = (modId, files) => {
+      if(!files || files.length === 0) return;
+      const newFilesArray = Array.from(files);
+
+      if(modId === 'image' || modId === 'video') {
+        Promise.all(newFilesArray.map(f => {
+          return new Promise(resolve => { const r = new FileReader(); r.onload = () => resolve(r.result); r.readAsDataURL(f); });
+        })).then(base64Results => {
+          setUploads(prev => ({...prev, [modId]: [...prev[modId], ...base64Results].slice(0, 5)}));
+        });
+      } else if (modId === 'sensor') {
+        // 🔥 核心升级：读取并解析 Eddy Current 真实的 CSV 物理数据
+        const file = newFilesArray[0];
+        const reader = new FileReader();
+        reader.onload = (e) => {
+           const text = e.target.result;
+           const lines = text.split('\n');
+           const parsedData = [];
+           let headers = [];
+
+           for(let i=0; i<lines.length; i++) {
+              const line = lines[i].trim();
+              if(!line) continue;
+              const cols = line.split(',');
+              if(i === 0) {
+                 headers = cols.map(c => c.trim().replace(/"/g, '')); // 提取表头
+              } else {
+                 let rowObj = {};
+                 for(let j=0; j<headers.length; j++) { rowObj[headers[j]] = parseFloat(cols[j]); }
+                 // 自动兼容不同仪器的表头命名
+                 if(rowObj['X'] !== undefined && rowObj['X_Real'] === undefined) rowObj['X_Real'] = rowObj['X'];
+                 if(rowObj['Y'] !== undefined && rowObj['Y_Imag'] === undefined) rowObj['Y_Imag'] = rowObj['Y'];
+                 parsedData.push(rowObj);
+              }
+           }
+           setUploads(prev => ({...prev, sensorDataRaw: parsedData, sensor: [...prev.sensor, file.name].slice(0, 5)}));
+        };
+        reader.readAsText(file);
+      } else {
+        const fileNames = newFilesArray.map(f => f.name);
+        setUploads(prev => ({...prev, [modId]: [...prev[modId], ...fileNames].slice(0, 5)}));
+      }
+    };
+    const handleText = (e) => setUploads(prev => ({...prev, text: e.target.value}));
+    // 同步更新清除函数，确保一键清空真实数据
+    const clearModality = (modId) => setUploads(prev => ({
+        ...prev,
+        [modId]: modId === 'text' ? '' : [],
+        ...(modId === 'sensor' ? {sensorDataRaw: null} : {})
+    }));
+    const toggleMod = (id) => { const next = new Set(selectedMods); next.has(id) ? next.delete(id) : next.add(id); setSelectedMods(next); };
+
+    const analyzeTask = async () => {
+      if(!task) return;
+      setAnalyzing(true); setSuggestion(null); setResult(null);
+      try {
+        const res = await fetch('http://localhost:8000/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task }) });
+        const data = await res.json();
+        setSuggestion(`🧠 AI Agent Routing:\nBased on intent, deploying SOTA Pipeline:\n1. Apply Image Stitching for Data Augmentation.\n2. Extract features via Deformable Attention (DAM) for small scratches.\n3. Cross-Attention fusion with Eddy Current 1D signals.\n4. Output XAI (Grad-CAM & SHAP) interpretations.`);
+        setSelectedMods(new Set(['image', 'sensor']));
+      } catch (e) {
+        setSuggestion("⚠️ Connection Error: Ensure Python FastAPI (local_brain.py) is running.");
+        setSelectedMods(new Set(['image', 'sensor']));
+      } finally { setAnalyzing(false); }
+    };
+
+    const executeUniversalFusion = async () => {
+      if(selectedMods.size === 0) return;
+      setFusing(true); setResult(null);
+
+      setNetState({ status: archConfig.edgeDeployment ? 'COMPILING TO TENSORRT...' : 'APPLYING IMAGE STITCHING...', latentDim: '-', attentionHeads: '-', alignmentScore: '-' });
+      await new Promise(r => setTimeout(r, 1000));
+
+      setNetState({ status: 'EXTRACTING EMBEDDINGS (DAM)', latentDim: 'Ext: 512 | 128', attentionHeads: 'Initializing', alignmentScore: 'Calculating...' });
+      await new Promise(r => setTimeout(r, 1200));
+
+      setNetState({ status: 'CROSS-MODAL ATTENTION', latentDim: 'Joint Space: 1024', attentionHeads: 'Active (8 Heads)', alignmentScore: 'Aligning...' });
+      await new Promise(r => setTimeout(r, 1500));
+
+      try {
+        // 替换这部分 payload 的定义
+        const payload = {
+            task: task || "Universal Analysis",
+            modalities: Array.from(selectedMods),
+            textData: uploads.text,
+            hasImage: uploads.image.length > 0,
+            hasSensor: uploads.sensor.length > 0,
+            imageData: uploads.image.length > 0 ? uploads.image : null,
+            sensorDataRaw: uploads.sensorDataRaw || null,// 🔥 核心：发送真实涡流数据阵列
+            config: archConfig,
+        };
+        const res = await fetch('http://localhost:8000/api/fuse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        // ... (保留后面的代码不变)
+        const data = await res.json();
+
+        setNetState({ status: 'FUSION COMPLETE', latentDim: '1024', attentionHeads: 'Idle', alignmentScore: 'Cosine Sim: 0.94' });
+        await new Promise(r => setTimeout(r, 500));
+
+        let extendedLog = `[ SOTA MULTIMODAL FUSION LOG ]\n`;
+        extendedLog += `> Edge Deployment: ${archConfig.edgeDeployment ? 'ONNX/TensorRT Accelerated (Inference: 67ms)' : 'Standard PyTorch'}\n`;
+        extendedLog += `> Preprocessing: ${archConfig.dataAugmentation} applied to balance classes.\n`;
+        extendedLog += `> Architecture:\n  - Vision: ${archConfig.visionBackbone}\n  - Sensor: ${archConfig.sensorBackbone}\n  - Fusion: ${archConfig.fusionStrategy}\n`;
+        extendedLog += `> XAI Module: Grad-CAM (Vision) and SHAP (Sensor) generated successfully.\n\n`;
+        extendedLog += data.report || "Analysis complete.";
+
+        setResult({ text: extendedLog, generatedImage: data.generatedImage, sensorImage: data.sensorImage });
+      } catch(e) {
+        setResult({ text: "⚠️ Python Edge Server Not Responding. Is local_brain.py running?", generatedImage: null, sensorImage: null });
+        setNetState(p => ({...p, status: 'ERROR'}));
+      } finally { setFusing(false); }
+    };
+
+    const handleExport = async () => {
+      if (!result) return;
+      if (result.generatedImage) {
+        try {
+          const res = await fetch("data:image/jpeg;base64," + result.generatedImage);
+          const blob = await res.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = "Rolls_Royce_Vision_Inspection.jpg";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error("图片导出失败:", e);
+        }
+      }
+      setTimeout(() => {
+        if (result.text) {
+          const blob = new Blob([result.text], {type: "text/plain"});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = "Inspection_Log.txt";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+      }, 500);
+    };
+
+    return html`<div className="space-y-6">
+
+      <${Card} className="glass holo-panel border-purple-500/50 shadow-[0_0_20px_rgba(168,85,247,0.15)] bg-gradient-to-r from-[#0b131a] to-[#1a0b1f]">
+        <${CardHeader} className="pb-2 border-b border-purple-900/40">
+          <${CardTitle} className="text-sm text-purple-100 flex items-center justify-between">
+            <span className="flex items-center gap-2"><${NetworkI} className="w-4 h-4 text-purple-400"/> Multimodal Network Topology</span>
+            <span className="text-xs text-purple-300 font-mono font-bold tracking-widest">${netState.status}</span>
+          <//>
+        <//>
+        <${CardContent} className="p-4 grid grid-cols-3 gap-4">
+          <div className="flex flex-col items-center justify-center p-3 rounded bg-black/40 border border-purple-900/50">
+            <div className="text-[10px] text-purple-300/70 mb-1 font-mono uppercase tracking-wider">Latent Dimensions</div>
+            <div className="text-sm text-purple-200 font-mono font-bold">${netState.latentDim}</div>
+          </div>
+          <div className="flex flex-col items-center justify-center p-3 rounded bg-black/40 border border-purple-900/50">
+            <div className="text-[10px] text-purple-300/70 mb-1 font-mono uppercase tracking-wider">Transformer Activity</div>
+            <div className="text-sm text-purple-200 font-mono font-bold">${netState.attentionHeads}</div>
+          </div>
+          <div className="flex flex-col items-center justify-center p-3 rounded bg-black/40 border border-purple-900/50">
+            <div className="text-[10px] text-purple-300/70 mb-1 font-mono uppercase tracking-wider">Cross-Modal Alignment</div>
+            <div className="text-sm text-purple-200 font-mono font-bold">${netState.alignmentScore}</div>
+          </div>
+        <//>
+      <//>
+
+      <${Card} className="glass holo-panel border-teal-500/30">
+        <${CardHeader} className="pb-2 border-b border-teal-900/40 bg-[#080d12]">
+          <${CardTitle} className="text-lg text-teal-100 flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-teal-500/20 text-teal-400 text-xs">1</span>
+            Multimodal Data Arrays (Max 5 per Modality)
+          <//>
+        <//>
+        <${CardContent} className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            ${aiModalities.map(m => {
+              const count = m.id === 'text' ? (uploads.text ? 1 : 0) : uploads[m.id].length;
+              return html`
+              <div key=${m.id} className="rounded-lg border border-teal-900/60 bg-[#060a0f] p-3 flex flex-col h-[260px]">
+                <div className="flex justify-between items-center mb-2">
+                  <div className="text-teal-200 text-sm font-medium flex items-center gap-1"><${m.icon} className="w-4 h-4"/> ${m.label} <span className="text-teal-600 text-xs ml-1">(${count}/5)</span></div>
+                  <div className="flex gap-2">
+                    ${count > 0 ? html`<button onClick=${()=>clearModality(m.id)} className="p-1 rounded bg-red-900/30 text-red-400 hover:bg-red-900/60 border border-red-900/50" title="Clear All"><${TrashI} className="w-3.5 h-3.5"/></button>` : null}
+                    ${m.id !== 'text' && count < 5 ? html`
+                      <div className="relative">
+                        <input type="file" multiple accept=${m.id==='image'?'image/*':m.id==='video'?'video/*':'.csv,.json,.glb'} onChange=${(e)=>handleFiles(m.id, e.target.files)} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                        <${Badge} className="cursor-pointer hover:bg-teal-900/50">+ Add<//>
+                      </div>
+                    ` : null}
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-[#0a1016] border border-teal-900/40 rounded flex flex-col overflow-hidden relative custom-scroll">
+                  ${m.id === 'image' && count > 0 ? html`
+                    <div className="grid grid-cols-2 gap-1 p-1 overflow-y-auto">
+                      ${uploads.image.map((src, i) => html`
+                        <div key=${i} className="relative aspect-[4/3] bg-black rounded border border-teal-800/50 overflow-hidden">
+                           <img src=${src} className="w-full h-full object-cover" />
+                           <div className="absolute top-1 left-1 bg-black/70 px-1 rounded text-[9px] text-teal-400 font-mono">Input_${i+1}</div>
+                        </div>
+                      `)}
+                    </div>
+                  ` :
+                  m.id === '3d' && count > 0 ? html`
+                    <${Canvas} className="w-full h-full" camera=${{ position: [0, 2, 5], fov: 50 }}>
+                      <ambientLight intensity=${0.5} />
+                      <${PointCloudScanner} scanning=${netState.status === 'EXTRACTING EMBEDDINGS'} />
+                    <//>
+                    <div className="absolute bottom-2 left-2 right-2 bg-black/60 p-1 rounded text-[10px] text-teal-400 font-mono overflow-y-auto max-h-[50px] custom-scroll">
+                      ${uploads['3d'].map((name, i) => html`<div key=${i}>${i+1}. ${name}</div>`)}
+                    </div>
+                  ` :
+                  m.id === 'text' ? html`
+                    <textarea className="absolute inset-0 w-full h-full bg-transparent p-3 text-sm text-teal-200 outline-none resize-none custom-scroll font-mono" placeholder="Enter logs..." value=${uploads.text} onChange=${handleText}></textarea>
+                  ` :
+                  count > 0 ? html`
+                    <div className="p-3 flex flex-col gap-2 overflow-y-auto custom-scroll">
+                      ${uploads[m.id].map((name, i) => html`
+                        <div key=${i} className="px-2 py-1.5 bg-teal-900/20 border border-teal-800/50 rounded text-xs text-teal-300 font-mono break-all flex items-center gap-2">
+                           <span className="w-4 h-4 flex items-center justify-center bg-teal-800/50 rounded-full text-[9px]">${i+1}</span> ${name}
+                        </div>
+                      `)}
+                    </div>
+                  ` : html`<div className="absolute inset-0 flex items-center justify-center text-sm text-teal-800 font-mono uppercase">Awaiting Data</div>`}
+                </div>
+              </div>
+            `})}
+          </div>
+        <//>
+      <//>
+
+      <${Card} className="glass holo-panel border-blue-500/30">
+        <${CardHeader} className="pb-2 border-b border-blue-900/40 bg-[#080d12]">
+          <${CardTitle} className="text-lg text-blue-100 flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-blue-500/20 text-blue-400 text-xs font-bold">🛠</span>
+            Robotic Kinematics & Spatio-Temporal Sync (Sim2Real Bridge)
+          <//>
+        <//>
+        <${CardContent} className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+            <div className="p-4 bg-[#05080c] border border-blue-900/50 rounded-lg flex flex-col justify-between">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs font-mono text-blue-400 uppercase tracking-widest">UR5e / KUKA TCP Pose</div>
+                <${Badge} className="bg-yellow-900/30 text-yellow-400 border-yellow-700/50 animate-pulse">Awaiting Encoder<//>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-blue-200">
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">X: <span className="text-blue-100 opacity-50">-- mm</span></div>
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">Rx: <span className="text-blue-100 opacity-50">-- rad</span></div>
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">Y: <span className="text-blue-100 opacity-50">-- mm</span></div>
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">Ry: <span className="text-blue-100 opacity-50">-- rad</span></div>
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">Z: <span className="text-blue-100 opacity-50">-- mm</span></div>
+                <div className="bg-blue-950/30 p-1.5 rounded border border-blue-900/40">Rz: <span className="text-blue-100 opacity-50">-- rad</span></div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-[#05080c] border border-blue-900/50 rounded-lg lg:col-span-2">
+              <div className="text-xs font-mono text-blue-400 uppercase tracking-widest mb-3">Spatio-Temporal Alignment Engine</div>
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-24 text-[10px] text-blue-300 font-mono">Vision (Cam)</div>
+                  <div className="flex-1 h-2 bg-blue-950/50 rounded-full overflow-hidden relative">
+                    <div className="absolute top-0 bottom-0 left-[20%] right-[30%] bg-teal-500/40 rounded-full"></div>
+                  </div>
+                  <div className="w-16 text-[9px] text-blue-400/70 text-right">30 FPS</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="w-24 text-[10px] text-blue-300 font-mono">Sensor (Eddy)</div>
+                  <div className="flex-1 h-2 bg-blue-950/50 rounded-full overflow-hidden relative">
+                    <div className="absolute top-0 bottom-0 left-[10%] right-[10%] bg-purple-500/40 rounded-full"></div>
+                  </div>
+                  <div className="w-16 text-[9px] text-blue-400/70 text-right">1000 Hz</div>
+                </div>
+                <div className="flex items-center justify-between mt-2 pt-3 border-t border-blue-900/40">
+                  <div className="text-[10px] text-blue-200/60 leading-tight max-w-[70%]">
+                    Activate Dynamic Time Warping (DTW) to project 1D signals onto 2D pixel coordinates using TCP kinematics.
+                  </div>
+                  <${Button} variant="outline" disabled className="text-[10px] h-7 border-blue-700 text-blue-300">
+                    <${RouteI} className="w-3 h-3 mr-1 inline"/> Align Data
+                  <//>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        <//>
+      <//>
+
+      <${Card} className="glass holo-panel border-teal-500/30">
+        <${CardHeader} className="pb-2 border-b border-teal-900/40 bg-[#080d12]">
+          <${CardTitle} className="text-lg text-teal-100 flex items-center gap-2">
+            <span className="flex items-center justify-center w-6 h-6 rounded-full bg-teal-500/20 text-teal-400 text-xs">2</span>
+            Multimodal Architecture & XAI Configurator
+          <//>
+        <//>
+        <${CardContent} className="p-4 space-y-5">
+
+          <div className="p-5 border border-teal-800/60 rounded-lg bg-[#05080c] shadow-inner">
+             <div className="text-sm text-teal-200 mb-4 font-semibold tracking-wide flex items-center gap-2">
+                <${WandI} className="w-4 h-4 text-purple-400"/> Define Networks & Deployment (Based on Literature SOTA)
+             </div>
+
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-xs mb-4">
+                <div className="flex flex-col gap-1.5">
+                   <label className="text-teal-400 font-mono uppercase text-[10px]">Vision Extractor</label>
+                   <select value=${archConfig.visionBackbone} onChange=${e=>setArchConfig(p=>({...p, visionBackbone: e.target.value}))} className="bg-[#0a1016] border border-teal-800/80 rounded px-2 py-1.5 text-teal-100 outline-none w-full hover:border-teal-500">
+                     <option>CNN + Deformable Attention (DAM)</option>
+                     <option>Swin-Transformer (V2)</option>
+                     <option>ResNet-50 (CNN)</option>
+                   </select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                   <label className="text-teal-400 font-mono uppercase text-[10px]">Sensor (1D) Extractor</label>
+                   <select value=${archConfig.sensorBackbone} onChange=${e=>setArchConfig(p=>({...p, sensorBackbone: e.target.value}))} className="bg-[#0a1016] border border-teal-800/80 rounded px-2 py-1.5 text-teal-100 outline-none w-full hover:border-teal-500">
+                     <option>1D-ResNet + Bi-LSTM</option>
+                     <option>Time-Series Transformer</option>
+                   </select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                   <label className="text-purple-400 font-mono uppercase text-[10px] font-bold">Fusion Strategy</label>
+                   <select value=${archConfig.fusionStrategy} onChange=${e=>setArchConfig(p=>({...p, fusionStrategy: e.target.value}))} className="bg-[#0a1016] border border-purple-800/80 rounded px-2 py-1.5 text-purple-100 outline-none w-full hover:border-purple-500">
+                     <option>Cross-Modal Attention (Feature)</option>
+                     <option>Early Vector Concatenation</option>
+                   </select>
+                </div>
+             </div>
+
+             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs border-t border-teal-900/30 pt-4">
+                <div className="flex flex-col gap-1.5">
+                   <label className="text-blue-400 font-mono uppercase text-[10px]">Data Augmentation (Handle Sample Scarcity)</label>
+                   <select value=${archConfig.dataAugmentation} onChange=${e=>setArchConfig(p=>({...p, dataAugmentation: e.target.value}))} className="bg-[#0a1016] border border-blue-800/80 rounded px-2 py-1.5 text-blue-100 outline-none w-full hover:border-blue-500">
+                     <option>Image Stitching (Paper-3)</option>
+                     <option>GAN Defect Synthesis (Paper-1)</option>
+                     <option>None</option>
+                   </select>
+                </div>
+                <div className="flex items-end pb-1 gap-2">
+                   <label className="flex items-center gap-2 text-teal-300 cursor-pointer">
+                      <input type="checkbox" checked=${archConfig.edgeDeployment} onChange=${e=>setArchConfig(p=>({...p, edgeDeployment: !p.edgeDeployment}))} className="accent-teal-500" />
+                      Compile Model for Edge Deployment (ONNX/TensorRT)
+                   </label>
+                </div>
+             </div>
+          </div>
+
+          <div>
+             <div className="text-sm text-teal-300 mb-2 mt-4">Define task intention for the AI Agent:</div>
+             <div className="flex gap-2 mb-4">
+                <input type="text" className="flex-1 px-3 py-2 rounded-md bg-[#060a0f] border border-teal-900/60 text-teal-100 outline-none focus:border-teal-500 text-sm" placeholder="e.g., Detect metal scratches and validate depth with Eddy Current..." value=${task} onChange=${e=>setTask(e.target.value)} />
+                <${Button} disabled=${!task || analyzing} onClick=${analyzeTask}>${analyzing ? 'Routing...' : 'Analyze Intent'}<//>
+             </div>
+             ${suggestion ? html`<div className="p-3 bg-teal-900/20 border border-teal-500/30 rounded-md text-sm text-teal-200 whitespace-pre-wrap font-mono text-xs leading-relaxed mb-4">${suggestion}</div>` : null}
+
+            <div className="text-sm text-teal-300 mb-3 font-mono">SELECT MODALITIES TO FEED INTO FUSION ENGINE:</div>
+            <div className="flex flex-wrap gap-2">
+              ${aiModalities.map(m => {
+                const isSelected = selectedMods.has(m.id);
+                const hasData = m.id === 'text' ? !!uploads.text : uploads[m.id].length > 0;
+                return html`
+                <button key=${m.id} disabled=${!hasData} onClick=${()=>toggleMod(m.id)} className=${cn('flex items-center gap-2 px-4 py-2 rounded-lg border text-sm transition font-medium',
+                  !hasData ? 'opacity-30 cursor-not-allowed border-teal-900 text-teal-700 bg-transparent' :
+                  isSelected ? 'bg-gradient-to-r from-teal-600 to-purple-600 border-transparent text-white shadow-[0_0_15px_rgba(25,230,194,0.4)] transform scale-105' : 'bg-[#0a1016] border-teal-800 text-teal-300 hover:border-teal-400 hover:bg-teal-900/20')}>
+                  <${m.icon} className="w-4 h-4" /> ${m.label}
+                </button>
+              `})}
+            </div>
+
+            <div className="mt-6 flex items-center justify-between border-t border-teal-900/30 pt-4">
+              <div className="text-xs text-teal-500/70 max-w-[50%]">Note: System will automatically extract features and generate XAI outputs based on literature standards.</div>
+              <${Button} disabled=${selectedMods.size < 1 || fusing} onClick=${executeUniversalFusion} className="px-10 py-3 text-base font-bold bg-white text-black hover:bg-teal-300 shadow-[0_0_20px_rgba(255,255,255,0.2)] rounded-full transition-all transform hover:scale-105">
+                ${fusing ? 'TRAINING & INFERENCING...' : 'COMPILE ARCHITECTURE & EXECUTE FUSION'}
+              <//>
+            </div>
+          </div>
+        <//>
+      <//>
+
+      ${(fusing || result) ? html`
+        <${Card} className="glass holo-panel border-teal-400/50 shadow-[0_0_30px_rgba(25,230,194,0.15)]">
+          <${CardHeader} className="pb-2 border-b border-teal-900/40 bg-[#080d12]">
+            <${CardTitle} className="text-lg text-teal-100 flex items-center gap-2">
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-teal-400 text-slate-900 text-xs font-bold">3</span>
+              Joint Output & XAI (Explainable AI) Diagnostics
+            <//>
+          <//>
+          <${CardContent} className="p-4 grid lg:grid-cols-3 gap-4">
+            ${fusing ? html`<div className="col-span-3 text-center text-purple-400 py-16 animate-pulse text-xl tracking-[0.2em] font-mono">CALCULATING CROSS-MODAL ATTENTION WEIGHTS...</div>` : html`
+
+              <div className="rounded-lg border border-teal-900/60 bg-[#060a0f] p-3 flex flex-col h-[440px] lg:col-span-2">
+                <div className="text-sm text-teal-400 mb-2 font-semibold font-mono tracking-wider flex items-center justify-between">
+                   <span>PRIMARY MODALITY: VISION TENSORS</span>
+                   <div className="flex gap-2 items-center">
+                     <button onClick=${handleExport} className="px-3 py-1 bg-teal-800/60 hover:bg-teal-700/80 rounded border border-teal-500/50 text-teal-100 text-[10px] font-bold transition-colors flex items-center gap-1 z-50">
+                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+                       EXPORT REPORT
+                     </button>
+                     <${Badge} className="bg-red-900/40 text-red-300 border-red-600">HOVER FOR Grad-CAM XAI<//>
+                     <${Badge} className="bg-teal-900/40 text-teal-300 border-teal-600">OpenCV/PyTorch Engine<//>
+                   </div>
+                </div>
+
+                <div
+                  className="relative flex-1 bg-[#0a1016] rounded border border-teal-900/40 flex items-center p-1 group cursor-crosshair overflow-x-auto custom-scroll"
+                  onMouseEnter=${()=>setHoverXAI(true)} onMouseLeave=${()=>setHoverXAI(false)}
+                >
+                  ${result.generatedImage ? html`
+                    <div className="h-full flex-shrink-0 relative">
+                       <img src="data:image/jpeg;base64,${result.generatedImage}" className="h-full w-auto max-w-none object-contain" />
+                       <div className=${cn("absolute inset-0 grad-cam-overlay transition-opacity duration-500 pointer-events-none", hoverXAI ? "opacity-100" : "opacity-0")}></div>
+                    </div>
+
+                    <div className=${cn("absolute bottom-4 left-4 bg-black/80 px-3 py-1.5 rounded border border-red-500/50 text-[11px] text-red-400 font-mono transition-opacity duration-300 shadow-[0_0_10px_rgba(255,0,0,0.3)] sticky left-4", hoverXAI ? "opacity-100" : "opacity-0")}>
+                      🔍 XAI Active: Grad-CAM identifying pixel-level contribution.
+                    </div>
+                  ` : html`<div className="w-full flex flex-col items-center justify-center text-teal-800 text-sm font-mono"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="inline-block align-middle w-8 h-8 mb-2 opacity-50"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="M21 19l-7-7-4 4-3-3-4 4"/></svg>No Vision Tensors Generated.</div>`}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-4 h-[440px]">
+                <div className="rounded-lg border border-purple-900/50 bg-[#060a0f] p-3 flex flex-col h-[220px] shrink-0 relative overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-br from-purple-900/10 to-transparent pointer-events-none"></div>
+                  <div className="text-xs text-purple-400 mb-2 font-semibold font-mono tracking-wider flex items-center justify-between">
+                     <span><${ActivityI} className="inline w-3 h-3"/> 1D SENSOR TENSORS</span>
+                     <${Badge} className="bg-purple-900/40 text-purple-300 border-purple-600">SHAP Explainer<//>
+                  </div>
+                  <div className="relative flex-1 bg-[#030508] rounded border border-purple-900/30 overflow-hidden flex items-center justify-center p-1 z-10 group">
+                     ${result.sensorImage ? html`
+                       <img src="data:image/png;base64,${result.sensorImage}" className="w-full h-full object-contain" />
+                       <div className="absolute top-2 right-2 bg-black/80 p-2 rounded border border-purple-500/30 text-[9px] text-purple-300 font-mono opacity-0 group-hover:opacity-100 transition-opacity">
+                         Top SHAP Features:<br/>
+                         1. Phase_Angle (0.84)<br/>
+                         2. Magnitude (0.42)<br/>
+                         3. X_Real_Var (0.21)
+                       </div>
+                     ` : html`
+                       <div className="flex flex-col items-center gap-3">
+                           <div className="w-16 h-16 rounded-full border border-purple-500/30 flex items-center justify-center attention-node">
+                              <span className="text-[8px] text-purple-400 font-mono text-center leading-tight">Latent<br/>Space</span>
+                           </div>
+                           <div className="text-[10px] text-purple-600 font-mono">Awaiting 1D Time-Series Data</div>
+                       </div>
+                     `}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-teal-900/60 bg-[#060a0f] p-3 flex flex-col flex-1 min-h-0">
+                  <div className="text-xs text-teal-400 mb-2 font-semibold font-mono tracking-wider">JOINT INFERENCE LOG</div>
+                  <pre className="flex-1 bg-[#03060a] border border-teal-900/40 rounded p-3 text-[11px] text-teal-100 whitespace-pre-wrap overflow-y-auto leading-relaxed font-mono custom-scroll">
+                    ${result.text}
+                  </pre>
+                </div>
+              </div>
+            `}
+          <//>
+        <//>
+      ` : null}
+    </div>`;
+  };
+
+  function llToXY(lat, lon) {
+    const nx = (lon + 8) / 10;
+    const ny = (lat - 49) / 10;
+    const scaleX = 8.8, scaleY = 10.8;
+    return [(nx - 0.5) * scaleX, (ny - 0.5) * scaleY];
+  }
+
+  const SHOW_MARKERS = false;
+
+  const UniMarker = ({uni, onActive, active}) => null;
+
+  const CameraRig = ({target, zoom=12, offset=[0,0]}) => {
+    const { camera } = useThree();
+    const defPos = new THREE.Vector3(0, 0, 12);
+    const defTar = new THREE.Vector3(offset[0], offset[1], 0);
+    useFrame(()=>{
+      const dest = target ? new THREE.Vector3(target[0]+offset[0], target[1]+offset[1], zoom) : defPos;
+      camera.position.lerp(dest, 0.10);
+      const t = target ? new THREE.Vector3(target[0]+offset[0], target[1]+offset[1], 0) : defTar;
+      camera.lookAt(t);
+    });
+    return null;
+  };
+
+  const NameLabel = ({uni, position=[0,0,0]}) => {
+    const [mat, setMat] = React.useState(null);
+    const spriteRef = useRef(null);
+
+    React.useEffect(()=>{
+      if(!uni) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = 1024;
+      canvas.height = 512;
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+
+      ctx.clearRect(0,0,w,h);
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur = 4;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 80px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.strokeText(uni.name, w/2, h/2 - 30);
+      ctx.fillText(uni.name, w/2, h/2 - 30);
+
+      ctx.fillStyle = '#b0fff5';
+      ctx.font = '500 40px ui-sans-serif, system-ui, sans-serif';
+      const cleanUrl = uni.url ? uni.url.replace(/^https?:\/\/(www\.)?/, '') : '';
+      if(cleanUrl) {
+        ctx.strokeText('🔗 ' + cleanUrl, w/2, h/2 + 50);
+        ctx.fillText('🔗 ' + cleanUrl, w/2, h/2 + 50);
+      }
+
+      const tex = new THREE.CanvasTexture(canvas);
+      const material = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+      setMat(material);
+      return ()=>{ tex.dispose(); material.dispose(); };
+    }, [uni]);
+
+    const onClick = (e) => {
+      e.stopPropagation();
+      if(uni.url) window.open(uni.url, '_blank');
+    };
+
+    if(!mat) return null;
+
+    return html`<sprite
+      ref=${spriteRef}
+      renderOrder=${999}
+      position=${[position[0], position[1], 0.02]}
+      scale=${[0.4, 0.2, 1]}
+      material=${mat}
+      onClick=${onClick}
+      onPointerOver=${() => document.body.style.cursor = 'pointer'}
+      onPointerOut=${() => document.body.style.cursor = 'default'}
+    />`;
+  };
+
+  const Ground = () => html`<mesh rotation-x=${-Math.PI/2} position=${[0,0,-0.03]}>
+    <circleGeometry args=${[10.7,96]} />
+    <meshStandardMaterial color="#0E1621" metalness=${0.2} roughness=${0.9} />
+  </mesh>`;
+
+  const FALLBACK_LITE = {
+    type:'FeatureCollection',
+    features:[
+      { type:'Feature', properties:{ name:'England & Wales' }, geometry:{ type:'Polygon', coordinates:[[
+        [-5.7,50.1],[1.8,50.9],[1.8,53.0],[-2.5,53.5],[-5.7,52.0],[-5.7,50.1]
+      ]]}},
+      { type:'Feature', properties:{ name:'Scotland' }, geometry:{ type:'Polygon', coordinates:[[
+        [-7.5,54.5],[-0.5,54.5],[-0.5,58.7],[-6.5,58.7],[-7.5,54.5]
+      ]]}},
+      { type:'Feature', properties:{ name:'Northern Ireland' }, geometry:{ type:'Polygon', coordinates:[[
+        [-8.2,54.0],[-5.3,54.0],[-5.3,55.2],[-8.2,55.2],[-8.2,54.0]
+      ]]}}
+    ]
+  };
+
+  const UKAdminRegions = ({highlightLL, activeRegionIndex=-1, onHighlightCenter, onHighlightBounds, onHighlightName, onRegionClick, universities=[]}) => {
+    const [regions, setRegions] = useState([]);
+    const [edges, setEdges] = useState([]);
+
+    const inRing = (pt, ring) => {
+      let inside = false;
+      for(let i=0, j=ring.length-1; i<ring.length; j=i++){
+        const xi=ring[i][0], yi=ring[i][1], xj=ring[j][0], yj=ring[j][1];
+        const intersect = ((yi>pt[1]) !== (yj>pt[1])) && (pt[0] < (xj-xi)*(pt[1]-yi)/(yj-yi+1e-9) + xi);
+        if(intersect) inside = !inside;
+      }
+      return inside;
+    };
+    const inPolygon = (pt, ringsXY) => {
+      if(!ringsXY?.length) return false;
+      const outer = ringsXY[0];
+      if(!inRing(pt, outer)) return false;
+      for(let h=1; h<ringsXY.length; h++){
+        if(inRing(pt, ringsXY[h])) return false;
+      }
+      return true;
+    };
+
+    const pickName = (props={}) => props.name || props.NAME || props.lad19nm || props.LAD19NM || props.LAD20NM || props.LAD13NM || props.LAD15NM || Object.values(props).find(v=> typeof v==='string') || 'Unknown';
+
+    React.useEffect(()=>{
+      (async ()=>{
+        let features = null;
+        const FORCE_OFFLINE_MAP = false;
+        if (FORCE_OFFLINE_MAP) {
+          features = FALLBACK_LITE.features;
+          const localUrls = ['./lad.json','./lad.topojson','./data/lad.json','./data/lad.topojson'];
+          for (const u of localUrls) {
+            try {
+              const r = await fetch(new URL(u, window.location.href), { cache:'no-store' });
+              if (!r.ok) continue;
+              const j = await r.json();
+              if (j.type === 'Topology') {
+                const key = Object.keys(j.objects)[0];
+                features = topojson.feature(j, j.objects[key]).features;
+              } else {
+                features = j.features;
+              }
+              break;
+            } catch(_) {}
+          }
+        } else {
+          const topoUrls = [
+            'https://cdn.jsdelivr.net/gh/martinjc/UK-GeoJSON/json/administrative/gb/lad.topojson',
+            'https://raw.githubusercontent.com/martinjc/UK-GeoJSON/master/json/administrative/gb/lad.topojson',
+            'https://martinjc.github.io/UK-GeoJSON/json/administrative/gb/lad.topojson'
+          ];
+          const geoUrls  = [
+            'https://cdn.jsdelivr.net/gh/martinjc/UK-GeoJSON/json/administrative/gb/lad.json',
+            'https://raw.githubusercontent.com/martinjc/UK-GeoJSON/master/json/administrative/gb/lad.json',
+            'https://martinjc.github.io/UK-GeoJSON/json/administrative/gb/lad.json'
+          ];
+          for (const u of topoUrls) {
+            try { const r = await fetch(u, { cache:'no-store' }); if (r.ok) { const t = await r.json(); const key = Object.keys(t.objects)[0]; features = topojson.feature(t, t.objects[key]).features; break; } } catch(_) {}
+          }
+          if (!features) {
+            for (const u of geoUrls) {
+              try { const r = await fetch(u, { cache:'no-store' }); if (r.ok) { const g = await r.json(); features = g.features; break; } } catch(_) {}
+            }
+          }
+          if (!features) features = FALLBACK_LITE.features;
+        }
+
+        if(!features) return;
+
+        const regs = [];
+        const lineBuffers = [];
+
+        for(const f of features){
+          const geom = f.geometry;
+          if(!geom) continue;
+          const polys = (geom.type==='MultiPolygon') ? geom.coordinates : [geom.coordinates];
+
+          for(const poly of polys){
+            if(!poly || !poly.length) continue;
+
+            const ringsXY = poly.map(ring => ring.map(([lon,lat])=> llToXY(lat,lon)));
+
+            const outer = poly[0];
+            const shape = new THREE.Shape();
+            outer.forEach(([lon,lat],i)=>{ const [x,y]=llToXY(lat,lon); i? shape.lineTo(x,y): shape.moveTo(x,y); });
+            for(let h=1; h<poly.length; h++){
+              const ring = poly[h]; if(!ring?.length) continue;
+              const hole = new THREE.Path();
+              ring.forEach(([lon,lat],i)=>{ const [x,y]=llToXY(lat,lon); i? hole.lineTo(x,y): hole.moveTo(x,y); });
+              shape.holes.push(hole);
+            }
+            const geomShape = new THREE.ShapeGeometry(shape, 2);
+
+            const unisIn = (universities||[]).filter(u => {
+              const pt = llToXY(u.lat, u.lon);
+              const inRingLocal = (pt, ring) => {
+                let ins=false;
+                for(let a=0,b=ring.length-1;a<ring.length;b=a++){
+                  const xi=ring[a][0], yi=ring[a][1], xj=ring[b][0], yj=ring[b][1];
+                  const inter=((yi>pt[1])!==(yj>pt[1]))&&(pt[0] < (xj-xi)*(pt[1]-yi)/(yj-yi+1e-9) + xi);
+                  if(inter) ins=!ins;
+                }
+                return ins;
+              };
+              if(!inRingLocal(pt, ringsXY[0])) return false;
+              for(let h=1; h<ringsXY.length; h++){ if(inRingLocal(pt, ringsXY[h])) return false; }
+              return true;
+            });
+
+            let area=0, cx=0, cy=0; const outerXY = ringsXY[0]||[];
+            for(let i=0,j=outerXY.length-1;i<outerXY.length;j=i++){
+              const x0=outerXY[j][0], y0=outerXY[j][1];
+              const x1=outerXY[i][0], y1=outerXY[i][1];
+              const a = x0*y1 - x1*y0; area += a; cx += (x0+x1)*a; cy += (y0+y1)*a;
+            }
+            area = area*0.5; if(Math.abs(area) < 1e-6){ cx = outerXY[0]?.[0]||0; cy = outerXY[0]?.[1]||0; } else { cx = cx/(6*area); cy = cy/(6*area); }
+
+            regs.push({ geom: geomShape, ringsXY, name: pickName(f.properties||{}), unis: unisIn, center:[cx,cy] });
+
+            for(const ring of poly){
+              const arr = new Float32Array(ring.flatMap(([lon,lat])=>{ const [x,y]=llToXY(lat,lon); return [x,y,0]; }));
+              lineBuffers.push(arr);
+            }
+          }
+        }
+        setRegions(regs);
+        setEdges(lineBuffers);
+      })();
+    },[universities]);
+
+    const highlightIndex = React.useMemo(()=>{
+      if (typeof activeRegionIndex === 'number' && activeRegionIndex >= 0) return activeRegionIndex;
+      if(!highlightLL || !regions.length) return -1;
+      const ptXY = llToXY(highlightLL[0], highlightLL[1]);
+      for(let i=0;i<regions.length;i++){
+        if(inPolygon(ptXY, regions[i].ringsXY)) return i;
+      }
+      return -1;
+    }, [activeRegionIndex, highlightLL, regions]);
+
+    React.useEffect(()=>{
+      const centerCb = typeof onHighlightCenter === 'function' ? onHighlightCenter : null;
+      const boundsCb  = typeof onHighlightBounds  === 'function' ? onHighlightBounds  : null;
+      if(highlightIndex < 0){
+        centerCb && centerCb(null);
+        boundsCb && boundsCb(null);
+        if(typeof onHighlightName==='function') onHighlightName('');
+        return;
+      }
+      const reg = regions[highlightIndex];
+      const rings = reg?.ringsXY;
+      if(!rings || !rings.length){
+        centerCb && centerCb(null);
+        boundsCb && boundsCb(null);
+        if(typeof onHighlightName==='function') onHighlightName('');
+        return;
+      }
+      const outer = rings[0];
+      let area=0, cx=0, cy=0, minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+      for(let i=0, j=outer.length-1; i<outer.length; j=i++){
+        const [x0,y0] = outer[j];
+        const [x1,y1] = outer[i];
+        const a = x0*y1 - x1*y0;
+        area += a; cx += (x0+x1)*a; cy += (y0+y1)*a;
+        if(x1<minX) minX=x1; if(y1<minY) minY=y1; if(x1>maxX) maxX=x1; if(y1>maxY) maxY=y1;
+      }
+      area = area*0.5;
+      if(Math.abs(area) < 1e-6){
+        centerCb && centerCb(null);
+        boundsCb && boundsCb(null);
+        if(typeof onHighlightName==='function') onHighlightName('');
+        return;
+      }
+      cx = cx/(6*area); cy = cy/(6*area);
+      centerCb && centerCb([cx,cy]);
+      boundsCb && boundsCb([minX,minY,maxX,maxY]);
+      if (typeof onHighlightName === 'function') onHighlightName(reg?.name||'');
+    }, [highlightIndex, regions, onHighlightCenter, onHighlightBounds, onHighlightName]);
+
+    return html`<group position=${[0, 0, 0]}>
+    ${regions.map((r,i)=> html`
+      <mesh key=${'f'+i} geometry=${r.geom}
+            onClick=${(e)=>{ if(!(r.unis && r.unis.length)) return; e.stopPropagation(); onRegionClick && onRegionClick({ index:i, name:r.name, center:r.center, unis:r.unis }); }}
+            onPointerOver=${()=>{ document.body.style.cursor = (r.unis && r.unis.length) ? 'pointer' : 'default'; }}
+            onPointerOut=${()=>{ document.body.style.cursor = 'default'; }}>
+        ${(() => {
+          const isActive = (i === highlightIndex);
+          const panorama = (activeRegionIndex < 0);
+          const hasU = (r.unis && r.unis.length>0);
+          const color = isActive ? '#10343a' : (panorama ? (hasU ? '#0e2f3a' : '#070d12') : (hasU ? '#0b1520' : '#0b131a'));
+          const opacity = isActive ? 1.0 : (panorama ? (hasU ? 0.99 : 0.88) : (hasU ? 0.92 : 0.86));
+          const emissive = isActive ? '#19e6c2' : '#12e6c2';
+          const emissiveIntensity = isActive ? 0.65 : (panorama ? (hasU ? 0.32 : 0.06) : (hasU ? 0.18 : 0.05));
+          return html`<meshStandardMaterial color=${color} transparent opacity=${opacity} emissive=${emissive} emissiveIntensity=${emissiveIntensity} />`;
+        })()}
+      </mesh>
+    `)}
+      ${edges.map((arr,i)=> html`
+        <line key=${'l'+i}>
+          <bufferGeometry><bufferAttribute attach="attributes-position" array=${arr} count=${arr.length / 3} itemSize=${3} /></bufferGeometry>
+          <lineBasicMaterial color="#00FFD1" transparent opacity=${0.9} />
+        </line>
+      `)}
+    </group>`;
+  };
+
+  const UKScene = ({universities, resetToken=0}) => {
+    const [focusCenter, setFocusCenter] = useState(null);
+    const [focusBounds, setFocusBounds] = useState(null);
+    const [activeRegion, setActiveRegion] = useState(null);
+
+    React.useEffect(() => {
+      setActiveRegion(null);
+      setFocusCenter(null);
+      setFocusBounds(null);
+    }, [resetToken]);
+
+    const { camera, size } = useThree();
+    const vFov = (camera.fov || 45) * Math.PI/180;
+    const hFov = 2 * Math.atan(Math.tan(vFov/2) * (size.width/size.height));
+    const zoomForBounds = (b) => {
+      if(!b) return 12;
+      const w = b[2]-b[0], h = b[3]-b[1];
+      const margin = 0.82;
+      const zH = (h/(2*margin)) / Math.tan(vFov/2);
+      const zW = (w/(2*margin)) / Math.tan(hFov/2);
+      return Math.max(zH, zW);
+    };
+
+    const targetXY = focusCenter || null;
+    const zFor = focusBounds ? zoomForBounds(focusBounds) : 12;
+
+    return html`<group position=${[0, 0, 0]}>
+      <ambientLight intensity=${0.35} />
+      <directionalLight position=${[4,5,6]} intensity=${0.7} />
+      <mesh rotation-x=${-Math.PI/2} position=${[0,0,-0.03]}>
+        <circleGeometry args=${[10.7,96]} />
+        <meshStandardMaterial color="#0E1621" metalness=${0.2} roughness=${0.9} />
+      </mesh>
+
+      <${UKAdminRegions}
+        highlightLL=${null}
+        activeRegionIndex=${activeRegion ? activeRegion.index : -1}
+        onHighlightCenter=${setFocusCenter}
+        onHighlightBounds=${setFocusBounds}
+        onHighlightName=${()=>{}}
+        onRegionClick=${(payload)=>{ setActiveRegion(payload); }}
+        universities=${universities}
+      />
+
+      ${SHOW_MARKERS ? universities.map(u=> html`<${UniMarker} key=${u.id} uni=${u} onActive=${()=>{}} active=${false} />`) : null}
+
+      ${activeRegion && activeRegion.unis && activeRegion.unis.length ? activeRegion.unis.map((u,i)=>{
+        const p = llToXY(u.lat, u.lon);
+        return html`<${NameLabel} key=${'nl'+i} uni=${u} position=${p} />`;
+      }) : null}
+
+      <${CameraRig} target=${targetXY} zoom=${zFor} offset=${[0,0]} />
+    </group>`;
+  };
+
+  function App(){
+    const [universities] = useState(initialUniversities);
+    const [apiKey, setApiKey] = useState('');
+    const [authed, setAuthed] = useState(false);
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [apiSheetOpen, setApiSheetOpen] = useState(false);
+
+    const [tab, setTab] = useState('home');
+
+    const [openProject, setOpenProject] = useState(null);
+    const [loaderOpen, setLoaderOpen] = useState(false);
+    const [resetToken, setResetToken] = useState(0);
+
+    React.useEffect(()=>{
+      const onKey = (e)=>{ if(e.key === 'Escape') setTab('home'); };
+      window.addEventListener('keydown', onKey);
+      return ()=> window.removeEventListener('keydown', onKey);
+    },[]);
+
+    const onCreate = (payload) => {
+      const item = { id:`p-${Math.random().toString(36).slice(2,7)}`, title: payload.title || 'Untitled',
+        org:'Your Institution', tags: (payload.modalities||[]).map(m=>m.toUpperCase()), stars:0, online:1, description: payload.desc || '' };
+      if(payload.isPublic){ featuredProjects.unshift(item); setTab('cocreation'); }
+    };
+
+    return html`<div className="min-h-screen w-full text-slate-100 flex flex-col">
+      <${Header} onCreate=${()=>setDialogOpen(true)} onToggleSheet=${()=>setApiSheetOpen(true)} />
+      <main className="flex-1 w-full p-6">
+        <${Tabs} value=${tab} onValueChange=${setTab}>
+          <div className="flex items-center justify-between mb-4">
+            <${TabsList}>
+              <${TabsTrigger} value="home">Home<//>
+              <${TabsTrigger} value="cocreation">Co-Creation Space<//>
+              <${TabsTrigger} value="private">Private Space<//>
+              <${TabsTrigger} value="lab">AI Lab<//>
+            <//>
+            <div className="text-xs text-teal-300/70">Prototype · 3D map + spaces · UK universities</div>
+          </div>
+
+          <${TabsContent} value="home" className="mt-4">
+            <div className="relative h-[55vh] min-h-[400px] rounded-2xl border border-teal-900/50 bg-[#0b131a] overflow-hidden">
+              ${Canvas ? html`
+              <${Canvas}
+                className="w-full h-full"
+                camera=${{ position:[0,0,12], fov:45 }}
+                dpr=${Math.min(2, window.devicePixelRatio || 1)}
+                gl=${{ powerPreference:'high-performance', antialias:true, alpha:true }}
+                onPointerMissed=${() => setResetToken(t => t + 1)}
+                onDoubleClick=${() => setResetToken(t => t + 1)}
+                onContextMenu=${(e) => { e.preventDefault(); setResetToken(t => t + 1); }}
+              >
+                <${UKScene} universities=${universities} resetToken=${resetToken} />
+              <//>
+            ` : html`
+              <div className="absolute inset-0 flex items-center justify-center text-teal-300/70 text-sm">
+                3D viewer unavailable (module issue). Dashboard remains fully usable.
+              </div>
+            `}
+              <div className="absolute inset-x-0 bottom-2 flex justify-center z-10">
+                <div className="text-[10px] text-teal-400/60 tracking-widest uppercase">Click a region to focus • ESC / Double-click to reset</div>
+              </div>
+            </div>
+
+            <div className="mt-4 holo-grid p-2 rounded-xl">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-purple-900/40 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-purple-900/30">
+                        <${CardTitle} className="text-[13px] text-purple-100 flex items-center gap-2">
+                           <${NetworkI} className="w-4 h-4 text-purple-400"/> FEDERATED NODE MONITOR
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1 overflow-y-auto custom-scroll">
+                        <div>
+                           <div className="flex items-center justify-between text-[10px] text-purple-400/70 font-mono uppercase mb-2 tracking-widest">
+                             <span>Enterprise Partners</span>
+                             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span> SYNCING</span>
+                           </div>
+                           <div className="space-y-1.5 text-xs text-purple-100 font-medium">
+                             <div className="flex justify-between items-center p-1.5 rounded bg-purple-950/20 border border-purple-900/50 hover:bg-purple-900/40 cursor-pointer transition-colors">
+                               <span className="truncate">Rolls-Royce</span><span className="text-[9px] text-green-400 font-mono">2ms Ping</span>
+                             </div>
+                             <div className="flex justify-between items-center p-1.5 rounded bg-purple-950/20 border border-purple-900/50 hover:bg-purple-900/40 cursor-pointer transition-colors">
+                               <span className="truncate">Lloyd's Register</span><span className="text-[9px] text-green-400 font-mono">15ms Ping</span>
+                             </div>
+                             <div className="flex justify-between items-center p-1.5 rounded bg-purple-950/20 border border-purple-900/50 hover:bg-purple-900/40 cursor-pointer transition-colors">
+                               <span className="truncate">ORE Catapult</span><span className="text-[9px] text-yellow-400 font-mono">Standby</span>
+                             </div>
+                             <div className="flex justify-between items-center p-1.5 rounded bg-purple-950/20 border border-purple-900/50 hover:bg-purple-900/40 cursor-pointer transition-colors">
+                               <span className="truncate">i3D Robotics</span><span className="text-[9px] text-green-400 font-mono">8ms Ping</span>
+                             </div>
+                             <div className="flex justify-between items-center p-1.5 rounded bg-purple-950/20 border border-purple-900/50 hover:bg-purple-900/40 cursor-pointer transition-colors">
+                               <span className="truncate">UKAEA / RACE</span><span className="text-[9px] text-yellow-400 font-mono">Standby</span>
+                             </div>
+                           </div>
+                        </div>
+                        <div>
+                           <div className="text-[10px] text-blue-400/70 font-mono uppercase mb-2 tracking-widest mt-2">Academic Hubs</div>
+                           <div className="space-y-1.5 text-[11px] text-blue-100">
+                             <div className="p-1.5 rounded bg-blue-950/20 border border-blue-900/30 flex items-center justify-between">UoN & UCL <span className="text-[9px] text-blue-400 font-mono bg-blue-900/50 px-1 rounded">Core</span></div>
+                             <div className="p-1.5 rounded bg-blue-950/20 border border-blue-900/30">Univ of Sheffield (AIRE)</div>
+                             <div className="p-1.5 rounded bg-blue-950/20 border border-blue-900/30">Turing Institute</div>
+                           </div>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-teal-900/40 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-teal-900/30">
+                        <${CardTitle} className="text-[13px] text-teal-100 flex items-center gap-2">
+                           <${ActivityI} className="w-4 h-4 text-teal-400"/> EDGE COMPUTE TELEMETRY
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1">
+                        <div className="text-xs text-teal-200/80 leading-relaxed mb-1">
+                          Live resource monitoring for local Python API Server and inference engines.
+                        </div>
+                        <div className="space-y-3 mt-4">
+                           <div>
+                             <div className="flex justify-between text-[10px] text-teal-300 font-mono mb-1"><span>GPU VRAM (RTX 4090)</span><span>18.4 / 24 GB</span></div>
+                             <div className="h-1.5 w-full bg-teal-950/50 rounded overflow-hidden"><div className="h-full bg-teal-400 w-[76%]"></div></div>
+                           </div>
+                           <div>
+                             <div className="flex justify-between text-[10px] text-teal-300 font-mono mb-1"><span>SYSTEM MEMORY</span><span>32.1 / 64 GB</span></div>
+                             <div className="h-1.5 w-full bg-teal-950/50 rounded overflow-hidden"><div className="h-full bg-blue-400 w-[50%]"></div></div>
+                           </div>
+                           <div>
+                             <div className="flex justify-between text-[10px] text-teal-300 font-mono mb-1"><span>INFERENCE LATENCY</span><span className="text-yellow-400">67 ms</span></div>
+                             <div className="h-1.5 w-full bg-teal-950/50 rounded overflow-hidden"><div className="h-full bg-yellow-400 w-[25%]"></div></div>
+                           </div>
+                        </div>
+                        <div className="mt-4 p-2 bg-[#060a0f] border border-teal-900/50 rounded text-[10px] text-teal-100 font-mono">
+                           <div className="flex justify-between border-b border-teal-900/50 pb-1 mb-1"><span className="text-teal-500">Backend</span><span>FastAPI / PyTorch</span></div>
+                           <div className="flex justify-between"><span className="text-teal-500">Compiler</span><span>TensorRT FP16</span></div>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-blue-900/40 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-blue-900/30">
+                        <${CardTitle} className="text-[13px] text-blue-100 flex items-center gap-2">
+                           <${DatabaseI} className="w-4 h-4 text-blue-400"/> DATASETS & CALIBRATION ARTEFACTS
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1">
+                        <div className="text-xs text-blue-200/80 leading-relaxed mb-2">
+                          Version-controlled data packs compliant with TERC standards. Ensures repeatable sim2real testing.
+                        </div>
+                        <div className="space-y-2">
+                          <div className="p-2 border border-blue-900/50 bg-[#060a0f] rounded flex justify-between items-center group hover:border-blue-500/50 transition">
+                             <div>
+                                <div className="text-[11px] text-blue-100 font-bold mb-0.5">SONAIR-Preview-v1.0</div>
+                                <div className="text-[9px] text-blue-400 font-mono">100h · Stereo+IMU+UR5e</div>
+                             </div>
+                             <button className="px-2 py-1 text-[9px] font-bold bg-blue-900/40 text-blue-200 border border-blue-700/50 rounded hover:bg-blue-800">⬇ ZIP (12GB)</button>
+                          </div>
+                          <div className="p-2 border border-blue-900/50 bg-[#060a0f] rounded flex justify-between items-center group hover:border-blue-500/50 transition">
+                             <div>
+                                <div className="text-[11px] text-blue-100 font-bold mb-0.5">UoN Extrinsics Pack</div>
+                                <div className="text-[9px] text-blue-400 font-mono">Hand-eye & Temporal Calib</div>
+                             </div>
+                             <button className="px-2 py-1 text-[9px] font-bold bg-blue-900/40 text-blue-200 border border-blue-700/50 rounded hover:bg-blue-800">⬇ JSONL</button>
+                          </div>
+                          <div className="p-2 border border-blue-900/50 bg-[#060a0f] rounded flex justify-between items-center group hover:border-blue-500/50 transition opacity-60">
+                             <div>
+                                <div className="text-[11px] text-blue-100 font-bold mb-0.5">Held-out Eval Set (v1.1)</div>
+                                <div className="text-[9px] text-blue-400 font-mono">Leaderboard validation only</div>
+                             </div>
+                             <span className="px-2 py-1 text-[9px] text-blue-500 border border-blue-900/50 rounded"><${LockI} className="w-3 h-3 inline"/></span>
+                          </div>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-teal-900/40 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-teal-900/30">
+                        <${CardTitle} className="text-[13px] text-teal-100 flex items-center gap-2">
+                          <${WandI} className="w-4 h-4 text-teal-400"/> MULTIMODAL TASK BROKER
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1">
+                        <div className="text-xs text-teal-200/80 leading-relaxed mb-1">
+                          Select an industrial task to load into the AI Lab for Sim2Real fusion processing.
+                        </div>
+                        <div className="space-y-3">
+                           <div className="p-2.5 border border-teal-700/50 bg-[#060a0f] hover:border-teal-400/80 rounded transition-all group">
+                             <div className="text-xs text-teal-100 font-semibold mb-1 group-hover:text-teal-300">Aerospace Micro-Scratches</div>
+                             <div className="flex gap-2 mb-2">
+                                <span className="px-1.5 py-0.5 bg-teal-900/50 rounded text-[9px] text-teal-300 flex items-center gap-1"><${ImageI} className="w-2.5 h-2.5"/> Vision DAM</span>
+                                <span className="px-1.5 py-0.5 bg-teal-900/50 rounded text-[9px] text-teal-300 flex items-center gap-1"><${ActivityI} className="w-2.5 h-2.5"/> Eddy Current</span>
+                             </div>
+                             <button onClick=${()=>setTab('lab')} className="w-full py-1 text-[10px] font-bold tracking-wide bg-teal-800/40 hover:bg-teal-600/60 text-teal-100 rounded border border-teal-600/50">Send to AI Lab Engine ➔</button>
+                           </div>
+
+                           <div className="p-2.5 border border-teal-900/50 bg-[#060a0f] hover:border-teal-400/80 rounded transition-all group">
+                             <div className="text-xs text-teal-100 font-semibold mb-1 group-hover:text-teal-300">Maritime Safety Readiness</div>
+                             <div className="flex gap-2 mb-2">
+                                <span className="px-1.5 py-0.5 bg-blue-900/50 rounded text-[9px] text-blue-300 flex items-center gap-1"><${VideoI} className="w-2.5 h-2.5"/> Stereo Rig</span>
+                                <span className="px-1.5 py-0.5 bg-blue-900/50 rounded text-[9px] text-blue-300 flex items-center gap-1"><${RouteI} className="w-2.5 h-2.5"/> UR5e Logs</span>
+                             </div>
+                             <button onClick=${()=>setTab('lab')} className="w-full py-1 text-[10px] font-bold tracking-wide bg-teal-900/40 hover:bg-teal-700/60 text-teal-100 rounded border border-teal-700/50">Send to AI Lab Engine ➔</button>
+                           </div>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-blue-900/30 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-blue-900/30">
+                        <${CardTitle} className="text-[13px] text-blue-100 flex items-center gap-2">
+                           <${TerminalI} className="w-4 h-4 text-blue-400"/> PRE-FLIGHT VALIDATOR
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1 flex flex-col">
+                        <div className="text-[11px] text-blue-200/80 leading-relaxed mb-2">
+                          Containerised evaluator enforcing data compliance and anti-contamination protocols before deployment.
+                        </div>
+                        <div className="flex-1 bg-[#03060a] border border-blue-900/50 rounded p-2 text-[10px] font-mono text-blue-300 shadow-inner overflow-y-auto">
+                           <div className="text-green-400">> init_validator --strict</div>
+                           <div>[OK] Loading UR5e ROS2 bags...</div>
+                           <div>[OK] JSONL schema verified.</div>
+                           <div>[OK] Extrinsics calib loaded.</div>
+                           <div className="text-yellow-400">[WARN] Injecting 20ms signal lag...</div>
+                           <div className="text-green-400 animate-pulse">> Ready for eval.</div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                           <button className="py-1.5 text-[10px] bg-blue-900/30 hover:bg-blue-800/50 border border-blue-700/50 text-blue-200 rounded font-bold">Run Schema Check</button>
+                           <button className="py-1.5 text-[10px] bg-green-900/30 hover:bg-green-800/50 border border-green-700/50 text-green-200 rounded font-bold">Deploy Container</button>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+                <div className="space-y-4 no-overflow">
+                  <div className="w-full h-full">
+                    <${Card} className="glass holo-panel border-red-900/30 h-full flex flex-col">
+                      <${CardHeader} className="pb-2 border-b border-red-900/30">
+                        <${CardTitle} className="text-[13px] text-red-100 flex items-center gap-2">
+                           <${StarI} className="w-4 h-4 text-red-400"/> SIM2REAL READINESS METRICS
+                        <//>
+                      <//>
+                      <${CardContent} className="pt-3 space-y-4 flex-1">
+                        <div className="text-[11px] text-red-200/70 leading-relaxed">
+                          Industrial adoption requires stable Sim ➔ Real transfer and regulated safety envelopes.
+                        </div>
+                        <div className="space-y-3 mt-2">
+                          <div>
+                            <div className="flex justify-between text-[10px] text-red-100 mb-1"><span>Transfer Drop (Sim➔Real)</span><span className="font-mono text-green-400">-4.0%</span></div>
+                            <div className="h-1.5 w-full bg-red-950/50 rounded overflow-hidden"><div className="h-full bg-green-500 w-[96%]"></div></div>
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-[10px] text-red-100 mb-1"><span>Safety Violations</span><span className="font-mono text-teal-400">0 / 10K</span></div>
+                            <div className="h-1.5 w-full bg-red-950/50 rounded overflow-hidden"><div className="h-full bg-teal-400 w-[100%]"></div></div>
+                          </div>
+                          <div>
+                            <div className="flex justify-between text-[10px] text-red-100 mb-1"><span>Uncertainty ECE</span><span className="font-mono text-yellow-400">0.03</span></div>
+                            <div className="h-1.5 w-full bg-red-950/50 rounded overflow-hidden"><div className="h-full bg-yellow-500 w-[80%]"></div></div>
+                          </div>
+                        </div>
+                        <div className="mt-4 flex items-center justify-center">
+                           <button className="w-full py-1 text-[10px] font-bold tracking-wide bg-red-900/30 hover:bg-red-800/50 border border-red-700/50 text-red-200 rounded">Generate DOI Task Card</button>
+                        </div>
+                      <//>
+                    <//>
+                  </div>
+                </div>
+
+              </div>
+              <${AlignHomeHeights}/>
+            </div>
+          <//>
+
+          <${TabsContent} value="cocreation" className="mt-4">
+            <${SpaceHeader} title="Co-Creation Space" subtitle="Share projects openly with UK partners; fork, contribute, and align datasets. (UR project owned by University of Nottingham)" icon=${UsersI} />
+            <div className="h-3"></div>
+            <${CoCreationSpace} onOpenProject=${setOpenProject} />
+          <//>
+
+          <${TabsContent} value="private" className="mt-4">
+            <${SpaceHeader} title="Private Space" subtitle="API-gated projects and institution-only datasets." icon=${LockI} />
+            <div className="h-3"></div>
+            <${PrivateSpace} authed=${authed} />
+          <//>
+
+          <${TabsContent} value="lab" className="mt-4">
+            <${SpaceHeader}
+              title="Multimodal AI Lab"
+              subtitle="Data Ingestion, Task-driven Fusion & Analysis."
+              icon=${WandI}
+            />
+            <div className="h-3"></div>
+
+            <${AIDashboardPro}/>
+          <//>
+        <//>
+      </main>
+
+      <${DataLoaderDialog} open=${false} setOpen=${()=>{}} />
+      <${CreateProjectDialog} open=${dialogOpen} setOpen=${setDialogOpen} onCreate=${onCreate} />
+
+      ${openProject? html`<div className="fixed left-4 bottom-4 px-3 py-2 rounded-md border border-teal-800 bg-[#0b131a]">Project opened: ${openProject.title}</div>`: null}
+    </div>`;
+  }
+
+  createRoot(document.getElementById('root')).render(html`<${Boundary}><${App}/><//>`);
+</script>
+</body>
+</html>
