@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SONAIR 跨站点机器人控制平台</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f9;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 3rem;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            max-width: 500px;
+        }
+        h1 { color: #2c3e50; margin-bottom: 1rem; }
+        p { color: #7f8c8d; margin-bottom: 2rem; }
+        .btn-group { display: flex; flex-direction: column; gap: 15px; }
+        .btn {
+            padding: 15px 25px;
+            text-decoration: none;
+            color: white;
+            border-radius: 8px;
+            font-weight: bold;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .btn-primary { background-color: #3498db; }
+        .btn-primary:hover { background-color: #2980b9; transform: translateY(-2px); }
+        .btn-secondary { background-color: #2ecc71; }
+        .btn-secondary:hover { background-color: #27ae60; transform: translateY(-2px); }
+        .footer { margin-top: 2rem; font-size: 0.8rem; color: #bdc3c7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>SONAIR Platform</h1>
+        <p>欢迎使用跨站点 UR 机器人远程控制系统</p>
+        
+        <div class="btn-group">
+            <a href="Remote_control.html" class="btn btn-primary">进入 远程控制界面 (Remote Control)</a>
+            
+            <a href="UoN%20Multimodal%20AI%20Platform.html" class="btn btn-secondary">进入 UoN 多模态 AI 平台</a>
+        </div>
+
+        <div class="footer">
+            与 UCL 远程协作项目 | 由 multimodal_bridge.py 提供后端支持
+        </div>
+    </div>
+</body>
+</html>
