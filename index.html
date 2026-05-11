@@ -1,58 +1,176 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SONAIR 跨站点机器人控制平台</title>
+    <title>SONAIR Operations Portal | UoN & UCL Collaboration</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
+        :root {
+            --primary-blue: #0A58CA; /* 统一、稳重的蓝色 */
+            --secondary-green: #157347; /* 统一、稳重的绿色 */
+            --bg-color: #F8FAFC; /* 更柔和的背景 */
+            --card-bg: #FFFFFF;
+            --text-dark: #1E293B;
+            --text-gray: #64748B;
+        }
+
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f4f7f9;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
+            color: var(--text-dark);
         }
-        .container {
+
+        .portal-card {
+            background-color: var(--card-bg);
+            padding: 3.5rem 3rem;
+            border-radius: 20px;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.08);
+            width: 100%;
+            max-width: 550px;
             text-align: center;
-            background: white;
-            padding: 3rem;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            max-width: 500px;
+            border: 1px solid rgba(0,0,0,0.03);
+            transition: transform 0.3s ease;
         }
-        h1 { color: #2c3e50; margin-bottom: 1rem; }
-        p { color: #7f8c8d; margin-bottom: 2rem; }
-        .btn-group { display: flex; flex-direction: column; gap: 15px; }
-        .btn {
-            padding: 15px 25px;
+
+        .portal-card:hover {
+            transform: translateY(-5px);
+        }
+
+        /* 顶部标题区域 */
+        .header-section {
+            margin-bottom: 2.5rem;
+        }
+
+        .platform-title {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin: 0 0 0.5rem 0;
+            color: var(--text-dark);
+            letter-spacing: -1px;
+        }
+
+        .platform-subtitle {
+            font-size: 1rem;
+            color: var(--text-gray);
+            margin: 0;
+            line-height: 1.5;
+        }
+
+        /* 导航按钮区域 */
+        .navigation-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            margin-bottom: 3rem;
+        }
+
+        .nav-btn {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 1.25rem 2rem;
             text-decoration: none;
-            color: white;
-            border-radius: 8px;
-            font-weight: bold;
-            transition: transform 0.2s, background 0.2s;
+            color: #FFFFFF;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 1.1rem;
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
         }
-        .btn-primary { background-color: #3498db; }
-        .btn-primary:hover { background-color: #2980b9; transform: translateY(-2px); }
-        .btn-secondary { background-color: #2ecc71; }
-        .btn-secondary:hover { background-color: #27ae60; transform: translateY(-2px); }
-        .footer { margin-top: 2rem; font-size: 0.8rem; color: #bdc3c7; }
+
+        /* 增加按钮内部图标的间距 */
+        .nav-btn i {
+            font-size: 1.4rem;
+            margin-right: 1.25rem;
+            width: 25px; /* 固定图标宽度，保证文字对齐 */
+            text-align: center;
+        }
+
+        /* 统一的悬停动画 */
+        .nav-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+        }
+
+        /* 主蓝色按钮 */
+        .btn-rc { background-color: var(--primary-blue); }
+        .btn-rc:hover { background-color: #084298; }
+
+        /* 次绿色按钮 */
+        .btn-ai { background-color: var(--secondary-green); }
+        .btn-ai:hover { background-color: #0f5132; }
+
+        /* 添加一个小箭头指示器 */
+        .nav-btn::after {
+            content: "\f054"; /* FontAwesome 右箭头图标 */
+            font-family: "Font Awesome 6 Free";
+            font-weight: 900;
+            position: absolute;
+            right: 2rem;
+            opacity: 0.5;
+            transition: right 0.2s ease;
+        }
+
+        .nav-btn:hover::after {
+            right: 1.5rem;
+            opacity: 1;
+        }
+
+        /* 底部合作信息区域 */
+        .footer-section {
+            border-top: 1px solid #E2E8F0;
+            padding-top: 1.5rem;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .collab-info {
+            color: var(--text-gray);
+            margin-bottom: 0.5rem;
+        }
+
+        .collab-info strong { color: var(--text-dark); }
+
+        .tech-info {
+            color: #A0AEC0;
+            font-family: 'Courier New', Courier, monospace; /* 使用等宽字体突显代码 */
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>SONAIR Platform</h1>
-        <p>欢迎使用跨站点 UR 机器人远程控制系统</p>
+    <div class="portal-card">
+        <div class="header-section">
+            <h1 class="platform-title">SONAIR Portal</h1>
+            <p class="platform-subtitle">Unified Access Hub for Cross-Site UR Robotics Tools</p>
+        </div>
         
-        <div class="btn-group">
-            <a href="Remote_control.html" class="btn btn-primary">进入 远程控制界面 (Remote Control)</a>
+        <div class="navigation-grid">
+            <a href="Remote_control.html" class="nav-btn btn-rc">
+                <i class="fas fa-robot"></i> Remote Operation Center
+            </a>
             
-            <a href="UoN%20Multimodal%20AI%20Platform.html" class="btn btn-secondary">进入 UoN 多模态 AI 平台</a>
+            <a href="UoN%20Multimodal%20AI%20Platform.html" class="nav-btn btn-ai">
+                <i class="fas fa-brain"></i> Multimodal AI & Analytics Platform
+            </a>
         </div>
 
-        <div class="footer">
-            与 UCL 远程协作项目 | 由 multimodal_bridge.py 提供后端支持
+        <div class="footer-section">
+            <p class="collab-info">
+                A Joint Research & Development Initiative
+                <br>
+                <strong>University of Nottingham</strong> | <strong>University College London (UCL)</strong>
+            </p>
+            <p class="tech-info">
+                Powered by `multimodal_bridge.py`
+            </p>
         </div>
     </div>
 </body>
