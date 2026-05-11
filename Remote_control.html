@@ -4093,16 +4093,18 @@
       try {
         const data = JSON.parse(event.data);
 
-        if (data.type === "state" && urModel) {
+        if (data.type === "state") {
           const rads = data.q;
           for (let i = 0; i < 6; i++) {
-            jointAnglesDeg[i] = deg(rads[i]);
-            const node = jointNodes[i];
-            if(node) {
-               node.rotation.order = 'XYZ';
-               if(jointConfig[i].axis==='x') node.rotation.x = jointZero[i].x + rads[i];
-               else if(jointConfig[i].axis==='y') node.rotation.y = jointZero[i].y + rads[i];
-               else node.rotation.z = jointZero[i].z + rads[i];
+            jointAnglesDeg[i] = deg(rads[i]);  // always sync angles, GLB optional
+            if(urModel) {
+              const node = jointNodes[i];
+              if(node) {
+                node.rotation.order = 'XYZ';
+                if(jointConfig[i].axis==='x') node.rotation.x = jointZero[i].x + rads[i];
+                else if(jointConfig[i].axis==='y') node.rotation.y = jointZero[i].y + rads[i];
+                else node.rotation.z = jointZero[i].z + rads[i];
+              }
             }
           }
           updateStatusUI(); clampPartCenterToWorkBox();
