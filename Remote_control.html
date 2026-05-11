@@ -2958,7 +2958,7 @@
     }
 
     function doJogOnceFromState(){
-      if(!urModel) return;
+      // urModel guard removed: jog must work even without GLB loaded
       const {small, big} = getSteps();
       let delta = 0;
       if(keyState.up) delta += small;
@@ -3011,7 +3011,7 @@
       btnHold.act = act;
       if(btnTimer) clearInterval(btnTimer);
       const run = ()=>{
-        if(!urModel) return;
+        // urModel guard removed: jog must work even without GLB loaded
         const {small, big} = getSteps();
         let delta = 0;
         if(act==='up') delta = +small;
