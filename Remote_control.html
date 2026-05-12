@@ -1,10 +1,11 @@
-<!doctype html>
+<!DOCTYPE html>
+
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>UR5e Industrial Console</title>
-  <style>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1" name="viewport"/>
+<title>UR5e Industrial Console</title>
+<style>
     :root {
       --bg: #0d1117;
       --panel: #161b22;
@@ -200,8 +201,7 @@
     .rs-status-dot.off { color: #484f58; }
     .rs-indent { padding-left: 12px; border-left: 1px dashed var(--line); margin-left: 4px; margin-top: 4px;}
   </style>
-
-  <script>
+<script>
     window.__ensureThreeViaFallback = async function(){
       const loadScript = (src)=> new Promise((res, rej)=>{
         const s=document.createElement('script'); s.src=src; s.async=true;
@@ -223,7 +223,7 @@
       }
     };
   </script>
-  <style>
+<style>
     /* =====================================================================
        INDUSTRIAL HMI v3 — refined for engineer aesthetics.
        Reference systems: Siemens WinCC OA, ABB 800xA System, Honeywell Experion,
@@ -1070,602 +1070,656 @@
 
     /* ---------- The drag-drop overlay — keep as-is (functional accent) ---------- */
   </style>
+<style>
+    /* Layout optimization v4: enlarge UR 3D stage and remove unused visible modules. */
+    .main-workspace {
+      display: flex !important;
+      flex-direction: row !important;
+      gap: 8px !important;
+      padding: 8px !important;
+      overflow: hidden !important;
+    }
+    .left-column {
+      flex: 0 0 48.5% !important;
+      min-width: 560px !important;
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 0 !important;
+    }
+    .left-column .top-area {
+      flex: 1 1 auto !important;
+      min-height: 0 !important;
+      height: 100% !important;
+      width: 100% !important;
+    }
+    .left-column .viewport-box.stage-main {
+      width: 100% !important;
+      height: 100% !important;
+      min-height: calc(100vh - 78px) !important;
+    }
+    #stage { width: 100% !important; height: 100% !important; }
+    .right-columns {
+      flex: 1 1 51.5% !important;
+      min-width: 760px !important;
+      display: flex !important;
+      gap: 8px !important;
+      overflow: hidden !important;
+    }
+    #col-sensor { flex: 0 0 29% !important; min-width: 235px !important; }
+    #col-vision { flex: 0 0 29% !important; min-width: 245px !important; }
+    #col-robot  { flex: 1 1 42% !important; min-width: 320px !important; }
+    #legacyHiddenControls { display:none !important; }
+    @media (max-width: 1350px) {
+      .left-column { flex-basis: 45% !important; min-width: 480px !important; }
+      .right-columns { min-width: 680px !important; }
+      #col-sensor { min-width: 210px !important; }
+      #col-vision { min-width: 220px !important; }
+      #col-robot { min-width: 300px !important; }
+    }
+  </style>
+<style>
+/* Layout v7 — based on the last working v4 file. Only positions changed; IDs and JS hooks are preserved. */
+.main-workspace{
+  display:flex !important;
+  flex-direction:row !important;
+  gap:8px !important;
+  padding:8px !important;
+  height:calc(100vh - 56px) !important;
+  overflow:hidden !important;
+}
+.left-column{
+  flex:0 0 46% !important;
+  min-width:560px !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:8px !important;
+  min-height:0 !important;
+}
+.left-column .top-area{
+  flex:0 0 42% !important;
+  min-height:300px !important;
+  height:auto !important;
+  width:100% !important;
+}
+.left-column .viewport-box.stage-main{
+  width:100% !important;
+  height:100% !important;
+  min-height:0 !important;
+}
+#stage{ width:100% !important; height:100% !important; }
+#leftControlDeck{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:8px !important;
+  padding-right:4px !important;
+}
+.connection-row,
+.motion-row{
+  display:grid !important;
+  grid-template-columns:1fr 1fr !important;
+  gap:8px !important;
+  align-items:start !important;
+}
+.robot-status-row{ width:100% !important; }
+.freedrive-compact .group-bd{ padding:10px !important; }
+.freedrive-compact #freedriveBtn{
+  min-height:48px !important;
+  font-size:14px !important;
+}
+.right-columns{
+  flex:1 1 54% !important;
+  min-width:640px !important;
+  display:flex !important;
+  gap:8px !important;
+  overflow:hidden !important;
+}
+#col-sensor{ flex:0 0 38% !important; min-width:260px !important; }
+#col-vision{ flex:1 1 62% !important; min-width:360px !important; }
+#col-robot{ display:none !important; }
+#col-vision .panel-content,
+#col-sensor .panel-content{ overflow-y:auto !important; min-height:0 !important; }
+.nested-scan-group{
+  margin-top:8px !important;
+  border-color:var(--line-soft) !important;
+}
+.viewport-tools{ gap:8px !important; }
+#loadUrModelBtn{ color:var(--accent) !important; border-color:var(--accent-dim) !important; }
+@media (max-width:1450px){
+  .left-column{ flex-basis:48% !important; min-width:500px !important; }
+  .right-columns{ min-width:560px !important; }
+  .connection-row,.motion-row{ grid-template-columns:1fr !important; }
+  .left-column .top-area{ flex-basis:38% !important; min-height:260px !important; }
+}
+</style>
+<style>
+/* Layout v8 responsive lock: keep the working v7 functions, only make the left control deck layout identical in windowed and fullscreen modes. */
+#leftControlDeck{
+  width:100% !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+}
+.connection-row,
+.motion-row{
+  display:grid !important;
+  grid-template-columns:1fr !important;
+  gap:8px !important;
+  width:100% !important;
+  align-items:stretch !important;
+}
+.connection-row > .group,
+.motion-row > .group,
+.robot-status-row > .group{
+  width:100% !important;
+  min-width:0 !important;
+}
+/* Keep the 3D stage + control deck proportional across fullscreen and non-fullscreen sizes. */
+.left-column .top-area{
+  flex:0 0 42% !important;
+  min-height:300px !important;
+  max-height:430px !important;
+}
+@media (min-width:1451px){
+  .connection-row,.motion-row{ grid-template-columns:1fr !important; }
+}
+@media (max-width:1450px){
+  .connection-row,.motion-row{ grid-template-columns:1fr !important; }
+}
+</style>
 </head>
-
 <body>
-  <div id="keyCatcher" tabindex="0" aria-hidden="true" style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none"></div>
-
-  <div class="app-container">
-    <div class="topbar">
-      <div class="brand-left">
-        <img src="UoN-Nottingham-Blue.png" alt="UoN" title="University of Nottingham"/>
-        <div class="brand-divider"></div>
-        <div>
-          <div class="brand-title">UR5e Operation Platform <span class="brand-version">v2.1</span></div>
-          <div class="brand-subtitle">Sim2Real Multi-Modal Scanning Console</div>
-        </div>
-      </div>
-      <div class="brand-center">
-        <!-- Industrial HMI status light cluster -->
-        <div class="sys-light-group">
-          <div class="sys-light"><span id="sysIndicator_3d"     class="sys-dot ok"></span><span class="sys-label">3D</span></div>
-          <div class="sys-light"><span id="sysIndicator_vision" class="sys-dot ok"></span><span class="sys-label">VIS</span></div>
-          <div class="sys-light"><span id="sysIndicator_local"  class="sys-dot idle"></span><span class="sys-label">LOC</span></div>
-          <div class="sys-light"><span id="sysIndicator_remote" class="sys-dot idle"></span><span class="sys-label">WAN</span></div>
-          <div class="sys-light"><span id="sysIndicator_safety" class="sys-dot ok"></span><span class="sys-label">SAFE</span></div>
-        </div>
-      </div>
-      <div class="brand-right">
-        <span id="hintText" class="hint-text">SYSTEM READY</span>
-        <div class="brand-divider"></div>
-        <img src="MAI logo.png" alt="MAI"/>
-      </div>
-    </div>
-
-    <div class="main-workspace">
-
-      <div class="left-column">
-        <div class="top-area">
-          <div class="viewport-box stage-main">
-            <div class="viewport-hd">
-              <div class="muted-text">3D Simulation Stage</div>
-              <div class="viewport-tools">
-                <button class="btn" id="fitBtn">Fit View</button>
-                <button class="btn" id="resetViewBtn">Reset Camera</button>
-              </div>
-            </div>
-            <div id="stage"></div>
-            <div class="overlay-hint">L-Click: Select/Rotate | R-Click: Pan | Scroll: Zoom</div>
-          </div>
-        </div>
-
-        <div class="col-panel" id="col-setup">
-          <div class="panel-content">
-            <div class="group">
-              <div class="group-hd">UR Model Setup</div>
-              <div class="group-bd">
-                <label class="btn full" for="urFile">Load UR GLB</label>
-                <input id="urFile" type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json"/>
-                <div class="field-row">
-                  <label class="field-label"><input id="urZupChk" type="checkbox"> Force Z-up</label>
-                  <div class="field-label">Scale <input id="urScale" type="number" step="0.001" value="1" style="width:60px"></div>
-                </div>
-                <button class="btn full" id="autoFixUrBtn">Auto Fix UR Orientation</button>
-              </div>
-            </div>
-
-            <div class="group" style="border-color: #d29922;">
-              <div class="group-hd" style="background:rgba(210,153,34,0.1);">End-Effector (TCP) Setup</div>
-              <div class="group-bd">
-                <button class="btn primary full" id="mockToolBtn">Attach D435i & Probe Mock</button>
-                <div class="field-row" style="margin-top:4px;">
-                  <label class="btn outline" for="toolFile" style="flex:1; margin:0;">Load Tool CAD (GLB/STL)</label>
-                  <input id="toolFile" type="file" accept=".glb,.gltf,.stl"/>
-                  <button class="btn danger" id="clearToolBtn" style="padding:4px 8px;">X</button>
-                </div>
-
-                <div class="muted-text" style="margin-top:4px;">Tool Offset (m)</div>
-                <div class="field-row">
-                  <div class="field-label">X <input id="tcpX" type="number" step="0.01" value="0" style="width:45px"></div>
-                  <div class="field-label">Y <input id="tcpY" type="number" step="0.01" value="0.05" style="width:45px"></div>
-                  <div class="field-label">Z <input id="tcpZ" type="number" step="0.01" value="0" style="width:45px"></div>
-                </div>
-
-                <div class="muted-text" style="margin-top:4px;">Rotation (deg) & Scale</div>
-                <div class="field-row">
-                  <div class="field-label">Rx <input id="tcpRx" type="number" step="5" value="0" style="width:40px"></div>
-                  <div class="field-label">Ry <input id="tcpRy" type="number" step="5" value="0" style="width:40px"></div>
-                  <div class="field-label">Rz <input id="tcpRz" type="number" step="5" value="0" style="width:40px"></div>
-                  <div class="field-label">S <input id="tcpScale" type="number" step="0.01" value="1" style="width:40px"></div>
-                </div>
-              </div>
-            </div>
-
-            <div class="group">
-              <div class="group-hd">Target Part Setup</div>
-              <div class="group-bd">
-                <label class="btn full" for="partFile">Load Part (STL/GLB/PLY)</label>
-                <input id="partFile" type="file" accept=".stl,.glb,.gltf,.ply"/>
-                <div class="field-row">
-                  <button class="btn" id="autoScalePartBtn">Auto Scale</button>
-                  <div class="field-label">Max(m) <input id="partTargetMax" type="number" step="0.01" value="0.25" style="width:50px"></div>
-                </div>
-                <button class="btn full" id="autoPlacePartBtn">Auto Place (Work Box)</button>
-                <div class="field-row">
-                  <span class="field-label" style="width:30px;">Scale</span>
-                  <input id="partScale" type="range" min="-4" max="4" step="0.01" value="0">
-                  <span id="partScaleLabel" class="field-label" style="width:40px; justify-content:flex-end;">1.000×</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="group">
-              <div class="group-hd">Part Manipulation <span class="badge" id="dragBadge">Drag: OFF</span></div>
-              <div class="group-bd">
-                <div class="field-row">
-                  <label class="field-label"><input id="dragPartChk" type="checkbox" checked> Enable Drag</label>
-                  <select id="dragPlane" style="width:80px;">
-                    <option value="xz" selected>Floor X-Z</option>
-                    <option value="xy">Wall X-Y</option>
-                    <option value="yz">Side Y-Z</option>
-                  </select>
-                </div>
-                <div class="field-row">
-                  <label class="field-label"><input id="snapFloorChk" type="checkbox"> Snap</label>
-                  <div class="field-label">Step(m) <input id="nudgeStep" type="number" step="0.005" value="0.02" style="width:50px"></div>
-                </div>
-                <div style="display:flex; gap:4px;">
-                  <button class="btn" style="flex:1" id="nudgeLeft">←X</button>
-                  <button class="btn" style="flex:1" id="nudgeRight">+X→</button>
-                  <button class="btn" style="flex:1" id="nudgeDown">-Z↓</button>
-                  <button class="btn" style="flex:1" id="nudgeUp">↑+Z</button>
-                  <button class="btn danger" style="flex:1" id="resetPartPose">Rst</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="group">
-              <div class="group-hd">Environment</div>
-              <div class="group-bd">
-                <div class="field-row"><span class="field-label" style="width:40px;">Amb</span><input id="amb" type="range" min="0" max="2.5" step="0.05" value="1.0"></div>
-                <div class="field-row"><span class="field-label" style="width:40px;">Light</span><input id="key" type="range" min="0" max="3.5" step="0.05" value="2.2"></div>
-                <div class="field-row">
-                  <div class="field-label">Floor Y <input id="floorY" type="number" step="0.001" value="0.0" style="width:50px;"></div>
-                  <div style="display:flex; gap:4px;">
-                    <button class="btn" id="gridBtn">Grid</button>
-                    <button class="btn" id="floorBtn">Floor</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="right-columns">
-        <div class="col-panel" id="col-sensor">
-          <div class="panel-content" style="padding: 6px;">
-
-            <div class="group" style="border-color: #30363d;">
-              <div class="group-hd" style="background:#161b22; font-size: 12px;">
-                <span>Intel RealSense D435I</span>
-                <span style="color:#8b949e;">☍ 3.2</span>
-              </div>
-              <div class="group-bd" style="padding-top:0;">
-
-                <div class="rs-module-hd">
-                  <span>▼ Stereo Module</span>
-                  <span class="rs-status-dot on" id="rsStereoStatus">•</span>
-                </div>
-                <div class="rs-indent">
-                  <div class="field-row">
-                    <span class="rs-sub-label">Resolution:</span>
-                    <select id="rsStereoRes" style="flex:1;">
-                      <option value="848x480">848 x 480</option>
-                      <option value="640x480" selected>640 x 480</option>
-                      <option value="424x240">424 x 240</option>
-                    </select>
-                  </div>
-                  <div class="field-row">
-                    <span class="rs-sub-label">Frame Rate (FPS):</span>
-                    <select id="rsStereoFps" style="flex:1;">
-                      <option value="90">90</option>
-                      <option value="60">60</option>
-                      <option value="30" selected>30</option>
-                      <option value="15">15</option>
-                    </select>
-                  </div>
-                  <div class="muted-text" style="margin-top:4px;">Available Streams:</div>
-                  <div class="field-row">
-                    <label class="field-label"><input type="checkbox" id="rsDepthStreamChk" checked> Depth</label>
-                    <select style="width:70px;"><option>Z16</option></select>
-                  </div>
-                  <div class="field-row">
-                    <label class="field-label"><input type="checkbox" id="rsIr1Chk"> Infrared 1</label>
-                  </div>
-                  <div class="field-row">
-                    <label class="field-label"><input type="checkbox" id="rsIr2Chk"> Infrared 2</label>
-                  </div>
-                  <div class="field-row" style="margin-top:6px;">
-                    <span class="rs-sub-label">Emitter Enabled:</span>
-                    <select id="rsEmitter" style="flex:1;">
-                      <option value="laser" selected>Laser</option>
-                      <option value="off">Off</option>
-                    </select>
-                  </div>
-                  <div class="field-row" style="margin-top:4px;">
-                    <label class="field-label"><input type="checkbox" id="rsDepthAeChk" checked> Enable Auto Exposure</label>
-                  </div>
-                  <div class="field-row" style="margin-top:4px;">
-                    <label class="field-label">▶ Post-Processing</label>
-                    <input type="checkbox" id="rsDepthPpChk" checked style="accent-color: #ff7b72;">
-                  </div>
-                </div>
-
-                <div class="rs-module-hd">
-                  <span>▼ RGB Camera</span>
-                  <span class="rs-status-dot on" id="rsRgbStatus">•</span>
-                </div>
-                <div class="rs-indent">
-                  <div class="field-row">
-                    <span class="rs-sub-label">Resolution:</span>
-                    <select id="rsRgbRes" style="flex:1;">
-                      <option value="1280x720">1280 x 720</option>
-                      <option value="640x480">640 x 480</option>
-                      <option value="640x360" selected>640 x 360</option>
-                    </select>
-                  </div>
-                  <div class="field-row">
-                    <span class="rs-sub-label">Frame Rate (FPS):</span>
-                    <select id="rsRgbFps" style="flex:1;">
-                      <option value="60">60</option>
-                      <option value="30" selected>30</option>
-                    </select>
-                  </div>
-                  <div class="muted-text" style="margin-top:4px;">Available Streams:</div>
-                  <div class="field-row">
-                    <label class="field-label"><input type="checkbox" id="rsRgbStreamChk" checked> Color</label>
-                    <select style="width:70px;"><option>RGB8</option></select>
-                  </div>
-                  <div class="field-row" style="margin-top:4px;">
-                    <label class="field-label"><input type="checkbox" id="rsRgbAeChk" checked> Enable Auto Exposure</label>
-                  </div>
-                </div>
-
-                <button class="btn primary full" id="applyRsConfigBtn" style="margin-top:8px;">Apply Config (Sync to Bridge)</button>
-              </div>
-            </div>
-
-            <div class="group" style="border-color: #1f6feb;">
-              <div class="group-hd" style="background:rgba(31,111,235,0.1);">
-                Live 2D Streams <span id="rsStatusBadge" class="badge">WAITING</span>
-              </div>
-              <div class="group-bd" style="padding: 6px;">
-
-                <div style="display:flex; gap:4px; margin-bottom:4px; flex-wrap:wrap;">
-                  <button class="btn success" id="toggleRgbViewBtn" style="flex:1; padding:4px;">RGB ON</button>
-                  <button class="btn success" id="toggleDepthViewBtn" style="flex:1; padding:4px;">Depth ON</button>
-                  <button class="btn outline" id="toggleIr1ViewBtn" style="flex:1; padding:4px;">IR1 OFF</button>
-                  <button class="btn outline" id="toggleIr2ViewBtn" style="flex:1; padding:4px;">IR2 OFF</button>
-                </div>
-
-                <div id="rgbContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
-                  <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#52d385; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Color Stream</div>
-                  <div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px; position:relative;">
-                    <img id="rsRgbImg" style="width:100%; height:100%; object-fit:contain; display:none; user-select:none; -webkit-user-drag:none;" />
-                    <span id="rgbHint" style="font-size:10px; color:#8b949e;">Waiting for RGB...</span>
-                  </div>
-                </div>
-
-                <div id="depthContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
-                  <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#ff7b72; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Depth Stream</div>
-                  <div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-                    <img id="rsDepthImg" style="width:100%; height:100%; object-fit:contain; display:none;" />
-                    <span id="depthHint" style="font-size:10px; color:#8b949e;">Waiting for Depth...</span>
-                  </div>
-                </div>
-
-                <div id="ir1Container" style="width:100%; margin-bottom:6px; position:relative; display:none;">
-                  <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 1</div>
-                  <div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-                    <img id="rsIr1Img" style="width:100%; height:100%; object-fit:contain; display:none;" />
-                    <span id="ir1Hint" style="font-size:10px; color:#8b949e;">Waiting for IR1...</span>
-                  </div>
-                </div>
-
-                <div id="ir2Container" style="width:100%; position:relative; display:none;">
-                  <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 2</div>
-                  <div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-                    <img id="rsIr2Img" style="width:100%; height:100%; object-fit:contain; display:none;" />
-                    <span id="ir2Hint" style="font-size:10px; color:#8b949e;">Waiting for IR2...</span>
-                  </div>
-                </div>
-
-                <button class="btn primary full" id="captureDefectBtn" style="padding:6px; margin-top:6px;">🎯 Run AI Defect Detection</button>
-              </div>
-            </div>
-
-            <div class="group" style="border-color: #8b949e; margin-top: 8px;">
-              <div class="group-hd" style="background:#21262d;">
-                <span>OmniScan FTP Stream & Mapping</span>
-                <span id="omniStatus" class="badge warn">OFFLINE</span>
-              </div>
-              <div class="group-bd" style="padding: 6px;">
-
-                <div style="display: flex; gap: 4px; margin-bottom: 6px; height: 160px;">
-                  <div style="flex: 1; background:#010409; border:1px solid var(--line); border-radius:4px; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden;">
-                    <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#c9d1d9; z-index:10; background:rgba(0,0,0,0.5); padding:2px; border-radius:2px;">FTP Screen</div>
-                    <img id="omniScreenshotImg" style="width:100%; height:100%; object-fit:contain; display:none;" />
-                    <span id="omniHintText" style="font-size:10px; color:#8b949e; text-align:center; padding:10px;">Waiting for script connection...</span>
-                  </div>
-                  <div style="flex: 1; background:#010409; border:1px solid var(--line); border-radius:4px; position:relative;">
-                    <div style="position:absolute; top:2px; left:4px; font-size:9px; color:#c9d1d9; z-index:10; background:rgba(0,0,0,0.5); padding:2px; border-radius:2px;">C-Scan Heatmap (Sim2Real)</div>
-                    <canvas id="omniHeatmapCanvas" style="width:100%; height:100%; display:block;"></canvas>
-                  </div>
-                </div>
-
-                <div class="field-row">
-                  <input id="ftpWsIp" type="text" value="ws://localhost:8766" style="flex:1;" placeholder="WS Address">
-                  <button class="btn primary" id="connectOmniBtn" style="width:80px; font-weight:bold;">Start Sync</button>
-                </div>
-
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="col-panel" id="col-vision">
-          <div class="panel-content">
-            <div class="group" style="border-color: #a371f7;">
-              <div class="group-hd" style="background:rgba(163,113,247,0.1);">Vision-Guided ROI Selection</div>
-              <div class="group-bd">
-                <button class="btn primary full" id="btnCaptureVision">Capture RGB Snapshot</button>
-
-                <div id="visionCanvasContainer" style="width:100%; height:200px; background:#000; position:relative; margin-top:4px; border:1px solid #30363d; border-radius:4px; overflow:hidden;">
-                  <canvas id="visionImageCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%;"></canvas>
-                  <canvas id="visionRoiCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair;"></canvas>
-                  <span id="visionHint" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#8b949e; font-size:10px; pointer-events:none;">Snapshot will appear here</span>
-                </div>
-
-                <div class="muted-text" style="margin-top:4px;">2. Draw a rectangle on the image to set the scan area, then import to Zig-Zag.</div>
-
-                <details open style="margin-top:4px; border:1px solid #30363d; border-radius:4px; padding:4px 6px; background:#0d1117;">
-                    <summary style="font-size:11px; color:#58a6ff; cursor:pointer; outline:none; user-select:none; font-weight:bold;">
-                        Point Smart Calibration
-                    </summary>
-                    <div style="margin-top:6px; display:flex; flex-direction:column; gap:6px; font-size:10px; color:#c9d1d9;">
-                        <div>1. Find a spot, Pick Px A on image, jog probe to it, Set UR A.</div>
-                        <div style="display:flex; gap:4px;">
-                            <button class="btn outline" id="btnCalibPxA" style="flex:1; border-style:dashed;">1. Pick Px A</button>
-                            <button class="btn outline" id="btnCalibPhA" style="flex:1; border-style:dashed;">2. Set UR A</button>
-                        </div>
-                        <div style="margin-top:2px;">2. Pick a far spot B, jog probe to it, Set UR B.</div>
-                        <div style="display:flex; gap:4px;">
-                            <button class="btn outline" id="btnCalibPxB" style="flex:1; border-style:dashed;">3. Pick Px B</button>
-                            <button class="btn outline" id="btnCalibPhB" style="flex:1; border-style:dashed;">4. Set UR B</button>
-                        </div>
-                        <div class="field-row" style="margin-top:4px; justify-content:flex-start; gap:12px;">
-                             <label class="field-label"><input type="checkbox" id="calibInvX"> Flip X</label>
-                             <label class="field-label"><input type="checkbox" id="calibInvY"> Flip Y</label>
-                             <span class="field-label">Drop Z(m) <input id="calibOffsetZ" type="number" step="0.001" value="0.0" style="width:50px;"></span>
-                        </div>
-                        <div id="calibStatus" style="text-align:center; color:#d29922; font-weight:bold; margin-top:2px; background:#21262d; padding:2px; border-radius:2px;">
-                            STATUS: UNCALIBRATED
-                        </div>
-                    </div>
-                </details>
-
-                <div class="field-row" style="margin-top:4px; border-top:1px solid #30363d; padding-top:4px;">
-                    <span class="field-label" style="width:70px;">ROI Rotate(°)</span>
-                    <input id="roiRotateSlider" type="range" min="-45" max="45" step="1" value="0" style="flex:1;">
-                    <span id="roiRotateValue" class="field-label" style="width:30px; justify-content:flex-end;">0°</span>
-                </div>
-
-                <button class="btn success full" id="btnCalcRoi" style="margin-top:6px;">3. Calculate & Import to Zig-Zag</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="col-panel" id="col-robot">
-          <div class="panel-content">
-
-            <div class="group" style="border-color: #2ea043;">
-              <div class="group-hd" style="background:rgba(46,160,67,0.1);">Local Sim2Real <span id="localWsStatus" class="badge">OFFLINE</span></div>
-              <div class="group-bd">
-                <input id="localWsIp" type="text" value="ws://localhost:8765" style="width:100%;">
-                <button class="btn success full" id="connectLocalBtn" style="margin-top:4px;">Connect Local Bridge</button>
-              </div>
-            </div>
-
-            <div class="group" style="border-color: #d29922;">
-              <div class="group-hd" style="background:rgba(210,153,34,0.1);">
-                Cross-Site Teleoperation (UCL ⇄ UoN)
-                <span id="remoteWsStatus" class="badge">OFFLINE</span>
-              </div>
-              <div class="group-bd">
-                <!-- Relay endpoint -->
-                <input id="remoteWsIp" type="text" value="wss://relay.sonair.example/ws" style="width:100%;" placeholder="Relay WSS URL">
-                <div class="field-row" style="margin-top:4px;">
-                  <input id="remoteRoom" type="text" value="uon-cell-1" placeholder="Room ID" style="flex:0 0 90px;" title="Robot cell identifier — must match the agent's RELAY_ROOM">
-                  <input id="remoteToken" type="password" placeholder="Bearer Token" style="flex:1;">
-                </div>
-                <div class="field-row" style="margin-top:4px;">
-                  <select id="remoteRole" style="flex:1;" title="UoN browser → Host (default authority); UCL browser → Guest (must request control)">
-                    <option value="host">Host (UoN)</option>
-                    <option value="guest">Guest (UCL)</option>
-                  </select>
-                  <button class="btn warning" id="connectRemoteBtn" style="width:80px;">Link</button>
-                </div>
-
-                <!-- Authority State Machine -->
-                <div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
-                  <div class="muted-text" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span>Control Authority</span>
-                    <span id="authorityBadge" class="badge">OBSERVER</span>
-                  </div>
-                  <div class="field-row">
-                    <button class="btn warning" id="requestAuthBtn" style="flex:1;" disabled>Request Control</button>
-                    <button class="btn" id="grantAuthBtn" style="flex:1;" disabled>Grant</button>
-                    <button class="btn outline" id="releaseAuthBtn" style="flex:1;" disabled>Release</button>
-                  </div>
-                  <div class="muted-text" id="authPeerInfo" style="margin-top:4px; font-size:10px; color:#8b949e;">
+<div aria-hidden="true" id="keyCatcher" style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none" tabindex="0"></div>
+<div class="app-container">
+<div class="topbar">
+<div class="brand-left">
+<img alt="UoN" src="UoN-Nottingham-Blue.png" title="University of Nottingham"/>
+<div class="brand-divider"></div>
+<div>
+<div class="brand-title">UR5e Operation Platform <span class="brand-version">v2.1</span></div>
+<div class="brand-subtitle">Sim2Real Multi-Modal Scanning Console</div>
+</div>
+</div>
+<div class="brand-center">
+<!-- Industrial HMI status light cluster -->
+<div class="sys-light-group">
+<div class="sys-light"><span class="sys-dot ok" id="sysIndicator_3d"></span><span class="sys-label">3D</span></div>
+<div class="sys-light"><span class="sys-dot ok" id="sysIndicator_vision"></span><span class="sys-label">VIS</span></div>
+<div class="sys-light"><span class="sys-dot idle" id="sysIndicator_local"></span><span class="sys-label">LOC</span></div>
+<div class="sys-light"><span class="sys-dot idle" id="sysIndicator_remote"></span><span class="sys-label">WAN</span></div>
+<div class="sys-light"><span class="sys-dot ok" id="sysIndicator_safety"></span><span class="sys-label">SAFE</span></div>
+</div>
+</div>
+<div class="brand-right">
+<span class="hint-text" id="hintText">SYSTEM READY</span>
+<div class="brand-divider"></div>
+<img alt="MAI" src="MAI logo.png"/>
+</div>
+</div>
+<div class="main-workspace">
+<div class="left-column">
+<div class="top-area">
+<div class="viewport-box stage-main">
+<div class="viewport-hd">
+<div class="muted-text">3D Simulation Stage</div>
+<div class="viewport-tools"><button class="btn primary" id="loadUrModelBtn" type="button">Load UR Model</button>
+<button class="btn" id="fitBtn">Fit View</button>
+<button class="btn" id="resetViewBtn">Reset Camera</button>
+</div>
+</div>
+<div id="stage"></div>
+<div class="overlay-hint">L-Click: Select/Rotate | R-Click: Pan | Scroll: Zoom</div>
+</div>
+</div><div id="leftControlDeck"><div class="connection-row"><div class="group" style="border-color: #2ea043;">
+<div class="group-hd" style="background:rgba(46,160,67,0.1);">Connection &amp; Teleoperation <span class="badge" id="localWsStatus">OFFLINE</span></div>
+<div class="group-bd">
+<input id="localWsIp" style="width:100%;" type="text" value="ws://127.0.0.1:8765"/>
+<button class="btn success full" id="connectLocalBtn" style="margin-top:4px;">Connect Local Bridge</button>
+</div>
+</div><div class="group" style="border-color: #d29922;">
+<div class="group-hd" style="background:rgba(210,153,34,0.1);">Cross-Site Teleoperation <span class="badge" id="remoteWsStatus">OFFLINE</span></div>
+<div class="group-bd">
+<!-- Relay endpoint -->
+<input id="remoteWsIp" placeholder="Relay WSS URL" style="width:100%;" type="text" value="wss://relay.sonair.example/ws"/>
+<div class="field-row" style="margin-top:4px;">
+<input id="remoteRoom" placeholder="Room ID" style="flex:0 0 90px;" title="Robot cell identifier — must match the agent's RELAY_ROOM" type="text" value="uon-cell-1"/>
+<input id="remoteToken" placeholder="Bearer Token" style="flex:1;" type="password"/>
+</div>
+<div class="field-row" style="margin-top:4px;">
+<select id="remoteRole" style="flex:1;" title="UoN browser → Host (default authority); UCL browser → Guest (must request control)">
+<option value="host">Host (UoN)</option>
+<option value="guest">Guest (UCL)</option>
+</select>
+<button class="btn warning" id="connectRemoteBtn" style="width:80px;">Link</button>
+</div>
+<!-- Authority State Machine -->
+<div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
+<div class="muted-text" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+<span>Control Authority</span>
+<span class="badge" id="authorityBadge">OBSERVER</span>
+</div>
+<div class="field-row">
+<button class="btn warning" disabled="" id="requestAuthBtn" style="flex:1;">Request Control</button>
+<button class="btn" disabled="" id="grantAuthBtn" style="flex:1;">Grant</button>
+<button class="btn outline" disabled="" id="releaseAuthBtn" style="flex:1;">Release</button>
+</div>
+<div class="muted-text" id="authPeerInfo" style="margin-top:4px; font-size:10px; color:#8b949e;">
                     No active session.
                   </div>
-                </div>
-
-                <!-- Latency / Safety Telemetry -->
-                <div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
-                  <div class="muted-text" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                    <span>Link QoS &amp; Safety</span>
-                    <span id="qosBadge" class="badge">—</span>
-                  </div>
-                  <div class="status-kv" style="grid-template-columns: repeat(3, 1fr); font-size:10px;">
-                    <div class="cell"><small>RTT</small><span id="rttVal" style="color:#3fb950;">— ms</span></div>
-                    <div class="cell"><small>Jitter</small><span id="jitterVal">— ms</span></div>
-                    <div class="cell"><small>v-cap</small><span id="vCapVal">100%</span></div>
-                  </div>
-                  <div class="field-row" style="margin-top:4px; font-size:10px;">
-                    <label class="field-label" style="flex:1;">
-                      <input id="watchdogChk" type="checkbox" checked> Watchdog
+</div>
+<!-- Latency / Safety Telemetry -->
+<div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
+<div class="muted-text" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+<span>Link QoS &amp; Safety</span>
+<span class="badge" id="qosBadge">—</span>
+</div>
+<div class="status-kv" style="grid-template-columns: repeat(3, 1fr); font-size:10px;">
+<div class="cell"><small>RTT</small><span id="rttVal" style="color:#3fb950;">— ms</span></div>
+<div class="cell"><small>Jitter</small><span id="jitterVal">— ms</span></div>
+<div class="cell"><small>v-cap</small><span id="vCapVal">100%</span></div>
+</div>
+<div class="field-row" style="margin-top:4px; font-size:10px;">
+<label class="field-label" style="flex:1;">
+<input checked="" id="watchdogChk" type="checkbox"/> Watchdog
                     </label>
-                    <label class="field-label" style="flex:1;">
-                      <input id="envelopeChk" type="checkbox" checked> Soft Envelope
+<label class="field-label" style="flex:1;">
+<input checked="" id="envelopeChk" type="checkbox"/> Soft Envelope
                     </label>
-                    <label class="field-label" style="flex:1;">
-                      <input id="auditChk" type="checkbox" checked> Audit Log
+<label class="field-label" style="flex:1;">
+<input checked="" id="auditChk" type="checkbox"/> Audit Log
                     </label>
-                  </div>
+</div>
+</div>
+<!-- Workspace Envelope (Soft Limits for Remote Operator) -->
+<div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
+<div class="muted-text" style="margin-bottom:4px;">Workspace Envelope (m, base frame)</div>
+<div class="field-row" style="font-size:10px;">
+<div class="field-label">X<input id="envXmin" step="0.05" style="width:42px" type="number" value="-0.6"/></div>
+<div class="field-label">~<input id="envXmax" step="0.05" style="width:42px" type="number" value="0.6"/></div>
+<div class="field-label">Y<input id="envYmin" step="0.05" style="width:42px" type="number" value="-0.6"/></div>
+<div class="field-label">~<input id="envYmax" step="0.05" style="width:42px" type="number" value="0.6"/></div>
+</div>
+<div class="field-row" style="font-size:10px;">
+<div class="field-label">Z<input id="envZmin" step="0.05" style="width:42px" type="number" value="0.05"/></div>
+<div class="field-label">~<input id="envZmax" step="0.05" style="width:42px" type="number" value="0.7"/></div>
+<div class="field-label" style="flex:1;">Rejected: <span id="envRejCount" style="color:#ff7b72;">0</span></div>
+</div>
+</div>
+<!-- Audit Log -->
+<div style="margin-top:6px;">
+<div class="muted-text" style="display:flex; justify-content:space-between; align-items:center;">
+<span>Session Audit (last 6)</span>
+<button class="btn" id="exportAuditBtn" style="padding:1px 6px; font-size:9px;">Export</button>
+</div>
+<div id="auditLog" style="margin-top:3px; max-height:80px; overflow-y:auto; padding:4px; background:#010409; border:1px solid var(--line); border-radius:4px; font-family:var(--font-mono); font-size:9px; color:#8b949e;">
+<div class="muted-text">No events.</div>
+</div>
+</div>
+<button class="btn danger full" disabled="" id="remoteEStopBtn" style="margin-top:6px; font-weight:bold;">E-STOP (Both Sites)</button>
+</div>
+</div></div><div class="group robot-status-row">
+<div class="group-hd">Robot Status <span class="badge" id="urState">NO UR</span></div>
+<div class="group-bd">
+<div class="status-kv" id="statusKv">
+<div class="cell"><small>J1</small><span id="sJ1">—</span></div>
+<div class="cell"><small>J2</small><span id="sJ2">—</span></div>
+<div class="cell"><small>J3</small><span id="sJ3">—</span></div>
+<div class="cell"><small>J4</small><span id="sJ4">—</span></div>
+<div class="cell"><small>J5</small><span id="sJ5">—</span></div>
+<div class="cell"><small>J6</small><span id="sJ6">—</span></div>
+</div>
+<div class="field-row" style="background:#010409; padding:4px; border-radius:4px; border:1px solid var(--line); justify-content:center;">
+<span id="tcpPoseDisplay" style="color:#3fb950; font-family:var(--font-mono); font-size:10px;">TCP: -- Waiting --</span>
+</div>
+</div>
+</div><div class="motion-row"><div class="group freedrive-compact" style="border-color:#d29922;margin-top:8px;margin-bottom:8px;">
+<div class="group-hd" style="background:rgba(210,153,34,0.1);">
+                Freedrive Mode <span class="badge" id="freedriveBadge">OFF</span>
+</div>
+<div class="group-bd">
+<button id="freedriveBtn" style="width:100%;padding:9px;font-size:13px;font-weight:bold;
+                         background:#21262d;border:2px solid #d29922;color:#d29922;
+                         border-radius:6px;cursor:pointer;user-select:none;touch-action:none;">
+                  ⟳ HOLD to Freedrive  (or hold SPACE)
+                </button>
+<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:3px;margin-top:5px;display:none !important;">
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdX" type="checkbox"/><br/>X</label>
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdY" type="checkbox"/><br/>Y</label>
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdZ" type="checkbox"/><br/>Z</label>
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdRx" type="checkbox"/><br/>Rx</label>
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdRy" type="checkbox"/><br/>Ry</label>
+<label style="font-size:10px;text-align:center;cursor:pointer;"><input checked="" id="fdRz" type="checkbox"/><br/>Rz</label>
+</div>
+<div style="font-size:9px;color:#8b949e;margin-top:3px;display:none !important;">
+                  Uncheck axis to lock  |  <span style="color:#d29922;">⚠ Keep hand near E-Stop</span>
+</div>
+</div>
+</div><div class="group" style="border-color:#3fb950;margin-top:8px;margin-bottom:8px;">
+<div class="group-hd" style="background:rgba(63,185,80,0.1);">
+                Virtual Joystick (TCP) <span class="badge success" id="vjoyModeBadge">XY·Z</span>
+</div>
+<div class="group-bd">
+<div style="display:flex;gap:4px;margin-bottom:5px;">
+<button id="vjoyModeXY" style="flex:1;font-size:10px;padding:3px;border-radius:4px;border:1px solid #3fb950;background:#0d2b0d;color:#3fb950;cursor:pointer;">XY·Z</button>
+<button id="vjoyModeXZ" style="flex:1;font-size:10px;padding:3px;border-radius:4px;border:1px solid #30363d;background:transparent;color:#8b949e;cursor:pointer;">XZ·Y</button>
+<button id="vjoyModeRot" style="flex:1;font-size:10px;padding:3px;border-radius:4px;border:1px solid #30363d;background:transparent;color:#8b949e;cursor:pointer;">Rot</button>
+</div>
+<div style="display:flex;gap:10px;justify-content:center;">
+<div style="text-align:center;">
+<div id="vjoyLLabel" style="font-size:9px;color:#8b949e;margin-bottom:2px;">← X / Y ↑</div>
+<canvas height="120" id="vjoyL" style="border-radius:50%;border:2px solid #3fb950;background:#080c08;cursor:crosshair;touch-action:none;display:block;" width="120"></canvas>
+</div>
+<div style="text-align:center;">
+<div id="vjoyRLabel" style="font-size:9px;color:#8b949e;margin-bottom:2px;">↑ Z / Rz →</div>
+<canvas height="120" id="vjoyR" style="border-radius:50%;border:2px solid #3fb950;background:#080c08;cursor:crosshair;touch-action:none;display:block;" width="120"></canvas>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+<span style="font-size:9px;color:#8b949e;white-space:nowrap;">Speed</span>
+<input id="vjoySpeed" max="20" min="1" style="flex:1;" type="range" value="8"/>
+<span id="vjoySpeedVal" style="font-size:10px;color:#3fb950;width:52px;font-family:monospace;">160mm/s</span>
+</div>
+<div style="font-size:9px;color:#8b949e;margin-top:2px;">
+                  Left-drag joystick + hold RIGHT mouse button = move · release either = stop
                 </div>
+</div>
+</div></div></div>
+<!-- Hidden legacy controls retained only for JS compatibility.
+             Visible setup/manipulation panels were removed from the HMI layout. -->
+<div id="legacyHiddenControls" style="display:none;">
+<input accept=".glb,.gltf,model/gltf-binary,model/gltf+json" id="urFile" type="file"/>
+<input id="urZupChk" type="checkbox"/>
+<input id="urScale" type="number" value="1"/>
+<button id="autoFixUrBtn"></button>
+<button id="mockToolBtn"></button>
+<input accept=".glb,.gltf,.stl" id="toolFile" type="file"/>
+<button id="clearToolBtn"></button>
+<input id="tcpX" type="number" value="0"/><input id="tcpY" type="number" value="0.05"/><input id="tcpZ" type="number" value="0"/>
+<input id="tcpRx" type="number" value="0"/><input id="tcpRy" type="number" value="0"/><input id="tcpRz" type="number" value="0"/><input id="tcpScale" type="number" value="1"/>
+<input accept=".stl,.glb,.gltf,.ply" id="partFile" type="file"/>
+<button id="autoScalePartBtn"></button><input id="partTargetMax" type="number" value="0.25"/>
+<button id="autoPlacePartBtn"></button><input id="partScale" max="4" min="-4" step="0.01" type="range" value="0"/><span id="partScaleLabel">1.000×</span>
+<input id="dragPartChk" type="checkbox"/><select id="dragPlane"><option selected="" value="xz">Floor X-Z</option></select>
+<input id="snapFloorChk" type="checkbox"/><input id="nudgeStep" type="number" value="0.02"/>
+<button id="nudgeLeft"></button><button id="nudgeRight"></button><button id="nudgeDown"></button><button id="nudgeUp"></button><button id="resetPartPose"></button>
+<button id="partMxN"></button><button id="partPxP"></button><button id="partMzN"></button><button id="partPzP"></button><button id="partRstBtn"></button><input id="partStep" type="number" value="0.02"/>
+<input id="amb" type="range" value="1.0"/><input id="key" type="range" value="2.2"/><input id="floorY" type="number" value="0.0"/>
+<button id="gridBtn"></button><button id="floorBtn"></button>
+<span id="kbBadge">J1 BUTTON JOG</span>
+<input id="stepDeg" type="number" value="0.05"/><input id="repeatHz" type="number" value="50"/><input checked="" id="clampChk" type="checkbox"/>
+<div id="jointList"></div><div id="limitEditor"></div>
+<canvas height="1" id="omniHeatmapCanvas" width="1"></canvas>
+<div class="group" style="border-color: #58a6ff;display:none !important;">
+<div class="group-hd" style="background:rgba(88,166,255,0.1);">UR Program Execution</div>
+<div class="group-bd">
+<div class="muted-text" style="display:flex; justify-content:space-between; align-items:center;">
+<span>1. Run Pendant Program</span>
+<button class="btn" id="refreshUrpBtn" style="padding:2px 4px; font-size:9px;">🔄 Refresh List</button>
+</div>
+<div class="field-row">
+<select id="urpSelect" style="flex:1;">
+<option value="">-- No files loaded --</option>
+</select>
+<button class="btn primary" id="loadUrpBtn">Load</button>
+</div>
+<div class="field-row">
+<button class="btn success" id="playUrpBtn" style="flex:1;">▶ Play</button>
+<button class="btn danger" id="stopUrpBtn" style="flex:1;">■ Stop</button>
+</div>
+<hr style="border:0; border-top:1px solid #30363d; margin:4px 0;"/>
+<div class="muted-text">2. Direct Script Injection (.script)</div>
+<label class="btn outline full" for="scriptFile" style="margin:0;">Upload &amp; Run .script File</label>
+<input accept=".script,.txt" id="scriptFile" style="display:none;" type="file"/>
+</div>
+</div><div class="group" style=";display:none !important;">
+<div class="group-hd">Path Capture</div>
+<div class="group-bd">
+<div style="display:flex; gap:4px;">
+<button class="btn primary" id="capturePoseBtn" style="flex:1;">+ Record Pose</button>
+<button class="btn danger" id="clearPathBtn">Clr</button>
+</div>
+<div class="path-preview-box" id="pathPreview"></div>
+<div style="display:flex; gap:4px; margin-top:2px;">
+<button class="btn success" id="runPathBtn" style="flex:1;">▶ Run Path</button>
+<button class="btn outline" id="exportPathBtn" style="flex:1;">Export CSV</button>
+</div>
+</div>
+</div></div>
+</div>
+<div class="right-columns">
+<div class="col-panel" id="col-sensor">
+<div class="panel-content" style="padding: 6px;">
+<div class="group" style="border-color: #30363d;">
+<div class="group-hd" style="background:#161b22; font-size: 12px;">
+<span>Intel RealSense D435I</span>
+<span style="color:#8b949e;">☍ 3.2</span>
+</div>
+<div class="group-bd" style="padding-top:0;">
+<div class="rs-module-hd">
+<span>▼ Stereo Module</span>
+<span class="rs-status-dot on" id="rsStereoStatus">•</span>
+</div>
+<div class="rs-indent">
+<div class="field-row">
+<span class="rs-sub-label">Resolution:</span>
+<select id="rsStereoRes" style="flex:1;">
+<option value="848x480">848 x 480</option>
+<option selected="" value="640x480">640 x 480</option>
+<option value="424x240">424 x 240</option>
+</select>
+</div>
+<div class="field-row">
+<span class="rs-sub-label">Frame Rate (FPS):</span>
+<select id="rsStereoFps" style="flex:1;">
+<option value="90">90</option>
+<option value="60">60</option>
+<option selected="" value="30">30</option>
+<option value="15">15</option>
+</select>
+</div>
+<div class="muted-text" style="margin-top:4px;">Available Streams:</div>
+<div class="field-row">
+<label class="field-label"><input checked="" id="rsDepthStreamChk" type="checkbox"/> Depth</label>
+<select style="width:70px;"><option>Z16</option></select>
+</div>
+<div class="field-row">
+<label class="field-label"><input id="rsIr1Chk" type="checkbox"/> Infrared 1</label>
+</div>
+<div class="field-row">
+<label class="field-label"><input id="rsIr2Chk" type="checkbox"/> Infrared 2</label>
+</div>
+<div class="field-row" style="margin-top:6px;">
+<span class="rs-sub-label">Emitter Enabled:</span>
+<select id="rsEmitter" style="flex:1;">
+<option selected="" value="laser">Laser</option>
+<option value="off">Off</option>
+</select>
+</div>
+<div class="field-row" style="margin-top:4px;">
+<label class="field-label"><input checked="" id="rsDepthAeChk" type="checkbox"/> Enable Auto Exposure</label>
+</div>
+<div class="field-row" style="margin-top:4px;">
+<label class="field-label">▶ Post-Processing</label>
+<input checked="" id="rsDepthPpChk" style="accent-color: #ff7b72;" type="checkbox"/>
+</div>
+</div>
+<div class="rs-module-hd">
+<span>▼ RGB Camera</span>
+<span class="rs-status-dot on" id="rsRgbStatus">•</span>
+</div>
+<div class="rs-indent">
+<div class="field-row">
+<span class="rs-sub-label">Resolution:</span>
+<select id="rsRgbRes" style="flex:1;">
+<option value="1280x720">1280 x 720</option>
+<option value="640x480">640 x 480</option>
+<option selected="" value="640x360">640 x 360</option>
+</select>
+</div>
+<div class="field-row">
+<span class="rs-sub-label">Frame Rate (FPS):</span>
+<select id="rsRgbFps" style="flex:1;">
+<option value="60">60</option>
+<option selected="" value="30">30</option>
+</select>
+</div>
+<div class="muted-text" style="margin-top:4px;">Available Streams:</div>
+<div class="field-row">
+<label class="field-label"><input checked="" id="rsRgbStreamChk" type="checkbox"/> Color</label>
+<select style="width:70px;"><option>RGB8</option></select>
+</div>
+<div class="field-row" style="margin-top:4px;">
+<label class="field-label"><input checked="" id="rsRgbAeChk" type="checkbox"/> Enable Auto Exposure</label>
+</div>
+</div>
+<button class="btn primary full" id="applyRsConfigBtn" style="margin-top:8px;">Apply Config (Sync to Bridge)</button>
+</div>
+</div>
+<div class="group" style="border-color: #1f6feb;">
+<div class="group-hd" style="background:rgba(31,111,235,0.1);">
+                Live 2D Streams <span class="badge" id="rsStatusBadge">WAITING</span>
+</div>
+<div class="group-bd" style="padding: 6px;">
+<div style="display:flex; gap:4px; margin-bottom:4px; flex-wrap:wrap;">
+<button class="btn success" id="toggleRgbViewBtn" style="flex:1; padding:4px;">RGB ON</button>
+<button class="btn success" id="toggleDepthViewBtn" style="flex:1; padding:4px;">Depth ON</button>
+<button class="btn outline" id="toggleIr1ViewBtn" style="flex:1; padding:4px;">IR1 OFF</button>
+<button class="btn outline" id="toggleIr2ViewBtn" style="flex:1; padding:4px;">IR2 OFF</button>
+</div>
+<div id="rgbContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
+<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#52d385; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Color Stream</div>
+<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px; position:relative;">
+<img id="rsRgbImg" style="width:100%; height:100%; object-fit:contain; display:none; user-select:none; -webkit-user-drag:none;"/>
+<span id="rgbHint" style="font-size:10px; color:#8b949e;">Waiting for RGB...</span>
+</div>
+</div>
+<div id="depthContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
+<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#ff7b72; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Depth Stream</div>
+<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
+<img id="rsDepthImg" style="width:100%; height:100%; object-fit:contain; display:none;"/>
+<span id="depthHint" style="font-size:10px; color:#8b949e;">Waiting for Depth...</span>
+</div>
+</div>
+<div id="ir1Container" style="width:100%; margin-bottom:6px; position:relative; display:none;">
+<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 1</div>
+<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
+<img id="rsIr1Img" style="width:100%; height:100%; object-fit:contain; display:none;"/>
+<span id="ir1Hint" style="font-size:10px; color:#8b949e;">Waiting for IR1...</span>
+</div>
+</div>
+<div id="ir2Container" style="width:100%; position:relative; display:none;">
+<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 2</div>
+<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
+<img id="rsIr2Img" style="width:100%; height:100%; object-fit:contain; display:none;"/>
+<span id="ir2Hint" style="font-size:10px; color:#8b949e;">Waiting for IR2...</span>
+</div>
+</div>
+<button class="btn primary full" id="captureDefectBtn" style="padding:6px; margin-top:6px;">🎯 Run AI Defect Detection</button>
+</div>
+</div>
+</div>
+</div>
+<div class="col-panel" id="col-vision">
+<div class="panel-content">
+<div class="group" style="border-color: #a371f7;">
+<div class="group-hd" style="background:rgba(163,113,247,0.1);">Vision-Guided ROI &amp; Auto Area Scan</div>
+<div class="group-bd">
+<button class="btn primary full" id="btnCaptureVision">Capture RGB Snapshot</button>
+<div id="visionCanvasContainer" style="width:100%; height:200px; background:#000; position:relative; margin-top:4px; border:1px solid #30363d; border-radius:4px; overflow:hidden;">
+<canvas id="visionImageCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%;"></canvas>
+<canvas id="visionRoiCanvas" style="position:absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair;"></canvas>
+<span id="visionHint" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#8b949e; font-size:10px; pointer-events:none;">Snapshot will appear here</span>
+</div>
+<div class="muted-text" style="margin-top:4px;">2. Draw a rectangle on the image to set the scan area, then import to Zig-Zag.</div>
+<details open="" style="margin-top:4px; border:1px solid #30363d; border-radius:4px; padding:4px 6px; background:#0d1117;">
+<summary style="font-size:11px; color:#58a6ff; cursor:pointer; outline:none; user-select:none; font-weight:bold;">
+                        Point Smart Calibration
+                    </summary>
+<div style="margin-top:6px; display:flex; flex-direction:column; gap:6px; font-size:10px; color:#c9d1d9;">
+<div>1. Find a spot, Pick Px A on image, jog probe to it, Set UR A.</div>
+<div style="display:flex; gap:4px;">
+<button class="btn outline" id="btnCalibPxA" style="flex:1; border-style:dashed;">1. Pick Px A</button>
+<button class="btn outline" id="btnCalibPhA" style="flex:1; border-style:dashed;">2. Set UR A</button>
+</div>
+<div style="margin-top:2px;">2. Pick a far spot B, jog probe to it, Set UR B.</div>
+<div style="display:flex; gap:4px;">
+<button class="btn outline" id="btnCalibPxB" style="flex:1; border-style:dashed;">3. Pick Px B</button>
+<button class="btn outline" id="btnCalibPhB" style="flex:1; border-style:dashed;">4. Set UR B</button>
+</div>
+<div class="field-row" style="margin-top:4px; justify-content:flex-start; gap:12px;">
+<label class="field-label"><input id="calibInvX" type="checkbox"/> Flip X</label>
+<label class="field-label"><input id="calibInvY" type="checkbox"/> Flip Y</label>
+<span class="field-label">Drop Z(m) <input id="calibOffsetZ" step="0.001" style="width:50px;" type="number" value="0.0"/></span>
+</div>
+<div id="calibStatus" style="text-align:center; color:#d29922; font-weight:bold; margin-top:2px; background:#21262d; padding:2px; border-radius:2px;">
+                            STATUS: UNCALIBRATED
+                        </div>
+</div>
+</details>
+<div class="field-row" style="margin-top:4px; border-top:1px solid #30363d; padding-top:4px;">
+<span class="field-label" style="width:70px;">ROI Rotate(°)</span>
+<input id="roiRotateSlider" max="45" min="-45" step="1" style="flex:1;" type="range" value="0"/>
+<span class="field-label" id="roiRotateValue" style="width:30px; justify-content:flex-end;">0°</span>
+</div>
+<button class="btn success full" id="btnCalcRoi" style="margin-top:6px;">3. Calculate &amp; Import to Zig-Zag</button>
+<div class="group nested-scan-group" style="border-color: #a371f7;">
+<div class="group-hd" style="background:rgba(163,113,247,0.1);">Auto Area Scan (Zig-Zag)</div>
+<div class="group-bd">
+<div class="muted-text" style="margin-bottom:2px;">1. Set Probe Center (Safe Hover)</div>
+<div class="field-row">
+<button class="btn outline" id="btnSetCenter" style="flex:1; border-style:dashed;">[ ] Set Center Node</button>
+</div>
+<div class="muted-text" style="margin-top:6px; margin-bottom:2px;">2. Set 4 Corners (Auto or Manual)</div>
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
+<button class="btn outline" id="btnP1" style="border-style:dashed;">┏ P1 (Top-L)</button>
+<button class="btn outline" id="btnP2" style="border-style:dashed;">P2 (Top-R) ┓</button>
+<button class="btn outline" id="btnP4" style="border-style:dashed;">┗ P4 (Bot-L)</button>
+<button class="btn outline" id="btnP3" style="border-style:dashed;">P3 (Bot-R) ┛</button>
+</div>
+<div class="muted-text" style="margin-top:6px; margin-bottom:2px;">3. Verify Calculated Position</div>
+<button class="btn warning full" id="btnVerifyPos" style="margin-bottom:4px; font-weight:bold;">Move to Center &amp; Verify</button>
+<div class="field-row" style="margin-top:6px;">
+<span class="field-label">Line Spacing:</span>
+<input id="scanSpacing" step="1" style="width:60px;" type="number" value="5"/> <span class="muted-text">mm</span>
+</div>
+<div style="display:flex; gap:4px; margin-top:6px;">
+<button class="btn info" id="btnGenPath" style="flex:1; background:#1f6feb; border-color:#1f6feb; color:white;">1. Generate Preview</button>
+<button class="btn warning" id="deployScanBtn" style="flex:1; font-weight:bold; background:#8a2be2; border-color:#8a2be2;">2. Execute Scan</button>
+</div>
+</div>
+</div><div class="group nested-scan-group" style="border-color: #58a6ff; margin-top:8px; margin-bottom:8px;">
+<div class="group-hd" style="background:rgba(88,166,255,0.1);">Simulated Path Preview <span class="badge info" id="pathPtsCount">0 PTS</span></div>
+<div class="group-bd">
+<div class="path-preview-box" id="simPathPreviewList" style="max-height: 140px; overflow-y: auto;">
+<span class="muted-text">Click 'Generate Preview' to calculate waypoints...</span>
+</div>
+<button class="btn danger full" id="clearSimPathBtn" style="margin-top:2px;">Clear Preview</button>
+</div>
+</div></div>
+</div>
+</div>
+</div>
+<div class="col-panel" id="col-robot" style=";display:none !important;">
+<div class="panel-content">
 
-                <!-- Workspace Envelope (Soft Limits for Remote Operator) -->
-                <div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
-                  <div class="muted-text" style="margin-bottom:4px;">Workspace Envelope (m, base frame)</div>
-                  <div class="field-row" style="font-size:10px;">
-                    <div class="field-label">X<input id="envXmin" type="number" step="0.05" value="-0.6" style="width:42px"></div>
-                    <div class="field-label">~<input id="envXmax" type="number" step="0.05" value="0.6" style="width:42px"></div>
-                    <div class="field-label">Y<input id="envYmin" type="number" step="0.05" value="-0.6" style="width:42px"></div>
-                    <div class="field-label">~<input id="envYmax" type="number" step="0.05" value="0.6" style="width:42px"></div>
-                  </div>
-                  <div class="field-row" style="font-size:10px;">
-                    <div class="field-label">Z<input id="envZmin" type="number" step="0.05" value="0.05" style="width:42px"></div>
-                    <div class="field-label">~<input id="envZmax" type="number" step="0.05" value="0.7" style="width:42px"></div>
-                    <div class="field-label" style="flex:1;">Rejected: <span id="envRejCount" style="color:#ff7b72;">0</span></div>
-                  </div>
-                </div>
 
-                <!-- Audit Log -->
-                <div style="margin-top:6px;">
-                  <div class="muted-text" style="display:flex; justify-content:space-between; align-items:center;">
-                    <span>Session Audit (last 6)</span>
-                    <button class="btn" id="exportAuditBtn" style="padding:1px 6px; font-size:9px;">Export</button>
-                  </div>
-                  <div id="auditLog" style="margin-top:3px; max-height:80px; overflow-y:auto; padding:4px; background:#010409; border:1px solid var(--line); border-radius:4px; font-family:var(--font-mono); font-size:9px; color:#8b949e;">
-                    <div class="muted-text">No events.</div>
-                  </div>
-                </div>
 
-                <button class="btn danger full" id="remoteEStopBtn" style="margin-top:6px; font-weight:bold;" disabled>E-STOP (Both Sites)</button>
-              </div>
-            </div>
 
-            <div class="group">
-              <div class="group-hd">Robot Status <span class="badge" id="urState">NO UR</span></div>
-              <div class="group-bd">
-                <div class="status-kv" id="statusKv">
-                  <div class="cell"><small>J1</small><span id="sJ1">—</span></div>
-                  <div class="cell"><small>J2</small><span id="sJ2">—</span></div>
-                  <div class="cell"><small>J3</small><span id="sJ3">—</span></div>
-                  <div class="cell"><small>J4</small><span id="sJ4">—</span></div>
-                  <div class="cell"><small>J5</small><span id="sJ5">—</span></div>
-                  <div class="cell"><small>J6</small><span id="sJ6">—</span></div>
-                </div>
-                <div class="field-row" style="background:#010409; padding:4px; border-radius:4px; border:1px solid var(--line); justify-content:center;">
-                  <span id="tcpPoseDisplay" style="color:#3fb950; font-family:var(--font-mono); font-size:10px;">TCP: -- Waiting --</span>
-                </div>
-              </div>
-            </div>
 
-            <div class="group" style="border-color: #58a6ff;">
-              <div class="group-hd" style="background:rgba(88,166,255,0.1);">UR Program Execution</div>
-              <div class="group-bd">
-                <div class="muted-text" style="display:flex; justify-content:space-between; align-items:center;">
-                   <span>1. Run Pendant Program</span>
-                   <button class="btn" id="refreshUrpBtn" style="padding:2px 4px; font-size:9px;">🔄 Refresh List</button>
-                </div>
-                <div class="field-row">
-                  <select id="urpSelect" style="flex:1;">
-                      <option value="">-- No files loaded --</option>
-                  </select>
-                  <button class="btn primary" id="loadUrpBtn">Load</button>
-                </div>
-                <div class="field-row">
-                  <button class="btn success" id="playUrpBtn" style="flex:1;">▶ Play</button>
-                  <button class="btn danger" id="stopUrpBtn" style="flex:1;">■ Stop</button>
-                </div>
-                <hr style="border:0; border-top:1px solid #30363d; margin:4px 0;">
-                <div class="muted-text">2. Direct Script Injection (.script)</div>
-                <label class="btn outline full" for="scriptFile" style="margin:0;">Upload & Run .script File</label>
-                <input id="scriptFile" type="file" accept=".script,.txt" style="display:none;">
-              </div>
-            </div>
 
-            <div class="group" style="border-color: #a371f7;">
-              <div class="group-hd" style="background:rgba(163,113,247,0.1);">Auto Area Scan (Zig-Zag)</div>
-              <div class="group-bd">
-                <div class="muted-text" style="margin-bottom:2px;">1. Set Probe Center (Safe Hover)</div>
-                <div class="field-row">
-                  <button class="btn outline" id="btnSetCenter" style="flex:1; border-style:dashed;">[ ] Set Center Node</button>
-                </div>
+<!-- ====== FREEDRIVE PANEL ====== -->
 
-                <div class="muted-text" style="margin-top:6px; margin-bottom:2px;">2. Set 4 Corners (Auto or Manual)</div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px; margin-bottom:4px;">
-                   <button class="btn outline" id="btnP1" style="border-style:dashed;">┏ P1 (Top-L)</button>
-                   <button class="btn outline" id="btnP2" style="border-style:dashed;">P2 (Top-R) ┓</button>
-                   <button class="btn outline" id="btnP4" style="border-style:dashed;">┗ P4 (Bot-L)</button>
-                   <button class="btn outline" id="btnP3" style="border-style:dashed;">P3 (Bot-R) ┛</button>
-                </div>
+<!-- ====== VIRTUAL JOYSTICK PANEL ====== -->
 
-                <div class="muted-text" style="margin-top:6px; margin-bottom:2px;">3. Verify Calculated Position</div>
-                <button class="btn warning full" id="btnVerifyPos" style="margin-bottom:4px; font-weight:bold;">Move to Center & Verify</button>
 
-                <div class="field-row" style="margin-top:6px;">
-                  <span class="field-label">Line Spacing:</span>
-                  <input id="scanSpacing" type="number" step="1" value="5" style="width:60px;"> <span class="muted-text">mm</span>
-                </div>
-                <div style="display:flex; gap:4px; margin-top:6px;">
-                  <button class="btn info" style="flex:1; background:#1f6feb; border-color:#1f6feb; color:white;" id="btnGenPath">1. Generate Preview</button>
-                  <button class="btn warning" style="flex:1; font-weight:bold; background:#8a2be2; border-color:#8a2be2;" id="deployScanBtn">2. Execute Scan</button>
-                </div>
-              </div>
-            </div>
-
-            <div class="group" style="border-color: #58a6ff; margin-top:8px; margin-bottom:8px;">
-              <div class="group-hd" style="background:rgba(88,166,255,0.1);">Simulated Path Preview <span class="badge info" id="pathPtsCount">0 PTS</span></div>
-              <div class="group-bd">
-                <div class="path-preview-box" id="simPathPreviewList" style="max-height: 140px; overflow-y: auto;">
-                  <span class="muted-text">Click 'Generate Preview' to calculate waypoints...</span>
-                </div>
-                <button class="btn danger full" id="clearSimPathBtn" style="margin-top:2px;">Clear Preview</button>
-              </div>
-            </div>
-
-            <div class="group">
-              <div class="group-hd">Joint Jogging <span class="badge warn" id="kbBadge">J1 (↑↓/←→)</span></div>
-              <div class="group-bd">
-                <div class="field-row" style="background:#010409; padding:4px; border-radius:4px; border:1px solid var(--line);">
-                  <div class="field-label">Step° <input id="stepDeg" type="number" step="0.1" value="1.0" style="width:40px;"></div>
-                  <div class="field-label">Hz <input id="repeatHz" type="number" step="1" value="30" style="width:35px;"></div>
-                  <label class="field-label"><input id="clampChk" type="checkbox" checked> Lim</label>
-                </div>
-                <div class="jointList" id="jointList"></div>
-                <div id="limitEditor" style="display:none;"></div>
-              </div>
-            </div>
-
-            <div class="group">
-              <div class="group-hd">Path Capture</div>
-              <div class="group-bd">
-                <div style="display:flex; gap:4px;">
-                  <button class="btn primary" id="capturePoseBtn" style="flex:1;">+ Record Pose</button>
-                  <button class="btn danger" id="clearPathBtn">Clr</button>
-                </div>
-                <div class="path-preview-box" id="pathPreview"></div>
-                <div style="display:flex; gap:4px; margin-top:2px;">
-                  <button class="btn success" id="runPathBtn" style="flex:1;">▶ Run Path</button>
-                  <button class="btn outline" id="exportPathBtn" style="flex:1;">Export CSV</button>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-      </div>
-    </div>
-  </div>
-
-  <script>
+</div>
+</div>
+</div>
+</div>
+</div>
+<script>
     let globalDracoLoader = null;
     function getDracoLoader() {
         if (!globalDracoLoader) {
@@ -2325,8 +2379,10 @@
          remoteWs.send(JSON.stringify({ type: "jog", q: targetRads, seq, ts: Date.now() }));
          jogSent = true;
       }
-      if (jogSent) return;
-
+      // Always update the local digital twin immediately.
+      // Previously, when a real jog was sent, this function returned here, so
+      // the next keyboard tick reused the old angle until the robot state came
+      // back over WebSocket. That caused large, delayed, choppy steps.
       jointAnglesDeg[i] = v;
 
       const node = jointNodes[i];
@@ -2865,7 +2921,7 @@
 
     function setActiveJoint(idx){
       activeJoint = clamp(idx,0,5);
-      $('kbBadge').textContent = `J${activeJoint+1} (↑↓/←→)`;
+      $('kbBadge').textContent = `J${activeJoint+1} BUTTON JOG`; // keyboard arrow jogging removed for safety
       document.querySelectorAll('.jointCard').forEach((el)=>{
         const j = Number(el.getAttribute('data-jidx'));
         el.classList.toggle('active', j === activeJoint);
@@ -2943,13 +2999,13 @@
       });
     }
 
-    let keyState = {left:false,right:false,up:false,down:false};
-    let jogTimer = null;
+    // Keyboard arrow jogging has been intentionally removed for safety.
+    // Joint jogging is now only available through the on-screen D-pad buttons.
 
     function getSteps(){
       const step = Number($('stepDeg').value || 1.0);
       const small = isFinite(step) ? step : 1.0;
-      const big = small * 5;
+      const big = small * 2;
       return {small, big};
     }
     function repeatIntervalMs(){
@@ -2957,61 +3013,13 @@
       return 1000 / Math.max(1, (isFinite(hz) ? hz : 30));
     }
 
-    function doJogOnceFromState(){
-      // urModel guard removed: jog must work even without GLB loaded
-      const {small, big} = getSteps();
-      let delta = 0;
-      if(keyState.up) delta += small;
-      if(keyState.down) delta -= small;
-      if(keyState.right) delta += big;
-      if(keyState.left) delta -= big;
-      if(delta === 0) return;
-      applyJointAngle(activeJoint, jointAnglesDeg[activeJoint] + delta);
-    }
-
-    function startJogLoop(){
-      if(jogTimer) return;
-      jogTimer = setInterval(doJogOnceFromState, repeatIntervalMs());
-    }
-    function stopJogLoop(){
-      if(!jogTimer) return;
-      clearInterval(jogTimer);
-      jogTimer = null;
-    }
-
-    // 使用 document 监听全局键盘事件，只要不在输入框里就能触发
-    document.addEventListener('keydown', (ev)=>{
-      if(isTypingInInput()) return;
-      const k = ev.key;
-      if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(k)){
-        ev.preventDefault();
-        if(k==='ArrowUp') keyState.up = true;
-        if(k==='ArrowDown') keyState.down = true;
-        if(k==='ArrowLeft') keyState.left = true;
-        if(k==='ArrowRight') keyState.right = true;
-        startJogLoop();
-      }
-    }, {passive:false});
-
-    document.addEventListener('keyup', (ev)=>{
-      const k = ev.key;
-      if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(k)){
-        ev.preventDefault();
-        if(k==='ArrowUp') keyState.up = false;
-        if(k==='ArrowDown') keyState.down = false;
-        if(k==='ArrowLeft') keyState.left = false;
-        if(k==='ArrowRight') keyState.right = false;
-        if(!keyState.up && !keyState.down && !keyState.left && !keyState.right) stopJogLoop();
-      }
-    }, {passive:false});
-
     let btnHold = {act:null};
     let btnTimer = null;
     function startButtonHoldJog(act){
       btnHold.act = act;
       if(btnTimer) clearInterval(btnTimer);
       const run = ()=>{
-        // urModel guard removed: jog must work even without GLB loaded
+        if(!urModel) return;
         const {small, big} = getSteps();
         let delta = 0;
         if(act==='up') delta = +small;
@@ -3164,6 +3172,279 @@
           }).join('');
       }
     }
+
+
+    // ================================================================
+    // SONAIR — Freedrive + Virtual Joystick
+    // Wrapped in an IIFE that defers init via setTimeout(0) to ensure
+    // all DOM elements (panels inserted above) are fully parsed.
+    // ================================================================
+    (function sonairControls() {
+
+      function el(id) { return document.getElementById(id); }
+
+      // Returns true if local WebSocket is open AND we have motion authority
+      function localOk() {
+        if (!isLocalConnected || !localWs || localWs.readyState !== WebSocket.OPEN) return false;
+        // Host owns the robot; allowed unless authority explicitly given to guest
+        if (xsite.role === 'host')  return xsite.authority !== 'remote-operator';
+        // Guest needs operator grant
+        if (xsite.role === 'guest') return xsite.authority === 'operator';
+        return false;
+      }
+
+      function sendCmd(msg) {
+        if (!localOk()) { setHint('Not connected or no motion authority.'); return false; }
+        localWs.send(JSON.stringify(msg));
+        return true;
+      }
+
+      // ── FREEDRIVE ───────────────────────────────────────────────────
+      let fdActive = false, fdSpaceDown = false;
+
+      function getFreeAxes() {
+        return ['fdX','fdY','fdZ','fdRx','fdRy','fdRz'].map(id => {
+          const e = el(id); return (e && e.checked) ? 1 : 0;
+        });
+      }
+
+      window.sendFreedriveStart = function() {
+        if (fdActive) return;
+        if (!sendCmd({ type:'freedrive_start', freeAxes:getFreeAxes() })) return;
+        fdActive = true;
+        const b = el('freedriveBadge');
+        if (b) { b.textContent='ACTIVE'; b.className='badge warn'; }
+        const btn = el('freedriveBtn');
+        if (btn) btn.style.background = 'rgba(210,153,34,0.2)';
+        setHint('FREEDRIVE ACTIVE — release to stop');
+      };
+
+      window.sendFreedriveStop = function() {
+        if (!fdActive) return;
+        fdActive = false;
+        const b = el('freedriveBadge');
+        if (b) { b.textContent='OFF'; b.className='badge'; }
+        const btn = el('freedriveBtn');
+        if (btn) btn.style.background = '#21262d';
+        if (isLocalConnected && localWs && localWs.readyState === WebSocket.OPEN)
+          localWs.send(JSON.stringify({ type:'freedrive_stop' }));
+        setHint('Freedrive stopped.');
+      };
+
+      // Keyboard Space — separate listener, does NOT touch arrow key handlers
+      document.addEventListener('keydown', ev => {
+        if (isTypingInInput()) return;
+        if (ev.code === 'Space' && !fdSpaceDown) {
+          ev.preventDefault(); fdSpaceDown = true; window.sendFreedriveStart();
+        }
+      });
+      document.addEventListener('keyup', ev => {
+        if (ev.code === 'Space') { fdSpaceDown = false; window.sendFreedriveStop(); }
+      });
+
+      // ── VIRTUAL JOYSTICK ────────────────────────────────────────────
+      // speedl via 30002 command socket — high-rate dead-man control.
+      const VJ = { mode:'XY', timer:null, rightGuard:false,
+                   L:{dx:0,dy:0,active:false}, R:{dx:0,dy:0,active:false} };
+      const HZ=50, INT=20, T=0.08, VJR=55, THUMB=17, DEAD=0.05;
+
+      function getSpeed() {
+        const v = parseInt(el('vjoySpeed')?.value||8);
+        const ms = v*0.01;  // 1-20 → 0.01-0.20 m/s, smoother and safer
+        const lbl = el('vjoySpeedVal');
+        if(lbl) lbl.textContent = (ms*1000).toFixed(0)+'mm/s';
+        return ms;
+      }
+      function getRotSpeed() { return parseInt(el('vjoySpeed')?.value||8)*0.012; }
+
+      function drawStick(id, dx, dy) {
+        const canvas = el(id); if(!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const W=canvas.width, H=canvas.height, cx=W/2, cy=H/2;
+        const mag = Math.sqrt(dx*dx+dy*dy);
+        ctx.clearRect(0,0,W,H);
+        // base
+        ctx.beginPath(); ctx.arc(cx,cy,VJR,0,Math.PI*2);
+        ctx.fillStyle='#060a06'; ctx.fill();
+        if(mag>DEAD){ctx.shadowColor='#3fb950';ctx.shadowBlur=6;}
+        ctx.strokeStyle=mag>DEAD?'#3fb950':'#1a2e1a'; ctx.lineWidth=2; ctx.stroke();
+        ctx.shadowBlur=0;
+        // crosshair
+        ctx.strokeStyle='#1a2a1a'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(cx-VJR+8,cy); ctx.lineTo(cx+VJR-8,cy); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx,cy-VJR+8); ctx.lineTo(cx,cy+VJR-8); ctx.stroke();
+        // velocity fill
+        if(mag>DEAD){
+          ctx.beginPath(); ctx.arc(cx,cy,VJR*mag*0.85,0,Math.PI*2);
+          ctx.fillStyle='rgba(63,185,80,0.08)'; ctx.fill();
+        }
+        // thumb
+        const tx=cx+dx*VJR, ty=cy+dy*VJR;
+        const g=ctx.createRadialGradient(tx-4,ty-4,1,tx,ty,THUMB);
+        g.addColorStop(0,mag>DEAD?'#79c0ff':'#4caf50');
+        g.addColorStop(1,mag>DEAD?'#1f6feb55':'#2e7d3255');
+        ctx.beginPath(); ctx.arc(tx,ty,THUMB,0,Math.PI*2);
+        ctx.fillStyle=g; ctx.fill();
+        ctx.strokeStyle=mag>DEAD?'#58a6ff88':'#3fb95055'; ctx.lineWidth=1.5; ctx.stroke();
+        // speed text
+        if(mag>DEAD){
+          ctx.fillStyle='#3fb950bb'; ctx.font='bold 9px monospace';
+          ctx.textAlign='center';
+          ctx.fillText((mag*getSpeed()*1000).toFixed(0)+'mm/s', cx, H-5);
+        }
+      }
+
+      // cubic curve: gentle near centre, fast at edges
+      function ax(v) {
+        if(Math.abs(v)<DEAD) return 0;
+        const s=v<0?-1:1, a=(Math.abs(v)-DEAD)/(1-DEAD);
+        return s*a*a*a;
+      }
+
+      function buildSpeedl() {
+        const L=VJ.L, R=VJ.R, ms=getSpeed(), mr=getRotSpeed();
+        let vx=0,vy=0,vz=0,wx=0,wy=0,wz=0;
+        if(VJ.mode==='XY'){
+          vx= ax(L.dx)*ms; vy=-ax(L.dy)*ms;
+          vz=-ax(R.dy)*ms; wz= ax(R.dx)*mr;
+        } else if(VJ.mode==='XZ'){
+          vx= ax(L.dx)*ms; vz=-ax(L.dy)*ms;
+          vy=-ax(R.dy)*ms; wz= ax(R.dx)*mr;
+        } else {
+          wx= ax(L.dx)*mr; wy=-ax(L.dy)*mr;
+          wz= ax(R.dx)*mr; vz=-ax(R.dy)*ms;
+        }
+        return [vx,vy,vz,wx,wy,wz];
+      }
+
+      function vjStop() {
+        if(VJ.timer){clearInterval(VJ.timer);VJ.timer=null;}
+        VJ.rightGuard=false;
+        VJ.L.dx=VJ.L.dy=VJ.R.dx=VJ.R.dy=0;
+        drawStick('vjoyL',0,0); drawStick('vjoyR',0,0);
+        if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+      }
+
+      function vjTick() {
+        const L=VJ.L, R=VJ.R;
+        const any=L.active||R.active||Math.abs(L.dx)>DEAD||Math.abs(L.dy)>DEAD
+                 ||Math.abs(R.dx)>DEAD||Math.abs(R.dy)>DEAD;
+        if(!any){vjStop();return;}
+        // Dual dead-man protection: left-drag positions the joystick, but
+        // UR motion is only sent while the right mouse button is also held.
+        if(!VJ.rightGuard){
+          if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+          return;
+        }
+        const xd=buildSpeedl();
+        if(xd.every(v=>Math.abs(v)<1e-5)) return;
+        sendCmd({type:'speedl',xd,a:1.0,t:T});
+      }
+
+      function attachStick(id, state) {
+        const canvas=el(id); if(!canvas) return;
+        drawStick(id,0,0);
+        function getXY(e){
+          const r=canvas.getBoundingClientRect();
+          const src=e.touches?e.touches[0]:e;
+          const sx=canvas.width/r.width, sy=canvas.height/r.height;
+          let dx=((src.clientX-r.left)*sx-canvas.width/2)/VJR;
+          let dy=((src.clientY-r.top)*sy-canvas.height/2)/VJR;
+          const m=Math.sqrt(dx*dx+dy*dy); if(m>1){dx/=m;dy/=m;}
+          return {dx,dy};
+        }
+        function onStart(e){
+          // Left mouse positions the joystick. Movement requires the right
+          // mouse button to be held at the same time.
+          if(e.type === 'mousedown' && e.button !== 0) return;
+          e.preventDefault(); state.active=true;
+          VJ.rightGuard = !!(e.buttons & 2);
+          const p=getXY(e); state.dx=p.dx; state.dy=p.dy;
+          drawStick(id,p.dx,p.dy);
+          if(!VJ.timer) VJ.timer=setInterval(vjTick,INT);
+        }
+        function onMove(e){
+          if(!state.active) return; e.preventDefault();
+          const p=getXY(e); state.dx=p.dx; state.dy=p.dy;
+          drawStick(id,p.dx,p.dy);
+        }
+        function onEnd(){
+          state.active=false; state.dx=0; state.dy=0;
+          drawStick(id,0,0);
+          const other=(state===VJ.L)?VJ.R:VJ.L;
+          if(!other.active) vjStop();
+        }
+        canvas.addEventListener('contextmenu', e=>e.preventDefault());
+        canvas.addEventListener('mousedown',  onStart,{passive:false});
+        // Touch control is disabled for the TCP joystick because the new safety
+        // rule requires a two-button mouse dead-man input.
+        window.addEventListener('mousemove', e=>{if(state.active) onMove(e);});
+        window.addEventListener('mousedown', e=>{
+          if(e.button===2 && (VJ.L.active || VJ.R.active)){
+            e.preventDefault(); VJ.rightGuard=true;
+            if(!VJ.timer) VJ.timer=setInterval(vjTick,INT);
+          }
+        }, {passive:false});
+        window.addEventListener('mouseup', e=>{
+          if(e.button===2){
+            VJ.rightGuard=false;
+            if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+            return;
+          }
+          if(e.button===0 && state.active) onEnd();
+        });
+      }
+
+      function setMode(mode){
+        VJ.mode=mode;
+        const lbl={XY:{b:'XY·Z',lL:'← X / Y ↑',lR:'↑ Z / Rz →'},
+                   XZ:{b:'XZ·Y',lL:'← X / Z ↑',lR:'↑ Y / Rz →'},
+                   ROT:{b:'Rx·Ry',lL:'← Rx / Ry ↑',lR:'↑ Z / Rz →'}}[mode];
+        const mb=el('vjoyModeBadge'); if(mb) mb.textContent=lbl.b;
+        const lL=el('vjoyLLabel'); if(lL) lL.textContent=lbl.lL;
+        const lR=el('vjoyRLabel'); if(lR) lR.textContent=lbl.lR;
+        ['vjoyModeXY','vjoyModeXZ','vjoyModeRot'].forEach(id=>{
+          const e=el(id); if(!e) return;
+          e.style.borderColor='#30363d'; e.style.color='#8b949e'; e.style.background='transparent';
+        });
+        const se=el({XY:'vjoyModeXY',XZ:'vjoyModeXZ',ROT:'vjoyModeRot'}[mode]);
+        if(se){se.style.borderColor='#3fb950';se.style.color='#3fb950';se.style.background='#0d2b0d';}
+      }
+
+      function init() {
+        // Freedrive button
+        const fdBtn=el('freedriveBtn');
+        if(fdBtn){
+          fdBtn.addEventListener('mousedown',  e=>{e.preventDefault();window.sendFreedriveStart();},{passive:false});
+          fdBtn.addEventListener('mouseup',    ()=>window.sendFreedriveStop());
+          fdBtn.addEventListener('mouseleave', ()=>window.sendFreedriveStop());
+          fdBtn.addEventListener('touchstart', e=>{e.preventDefault();window.sendFreedriveStart();},{passive:false});
+          fdBtn.addEventListener('touchend',   ()=>window.sendFreedriveStop());
+          fdBtn.addEventListener('touchcancel',()=>window.sendFreedriveStop());
+        }
+        // Joysticks
+        attachStick('vjoyL',VJ.L);
+        attachStick('vjoyR',VJ.R);
+        // Speed slider
+        const sp=el('vjoySpeed');
+        if(sp) sp.addEventListener('input',()=>{
+          getSpeed();
+          drawStick('vjoyL',VJ.L.dx,VJ.L.dy);
+          drawStick('vjoyR',VJ.R.dx,VJ.R.dy);
+        });
+        getSpeed();
+        // Mode buttons
+        const bXY=el('vjoyModeXY'),bXZ=el('vjoyModeXZ'),bRot=el('vjoyModeRot');
+        if(bXY)  bXY.addEventListener('click', ()=>setMode('XY'));
+        if(bXZ)  bXZ.addEventListener('click', ()=>setMode('XZ'));
+        if(bRot) bRot.addEventListener('click',()=>setMode('ROT'));
+        setMode('XY');
+      }
+
+      // Defer to ensure panels are fully parsed
+      setTimeout(init, 0);
+
+    })(); // end sonairControls
 
     $('capturePoseBtn').addEventListener('click', ()=>{
       const degs = [...jointAnglesDeg], rads = degs.map(rad);
@@ -3663,9 +3944,13 @@
         localWs.close();
         return;
       }
-      const wsUrl = $('localWsIp').value;
+      const wsUrl = ($('localWsIp').value || 'ws://127.0.0.1:8765').trim();
       $('localWsStatus').textContent = 'CONNECTING'; $('localWsStatus').className = 'badge warn';
-      try { localWs = new WebSocket(wsUrl); } catch (e) { return; }
+      try { localWs = new WebSocket(wsUrl); } catch (e) {
+        $('localWsStatus').textContent = 'CONNECT FAILED'; $('localWsStatus').className = 'badge err';
+        setHint('Local bridge address invalid. Use ws://127.0.0.1:8765');
+        return;
+      }
 
       localWs.onopen = () => {
         isLocalConnected = true;
@@ -3684,6 +3969,10 @@
         $('localWsStatus').textContent = 'LINK ACTIVE'; $('localWsStatus').className = 'badge success';
         setUrState('LOCAL UR CONNECTED', 'badge success');
         const ind = $('sysIndicator_local'); if(ind){ ind.className = 'sys-dot ok'; }
+      };
+      localWs.onerror = () => {
+        $('localWsStatus').textContent = 'CONNECT FAILED'; $('localWsStatus').className = 'badge err';
+        setHint('Cannot connect to local bridge. Check python bridge is running and use ws://127.0.0.1:8765');
       };
       localWs.onclose = () => {
         isLocalConnected = false;
@@ -3957,15 +4246,18 @@
         $('remoteWsStatus').textContent = 'OFFLINE'; $('remoteWsStatus').className = 'badge';
         $('qosBadge').textContent = '—'; $('qosBadge').className = 'badge';
         $('rttVal').textContent = '— ms'; $('jitterVal').textContent = '— ms';
-        // safety: on link drop, if remote was driving, stop the UR
-        if(xsite.authority === 'remote-operator' && localWs && localWs.readyState === WebSocket.OPEN){
-          localWs.send(JSON.stringify({ type: 'estop' }));
-          audit('REJ', 'link_drop', 'auto E-STOP — remote was operator');
-          const safe = $('sysIndicator_safety'); if(safe){ safe.className = 'sys-dot err'; }
+        if(xsite.authority === 'remote-operator') {
+          if(localWs && localWs.readyState === WebSocket.OPEN){
+            localWs.send(JSON.stringify({ type: 'estop' }));
+            audit('REJ', 'link_drop', 'auto E-STOP — remote was operator');
+            const safe = $('sysIndicator_safety'); if(safe){ safe.className = 'sys-dot err'; }
+          }
         }
         setAuthorityBadge('observer');
-        $('authPeerInfo').textContent = 'Link closed.';
+        xsite.pendingGrantFrom = null;
+        $('authPeerInfo').textContent = 'Link closed — authority returned to host.';
         stopHeartbeat();
+        if(typeof window.sendFreedriveStop === 'function') window.sendFreedriveStop();
         const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot idle'; }
       };
       remoteWs.onmessage = handleRemoteWsMessage;
@@ -4467,5 +4759,174 @@
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once:true});
     else boot();
   </script>
-</body>
+
+<script>
+/* -------------------------------------------------------------------------
+   Live 2D Streams control fix
+   - This only wires the existing RGB/Depth/IR buttons and camera config button.
+   - It does not modify UR motion, freedrive, joystick, remote authority, or 3D loading.
+   ------------------------------------------------------------------------- */
+(function(){
+  const $id = (id) => document.getElementById(id);
+  const streamState = {
+    rgb:   true,
+    depth: true,
+    ir1:   false,
+    ir2:   false
+  };
+
+  function setBtn(btn, on, label){
+    if(!btn) return;
+    btn.textContent = label + (on ? ' ON' : ' OFF');
+    btn.className = on ? 'btn success' : 'btn outline';
+    btn.style.flex = '1';
+    btn.style.padding = '4px';
+  }
+
+  function setContainer(kind, on){
+    const ids = {rgb:'rgbContainer', depth:'depthContainer', ir1:'ir1Container', ir2:'ir2Container'};
+    const imgIds = {rgb:'rsRgbImg', depth:'rsDepthImg', ir1:'rsIr1Img', ir2:'rsIr2Img'};
+    const hintIds = {rgb:'rgbHint', depth:'depthHint', ir1:'ir1Hint', ir2:'ir2Hint'};
+    const c = $id(ids[kind]);
+    if(c) c.style.display = on ? 'block' : 'none';
+    if(!on){
+      const img = $id(imgIds[kind]);
+      const hint = $id(hintIds[kind]);
+      if(img) img.style.display = 'none';
+      if(hint){ hint.style.display = 'inline'; hint.textContent = kind.toUpperCase() + ' stream hidden'; }
+    }
+  }
+
+  function collectCameraConfig(){
+    return {
+      stereo_res:  ($id('rsStereoRes')?.value || '640x480'),
+      stereo_fps:  Number($id('rsStereoFps')?.value || 30),
+      depth_en:    !!$id('rsDepthStreamChk')?.checked,
+      ir1_en:      !!$id('rsIr1Chk')?.checked,
+      ir2_en:      !!$id('rsIr2Chk')?.checked,
+      emitter:     ($id('rsEmitter')?.value || 'laser'),
+      depth_ae:    !!$id('rsDepthAeChk')?.checked,
+      post_proc:   !!$id('rsDepthPpChk')?.checked,
+      rgb_res:     ($id('rsRgbRes')?.value || '640x360'),
+      rgb_fps:     Number($id('rsRgbFps')?.value || 30),
+      rgb_en:      !!$id('rsRgbStreamChk')?.checked,
+      rgb_ae:      !!$id('rsRgbAeChk')?.checked,
+      show_rgb:    streamState.rgb,
+      show_depth:  streamState.depth,
+      show_ir1:    streamState.ir1,
+      show_ir2:    streamState.ir2
+    };
+  }
+
+  function sendCameraConfig(reason){
+    const cfg = collectCameraConfig();
+    let sent = false;
+    try{
+      if(typeof localWs !== 'undefined' && localWs && localWs.readyState === WebSocket.OPEN){
+        localWs.send(JSON.stringify({type:'camera_config', config: cfg, reason: reason || 'ui'}));
+        sent = true;
+      }
+    }catch(_e){}
+    try{
+      if(typeof setHint === 'function'){
+        setHint(sent ? 'Camera stream settings updated.' : 'Camera stream view updated locally. Connect Local Bridge to sync camera settings.');
+      }
+    }catch(_e){}
+  }
+
+  function refreshLiveUi(sync){
+    setBtn($id('toggleRgbViewBtn'), streamState.rgb, 'RGB');
+    setBtn($id('toggleDepthViewBtn'), streamState.depth, 'Depth');
+    setBtn($id('toggleIr1ViewBtn'), streamState.ir1, 'IR1');
+    setBtn($id('toggleIr2ViewBtn'), streamState.ir2, 'IR2');
+    setContainer('rgb', streamState.rgb);
+    setContainer('depth', streamState.depth);
+    setContainer('ir1', streamState.ir1);
+    setContainer('ir2', streamState.ir2);
+    if(sync) sendCameraConfig('stream_toggle');
+  }
+
+  function bindLiveButtons(){
+    const map = [
+      ['toggleRgbViewBtn','rgb'],
+      ['toggleDepthViewBtn','depth'],
+      ['toggleIr1ViewBtn','ir1'],
+      ['toggleIr2ViewBtn','ir2']
+    ];
+    map.forEach(([bid,key])=>{
+      const b = $id(bid);
+      if(b && !b.dataset.streamBound){
+        b.dataset.streamBound = '1';
+        b.addEventListener('click', (e)=>{
+          e.preventDefault();
+          streamState[key] = !streamState[key];
+          // Keep the camera module stream checkboxes aligned for IR streams.
+          if(key === 'rgb' && $id('rsRgbStreamChk')) $id('rsRgbStreamChk').checked = streamState.rgb;
+          if(key === 'depth' && $id('rsDepthStreamChk')) $id('rsDepthStreamChk').checked = streamState.depth;
+          if(key === 'ir1' && $id('rsIr1Chk')) $id('rsIr1Chk').checked = streamState.ir1;
+          if(key === 'ir2' && $id('rsIr2Chk')) $id('rsIr2Chk').checked = streamState.ir2;
+          refreshLiveUi(true);
+          try{ if(typeof focusKeyCatcher === 'function') focusKeyCatcher(); }catch(_e){}
+        });
+      }
+    });
+    const apply = $id('applyRsConfigBtn');
+    if(apply && !apply.dataset.configBound){
+      apply.dataset.configBound = '1';
+      apply.addEventListener('click', (e)=>{
+        e.preventDefault();
+        sendCameraConfig('apply_button');
+        try{ if(typeof focusKeyCatcher === 'function') focusKeyCatcher(); }catch(_e){}
+      });
+    }
+    refreshLiveUi(false);
+  }
+
+  // Wrap existing shared websocket handler to apply camera_config_ack without
+  // interfering with robot state / camera_frame / tcp_pose parsing.
+  const oldShared = (typeof handleSharedWsMessage === 'function') ? handleSharedWsMessage : null;
+  if(oldShared && !oldShared.__live2dWrapped){
+    window.handleSharedWsMessage = function(event){
+      let parsed = null;
+      try{ parsed = JSON.parse(event.data); }catch(_e){}
+      if(parsed && parsed.type === 'camera_config_ack'){
+        const c = parsed.config || {};
+        if(typeof c.show_rgb === 'boolean') streamState.rgb = c.show_rgb;
+        if(typeof c.show_depth === 'boolean') streamState.depth = c.show_depth;
+        if(typeof c.show_ir1 === 'boolean') streamState.ir1 = c.show_ir1;
+        if(typeof c.show_ir2 === 'boolean') streamState.ir2 = c.show_ir2;
+        refreshLiveUi(false);
+        const badge = $id('rsStatusBadge');
+        if(badge){
+          badge.textContent = parsed.camera_available ? 'STREAMING' : 'CAMERA IDLE';
+          badge.className = parsed.camera_available ? 'badge info' : 'badge warn';
+        }
+        return;
+      }
+      return oldShared(event);
+    };
+    window.handleSharedWsMessage.__live2dWrapped = true;
+  }
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindLiveButtons, {once:true});
+  else bindLiveButtons();
+})();
+</script>
+<script>
+(function(){
+  function wireLoadUrButton(){
+    var btn=document.getElementById('loadUrModelBtn');
+    var input=document.getElementById('urFile');
+    if(btn && input && !btn.dataset.bound){
+      btn.dataset.bound='1';
+      btn.addEventListener('click', function(e){
+        e.preventDefault();
+        input.click();
+      });
+    }
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireLoadUrButton);
+  else wireLoadUrButton();
+})();
+</script></body>
 </html>
