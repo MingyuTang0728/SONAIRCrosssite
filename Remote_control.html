@@ -3193,10 +3193,33 @@
         return false;
       }
 
+      function remoteOk() {
+        return xsite.role === 'guest'
+          && xsite.authority === 'operator'
+          && isRemoteConnected
+          && remoteWs
+          && remoteWs.readyState === WebSocket.OPEN;
+      }
+
       function sendCmd(msg) {
-        if (!localOk()) { setHint('Not connected or no motion authority.'); return false; }
-        localWs.send(JSON.stringify(msg));
-        return true;
+        // Host/UoN path: direct low-latency local bridge to the robot.
+        if (localOk()) {
+          localWs.send(JSON.stringify(msg));
+          return true;
+        }
+        // Guest/UCL path: after host grant, send motion via the relay.
+        // This is essential for Tailscale/cross-site operation because the
+        // guest browser will not have a local ws://127.0.0.1:8765 bridge.
+        if (remoteOk()) {
+          const out = Object.assign({}, msg, {
+            seq: ++xsite.cmdSeq,
+            ts: Date.now()
+          });
+          remoteWs.send(JSON.stringify(out));
+          return true;
+        }
+        setHint('Not connected or no motion authority.');
+        return false;
       }
 
       // ── FREEDRIVE ───────────────────────────────────────────────────
@@ -3226,8 +3249,7 @@
         if (b) { b.textContent='OFF'; b.className='badge'; }
         const btn = el('freedriveBtn');
         if (btn) btn.style.background = '#21262d';
-        if (isLocalConnected && localWs && localWs.readyState === WebSocket.OPEN)
-          localWs.send(JSON.stringify({ type:'freedrive_stop' }));
+        sendCmd({ type:'freedrive_stop' });
         setHint('Freedrive stopped.');
       };
 
@@ -3322,7 +3344,7 @@
         VJ.rightGuard=false;
         VJ.L.dx=VJ.L.dy=VJ.R.dx=VJ.R.dy=0;
         drawStick('vjoyL',0,0); drawStick('vjoyR',0,0);
-        if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+        sendCmd({type:'speedl_stop'});
       }
 
       function vjTick() {
@@ -3333,7 +3355,7 @@
         // Dual dead-man protection: left-drag positions the joystick, but
         // UR motion is only sent while the right mouse button is also held.
         if(!VJ.rightGuard){
-          if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+          sendCmd({type:'speedl_stop'});
           return;
         }
         const xd=buildSpeedl();
@@ -3388,7 +3410,7 @@
         window.addEventListener('mouseup', e=>{
           if(e.button===2){
             VJ.rightGuard=false;
-            if(localOk()) localWs.send(JSON.stringify({type:'speedl_stop'}));
+            sendCmd({type:'speedl_stop'});
             return;
           }
           if(e.button===0 && state.active) onEnd();
@@ -4759,159 +4781,6 @@
     if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once:true});
     else boot();
   </script>
-
-<script>
-/* -------------------------------------------------------------------------
-   Live 2D Streams control fix
-   - This only wires the existing RGB/Depth/IR buttons and camera config button.
-   - It does not modify UR motion, freedrive, joystick, remote authority, or 3D loading.
-   ------------------------------------------------------------------------- */
-(function(){
-  const $id = (id) => document.getElementById(id);
-  const streamState = {
-    rgb:   true,
-    depth: true,
-    ir1:   false,
-    ir2:   false
-  };
-
-  function setBtn(btn, on, label){
-    if(!btn) return;
-    btn.textContent = label + (on ? ' ON' : ' OFF');
-    btn.className = on ? 'btn success' : 'btn outline';
-    btn.style.flex = '1';
-    btn.style.padding = '4px';
-  }
-
-  function setContainer(kind, on){
-    const ids = {rgb:'rgbContainer', depth:'depthContainer', ir1:'ir1Container', ir2:'ir2Container'};
-    const imgIds = {rgb:'rsRgbImg', depth:'rsDepthImg', ir1:'rsIr1Img', ir2:'rsIr2Img'};
-    const hintIds = {rgb:'rgbHint', depth:'depthHint', ir1:'ir1Hint', ir2:'ir2Hint'};
-    const c = $id(ids[kind]);
-    if(c) c.style.display = on ? 'block' : 'none';
-    if(!on){
-      const img = $id(imgIds[kind]);
-      const hint = $id(hintIds[kind]);
-      if(img) img.style.display = 'none';
-      if(hint){ hint.style.display = 'inline'; hint.textContent = kind.toUpperCase() + ' stream hidden'; }
-    }
-  }
-
-  function collectCameraConfig(){
-    return {
-      stereo_res:  ($id('rsStereoRes')?.value || '640x480'),
-      stereo_fps:  Number($id('rsStereoFps')?.value || 30),
-      depth_en:    !!$id('rsDepthStreamChk')?.checked,
-      ir1_en:      !!$id('rsIr1Chk')?.checked,
-      ir2_en:      !!$id('rsIr2Chk')?.checked,
-      emitter:     ($id('rsEmitter')?.value || 'laser'),
-      depth_ae:    !!$id('rsDepthAeChk')?.checked,
-      post_proc:   !!$id('rsDepthPpChk')?.checked,
-      rgb_res:     ($id('rsRgbRes')?.value || '640x360'),
-      rgb_fps:     Number($id('rsRgbFps')?.value || 30),
-      rgb_en:      !!$id('rsRgbStreamChk')?.checked,
-      rgb_ae:      !!$id('rsRgbAeChk')?.checked,
-      show_rgb:    streamState.rgb,
-      show_depth:  streamState.depth,
-      show_ir1:    streamState.ir1,
-      show_ir2:    streamState.ir2
-    };
-  }
-
-  function sendCameraConfig(reason){
-    const cfg = collectCameraConfig();
-    let sent = false;
-    try{
-      if(typeof localWs !== 'undefined' && localWs && localWs.readyState === WebSocket.OPEN){
-        localWs.send(JSON.stringify({type:'camera_config', config: cfg, reason: reason || 'ui'}));
-        sent = true;
-      }
-    }catch(_e){}
-    try{
-      if(typeof setHint === 'function'){
-        setHint(sent ? 'Camera stream settings updated.' : 'Camera stream view updated locally. Connect Local Bridge to sync camera settings.');
-      }
-    }catch(_e){}
-  }
-
-  function refreshLiveUi(sync){
-    setBtn($id('toggleRgbViewBtn'), streamState.rgb, 'RGB');
-    setBtn($id('toggleDepthViewBtn'), streamState.depth, 'Depth');
-    setBtn($id('toggleIr1ViewBtn'), streamState.ir1, 'IR1');
-    setBtn($id('toggleIr2ViewBtn'), streamState.ir2, 'IR2');
-    setContainer('rgb', streamState.rgb);
-    setContainer('depth', streamState.depth);
-    setContainer('ir1', streamState.ir1);
-    setContainer('ir2', streamState.ir2);
-    if(sync) sendCameraConfig('stream_toggle');
-  }
-
-  function bindLiveButtons(){
-    const map = [
-      ['toggleRgbViewBtn','rgb'],
-      ['toggleDepthViewBtn','depth'],
-      ['toggleIr1ViewBtn','ir1'],
-      ['toggleIr2ViewBtn','ir2']
-    ];
-    map.forEach(([bid,key])=>{
-      const b = $id(bid);
-      if(b && !b.dataset.streamBound){
-        b.dataset.streamBound = '1';
-        b.addEventListener('click', (e)=>{
-          e.preventDefault();
-          streamState[key] = !streamState[key];
-          // Keep the camera module stream checkboxes aligned for IR streams.
-          if(key === 'rgb' && $id('rsRgbStreamChk')) $id('rsRgbStreamChk').checked = streamState.rgb;
-          if(key === 'depth' && $id('rsDepthStreamChk')) $id('rsDepthStreamChk').checked = streamState.depth;
-          if(key === 'ir1' && $id('rsIr1Chk')) $id('rsIr1Chk').checked = streamState.ir1;
-          if(key === 'ir2' && $id('rsIr2Chk')) $id('rsIr2Chk').checked = streamState.ir2;
-          refreshLiveUi(true);
-          try{ if(typeof focusKeyCatcher === 'function') focusKeyCatcher(); }catch(_e){}
-        });
-      }
-    });
-    const apply = $id('applyRsConfigBtn');
-    if(apply && !apply.dataset.configBound){
-      apply.dataset.configBound = '1';
-      apply.addEventListener('click', (e)=>{
-        e.preventDefault();
-        sendCameraConfig('apply_button');
-        try{ if(typeof focusKeyCatcher === 'function') focusKeyCatcher(); }catch(_e){}
-      });
-    }
-    refreshLiveUi(false);
-  }
-
-  // Wrap existing shared websocket handler to apply camera_config_ack without
-  // interfering with robot state / camera_frame / tcp_pose parsing.
-  const oldShared = (typeof handleSharedWsMessage === 'function') ? handleSharedWsMessage : null;
-  if(oldShared && !oldShared.__live2dWrapped){
-    window.handleSharedWsMessage = function(event){
-      let parsed = null;
-      try{ parsed = JSON.parse(event.data); }catch(_e){}
-      if(parsed && parsed.type === 'camera_config_ack'){
-        const c = parsed.config || {};
-        if(typeof c.show_rgb === 'boolean') streamState.rgb = c.show_rgb;
-        if(typeof c.show_depth === 'boolean') streamState.depth = c.show_depth;
-        if(typeof c.show_ir1 === 'boolean') streamState.ir1 = c.show_ir1;
-        if(typeof c.show_ir2 === 'boolean') streamState.ir2 = c.show_ir2;
-        refreshLiveUi(false);
-        const badge = $id('rsStatusBadge');
-        if(badge){
-          badge.textContent = parsed.camera_available ? 'STREAMING' : 'CAMERA IDLE';
-          badge.className = parsed.camera_available ? 'badge info' : 'badge warn';
-        }
-        return;
-      }
-      return oldShared(event);
-    };
-    window.handleSharedWsMessage.__live2dWrapped = true;
-  }
-
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindLiveButtons, {once:true});
-  else bindLiveButtons();
-})();
-</script>
 <script>
 (function(){
   function wireLoadUrButton(){
