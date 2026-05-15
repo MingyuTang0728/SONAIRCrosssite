@@ -71,9 +71,9 @@ RELAY_PORT   = int(os.environ.get("RELAY_PORT", 8770))
 KEYS_FILE = Path(os.environ.get("SONAIR_KEYS_FILE", "sonair_keys.json"))
 
 # Fallback single-token mode
-AGENT_TOKEN          = os.environ.get("RELAY_AGENT_TOKEN") or os.environ.get("SONAIR_AGENT_TOKEN") or os.environ.get("AGENT_TOKEN") or "agent-default-replace-me"
-OPERATOR_TOKEN_HOST  = os.environ.get("RELAY_HOST_TOKEN") or os.environ.get("SONAIR_HOST_TOKEN") or os.environ.get("HOST_TOKEN") or "host-default-replace-me"
-OPERATOR_TOKEN_GUEST = os.environ.get("RELAY_GUEST_TOKEN") or os.environ.get("SONAIR_GUEST_TOKEN") or os.environ.get("GUEST_TOKEN") or "guest-default-replace-me"
+AGENT_TOKEN          = os.environ.get("RELAY_AGENT_TOKEN", "agent-default-replace-me")
+OPERATOR_TOKEN_HOST  = os.environ.get("RELAY_HOST_TOKEN",  "host-default-replace-me")
+OPERATOR_TOKEN_GUEST = os.environ.get("RELAY_GUEST_TOKEN", "guest-default-replace-me")
 
 # Server-side workspace envelope (defense in depth, even though both
 # the host browser and the agent also enforce it).
@@ -132,18 +132,6 @@ def _load_keys_db():
         return None
 
 
-
-def _validate_env_token(plaintext, expected_role):
-    expected_token = {
-        "agent": AGENT_TOKEN,
-        "host":  OPERATOR_TOKEN_HOST,
-        "guest": OPERATOR_TOKEN_GUEST,
-    }.get(expected_role)
-    if expected_token and plaintext == expected_token and not expected_token.endswith("replace-me"):
-        return True, {"id": "env-mode", "institution": "?", "role": expected_role}
-    return False, "bad_token"
-
-
 def validate_key(plaintext, expected_role, room_id):
     """Returns (ok, key_record_or_reason).
 
@@ -156,12 +144,6 @@ def validate_key(plaintext, expected_role, room_id):
         digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
         rec = db.get(digest)
         if rec is None:
-            # If a keys file is present but does not contain this token,
-            # still allow explicit environment tokens. This prevents a stale
-            # sonair_keys.json from breaking a live demo when env tokens are set.
-            ok_env, info_env = _validate_env_token(plaintext, expected_role)
-            if ok_env:
-                return ok_env, info_env
             return False, "unknown_key"
         if rec.get("revoked"):
             return False, "key_revoked"
@@ -175,7 +157,15 @@ def validate_key(plaintext, expected_role, room_id):
         return True, rec
 
     # ---- Mode B: env-var fallback ----
-    return _validate_env_token(plaintext, expected_role)
+    expected_token = {
+        "agent": AGENT_TOKEN,
+        "host":  OPERATOR_TOKEN_HOST,
+        "guest": OPERATOR_TOKEN_GUEST,
+    }.get(expected_role)
+    if expected_token and plaintext == expected_token \
+       and not expected_token.endswith("replace-me"):
+        return True, {"id": "env-mode", "institution": "?", "role": expected_role}
+    return False, "bad_token"
 
 
 # ============================================================
@@ -311,6 +301,10 @@ def envelope_accepts(pose):
             and ENVELOPE["z_min"] <= z <= ENVELOPE["z_max"])
 
 
+# Motion commands that the relay is allowed to forward to the physical UR agent.
+# speedl/speedl_stop are required by the TCP virtual joystick.
+MOTION_TYPES = ("jog", "movel", "run_script", "speedl", "speedl_stop", "speedj", "speedj_stop", "freedrive_start", "freedrive_stop")
+
 # ============================================================
 # Sending helpers
 # ============================================================
@@ -329,7 +323,6 @@ async def broadcast_room(room, message, exclude=None):
         await safe_send(s, message)
 
 
-
 async def session_public_info(session):
     return {
         "type": "peer_info",
@@ -342,16 +335,21 @@ async def session_public_info(session):
         "client_net": session.client_net,
     }
 
-
 async def relay_ping_loop(session):
-    """Server-originated RTT measurement using relay timestamps."""
+    """Server-originated RTT measurement.
+
+    Browser-originated ping is useful for the UI, but the relay cannot use a
+    client timestamp safely because client/server clocks differ. This loop uses
+    relay timestamps and measures RTT when the browser/agent echoes them in
+    a pong, so latency_to_vcap() is based on measured relay-side latency.
+    """
     try:
         while True:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.25)
             await safe_send(session, {
                 "type": "ping",
                 "ts": int(time.time() * 1000),
-                "source": "relay",
+                "source": "relay"
             })
     except asyncio.CancelledError:
         pass
@@ -412,7 +410,18 @@ async def handle_connection(websocket):
         role    = data.get("role", "")
         site    = data.get("site", "?")
         room_id = data.get("room", "default")
-        client_net = data.get("client_net", {}) if isinstance(data.get("client_net", {}), dict) else {}
+        ua      = data.get("ua") or None
+        client_net = data.get("client_net") or {}
+        peer_ip = None
+        peer_port = None
+        try:
+            peer = websocket.remote_address
+            if isinstance(peer, tuple):
+                peer_ip, peer_port = peer[0], peer[1]
+            else:
+                peer_ip = str(peer)
+        except Exception:
+            pass
 
         if role not in ("agent", "host", "guest"):
             await websocket.send(json.dumps({
@@ -437,15 +446,7 @@ async def handle_connection(websocket):
         log.info("auth OK role=%s key=%s site=%s room=%s",
                  role, key_id, site, room_id)
 
-        peer = getattr(websocket, "remote_address", None)
-        peer_ip, peer_port = (peer[0], peer[1]) if isinstance(peer, tuple) and len(peer) >= 2 else (None, None)
-        user_agent = None
-        try:
-            user_agent = websocket.request_headers.get("User-Agent")
-        except Exception:
-            user_agent = None
-        session = Session(websocket, role, site, room_id, peer_ip=peer_ip, peer_port=peer_port,
-                          user_agent=user_agent, client_net=client_net)
+        session = Session(websocket, role, site, room_id, peer_ip=peer_ip, peer_port=peer_port, user_agent=ua, client_net=client_net)
         room    = await get_or_create_room(room_id)
 
         # Bind session into the room
@@ -479,20 +480,27 @@ async def handle_connection(websocket):
             "agent_online":    room.agent is not None,
             "peer_ip":         session.peer_ip,
             "peer_port":       session.peer_port,
-            "relay_rtt_ms":    session.last_rtt_ms,
+            "server_ts":       int(time.time() * 1000),
         }))
         audit("session_open", session)
-        log.info("session OPEN: id=%s role=%s site=%s room=%s peer=%s:%s",
-                 session.id, role, site, room_id, session.peer_ip, session.peer_port)
-        ping_task = asyncio.create_task(relay_ping_loop(session))
-        await safe_send(session, await session_public_info(session))
+        log.info("session OPEN: id=%s role=%s site=%s room=%s",
+                 session.id, role, site, room_id)
 
         # Notify peers in same room
         await broadcast_room(room, {
             "type":    "peer_hello",
             "name":    f"{site}/{role}",
             "session": session.id,
+            "role":    role,
+            "site":    site,
+            "peer_ip": session.peer_ip,
+            "peer_port": session.peer_port,
         }, exclude=session)
+
+        await safe_send(session, await session_public_info(session))
+
+        # Start relay-side RTT measurement for this session.
+        ping_task = asyncio.create_task(relay_ping_loop(session))
 
     except (asyncio.TimeoutError, json.JSONDecodeError) as e:
         log.warning("auth handshake failed: %s", e)
@@ -515,12 +523,13 @@ async def handle_connection(websocket):
 
             # ---- Liveness ----
             if mtype == "ping":
-                await safe_send(session, {"type": "pong", "ts": data.get("ts"), "seq": data.get("seq"), "source": data.get("source", "client"), "relay_rtt_ms": session.last_rtt_ms})
+                await safe_send(session, {"type": "pong", "ts": data.get("ts"), "seq": data.get("seq"), "server_ts": int(time.time() * 1000)})
                 continue
             if mtype == "pong":
                 ts = data.get("ts")
                 if ts:
                     session.last_rtt_ms = max(0, int(time.time() * 1000) - int(ts))
+                    await safe_send(session, await session_public_info(session))
                 continue
 
             # ====================================================
@@ -631,7 +640,7 @@ async def handle_connection(websocket):
 
             # ---- Motion commands (jog/movel/run_script) ----
             # Server-authoritative gate — no claim from the client matters.
-            if mtype in ("jog", "movel", "run_script", "speedl", "speedl_stop", "speedj", "speedj_stop", "freedrive_start", "freedrive_stop"):
+            if mtype in MOTION_TYPES:
                 if not room.is_writer(session):
                     audit("motion_denied", session,
                           {"mtype": mtype, "reason": "no_authority"})
@@ -683,15 +692,24 @@ async def handle_connection(websocket):
                         "reason": "agent_offline",
                     })
                     continue
-                # Tag origin for the agent's own audit
+                # Tag origin for the agent's own audit and for its local
+                # defense-in-depth authority check. The agent rejects relay-origin
+                # guest motion unless the relay explicitly marks it as granted.
                 data["_origin"] = {
                     "session": session.id,
                     "role":    session.role,
                     "site":    session.site,
                 }
+                data["_origin_role"] = session.role
+                data["_authority_granted"] = room.is_writer(session)
+                data["_relay_rtt_ms"] = session.last_rtt_ms
                 await safe_send(room.agent, data)
                 await safe_send(session, {
-                    "type": "cmd_ack", "seq": data.get("seq")})
+                    "type": "cmd_ack",
+                    "seq": data.get("seq"),
+                    "relay_rtt_ms": session.last_rtt_ms,
+                    "server_ts": int(time.time() * 1000)
+                })
                 continue
 
             # ---- Non-motion control plane (host-only for safety) ----
@@ -714,7 +732,7 @@ async def handle_connection(websocket):
     except Exception as e:
         log.exception("connection loop error: %s", e)
     finally:
-        if ping_task is not None:
+        if ping_task:
             ping_task.cancel()
         if session is not None and room is not None:
             async with room.lock:
