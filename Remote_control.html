@@ -4370,7 +4370,7 @@
       try { const r = await fetch('https://ipapi.co/json/', {cache:'no-store'}); const j = await r.json(); xsite.net.ipGeo = j || null; if(!xsite.net.publicIp && j.ip) xsite.net.publicIp = j.ip; } catch(_e) {}
       updateNetworkUi();
     }
-    function compactPlaceNameFromAddress(addr){
+function compactPlaceNameFromAddress(addr){
       if(!addr) return null;
       const parts = [
         addr.amenity || addr.building || addr.road || addr.neighbourhood || addr.suburb || addr.quarter,
@@ -4381,50 +4381,35 @@
       return [...new Set(parts)].join(', ') || null;
     }
     async function reverseGeocodeBrowserLocation(lat, lon){
-      // This is a real reverse-geocoding request based on the UCL browser's
-      // geolocation coordinates. If the browser/service blocks it, we keep
-      // the verified coordinates and record the lookup error instead of
-      // fabricating a place name.
-      const urls = [
-        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=18&addressdetails=1`,
-        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&localityLanguage=en`
-      ];
-      let lastError = null;
-      for(const url of urls){
-        try{
-          const r = await fetch(url, {cache:'no-store'});
-          if(!r.ok) throw new Error(`HTTP ${r.status}`);
-          const j = await r.json();
-          if(url.includes('nominatim')){
-            return {
-              source:'OpenStreetMap Nominatim',
-              display_name:j.display_name || compactPlaceNameFromAddress(j.address),
-              name:compactPlaceNameFromAddress(j.address),
-              address:j.address || null,
-              raw:j
-            };
-          }
-          return {
-            source:'BigDataCloud reverse-geocode-client',
-            display_name:[j.locality, j.city, j.principalSubdivision, j.countryName].filter(Boolean).join(', ') || null,
-            name:j.locality || j.city || j.principalSubdivision || j.countryName || null,
-            address:j,
-            raw:j
-          };
-        }catch(e){
-          lastError = String(e && e.message ? e.message : e);
-        }
+      try{
+        const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&localityLanguage=en`;
+        const r = await fetch(url, {cache:'no-store'});
+        if(!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        return {
+          source:'BigDataCloud reverse-geocode-client',
+          display_name:[j.locality, j.city, j.principalSubdivision, j.countryName].filter(Boolean).join(', ') || null,
+          name:j.locality || j.city || j.principalSubdivision || j.countryName || null,
+          address:j,
+          raw:j
+        };
+      }catch(e){
+        return {source:null, display_name:null, name:null, error:String(e && e.message ? e.message : e)};
       }
-      return {source:null, display_name:null, name:null, error:lastError};
     }
     function requestBrowserLocation(){
       if(!navigator.geolocation){ alert('Browser Geolocation API is not available.'); return; }
-      navigator.geolocation.getCurrentPosition(async pos => {
+      navigator.geolocation.getCurrentPosition(pos => {
         xsite.net.browserGeo = { latitude:pos.coords.latitude, longitude:pos.coords.longitude, accuracy:pos.coords.accuracy, altitude:pos.coords.altitude, heading:pos.coords.heading, speed:pos.coords.speed, ts:new Date(pos.timestamp).toISOString() };
         xsite.net.browserGeoPlace = {display_name:'Resolving place name…', source:'pending'};
         updateNetworkUi();
-        xsite.net.browserGeoPlace = await reverseGeocodeBrowserLocation(pos.coords.latitude, pos.coords.longitude);
-        updateNetworkUi();
+        reverseGeocodeBrowserLocation(pos.coords.latitude, pos.coords.longitude).then(place => {
+          xsite.net.browserGeoPlace = place;
+          updateNetworkUi();
+        }).catch(e => {
+          xsite.net.browserGeoPlace = {source:null, display_name:null, name:null, error:String(e && e.message ? e.message : e)};
+          updateNetworkUi();
+        });
       }, err => alert('Location was not shared: ' + err.message), {enableHighAccuracy:false, timeout:8000, maximumAge:60000});
     }
     function csvEscape(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
