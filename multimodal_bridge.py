@@ -132,11 +132,7 @@ global_actual_q    = [0.0] * 6
 global_tcp_pose    = [0.0] * 6
 camera_lock        = threading.Lock()
 data_lock          = threading.Lock()
-ur_socket_tx       = None  # 30003 long-lived status socket (RX only)
-ur_control_tx      = None  # 30002 long-lived command socket (TX for jog/speedl)
-ur_control_lock    = threading.Lock()
-camera_available   = False
-camera_thread_started = False
+ur_socket_tx       = None  # 30003 long-lived send socket
 
 # RealSense live camera config — written by camera_config messages,
 # read by camera_thread on the next pipeline restart.
@@ -195,14 +191,8 @@ def send_urscript_to_robot(script_content, stop_first=False):
     stop_first=False (default): inject directly without stopping UR first.
       This preserves 30003 real-time data flow (no more recv timeouts).
     stop_first=True: send dashboard stop before injection (only for long URP programs).
-
-    Important: URScript sent over a socket should be newline-terminated.
-    Without the final newline, short one-line commands such as speedl/stopl or
-    freedrive snippets can appear to be sent but not actually execute.
     """
     try:
-        if not script_content.endswith("\n"):
-            script_content += "\n"
         if stop_first:
             send_dashboard_cmd("stop")
             time.sleep(0.05)
@@ -218,83 +208,22 @@ def send_urscript_to_robot(script_content, stop_first=False):
 
 
 def send_realtime_script(script_content):
-    """Send small URScript motion commands through the 30002 command socket.
-
-    Important change: 30003 is now treated as robot state RX only. On many UR/e-Series
-    setups it will connect and stream state but will not reliably execute script
-    written back into the same socket. Smooth jog/speedl commands are therefore sent
-    to a persistent 30002 Secondary Client command socket.
+    """Send URScript via the long-lived 30003 socket (servoj).
+    Works on both CB3 and UR5e e-Series when UR is in Remote Control mode.
+    Returns False (silently) if socket is not yet connected.
     """
-    global ur_control_tx
-    if not script_content.endswith("\n"):
-        script_content += "\n"
-
-    with ur_control_lock:
-        s = ur_control_tx
-        if s is not None:
-            try:
-                s.sendall(script_content.encode("utf-8"))
-                return True
-            except Exception as e:
-                log.warning("30002 command socket failed: %s — will reconnect", e)
-                try:
-                    s.close()
-                except Exception:
-                    pass
-                ur_control_tx = None
-
-    # Fallback: one-shot 30002 injection. This keeps buttons usable while the
-    # persistent command socket is reconnecting. High-rate joystick commands will
-    # become smooth again as soon as ur_control_thread reconnects.
+    global ur_socket_tx
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as one:
-            one.settimeout(0.35)
-            one.connect((UR_IP, 30002))
-            one.sendall(script_content.encode("utf-8"))
-        return True
+        if ur_socket_tx is not None:
+            ur_socket_tx.sendall(script_content.encode("utf-8"))
+            return True
+        else:
+            log.debug("send_realtime_script: ur_socket_tx is None (30003 not connected)")
+            return False
     except Exception as e:
-        log.warning("realtime command DROPPED: 30002 unavailable (%s)", e)
+        log.warning("send_realtime_script failed: %s — will reconnect", e)
+        ur_socket_tx = None
         return False
-
-
-def ur_control_thread():
-    """Maintain a long-lived 30002 command socket for smooth jog/speedl control."""
-    global ur_control_tx
-    while True:
-        try:
-            log.info("connecting UR 30002 command @ %s ...", UR_IP)
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(5.0)
-            s.connect((UR_IP, 30002))
-            s.settimeout(None)
-            with ur_control_lock:
-                old = ur_control_tx
-                ur_control_tx = s
-                if old is not None and old is not s:
-                    try:
-                        old.close()
-                    except Exception:
-                        pass
-            log.info("UR 30002 command connected")
-            while True:
-                time.sleep(1.0)
-                # Detect broken TCP connection without consuming data. If the socket
-                # has died, sendall below or this MSG_PEEK check will fail.
-                try:
-                    s.sendall(b"# keepalive\n")
-                except Exception:
-                    break
-        except Exception as e:
-            log.warning("UR 30002 command error: %s", e)
-        finally:
-            with ur_control_lock:
-                try:
-                    if ur_control_tx is not None:
-                        ur_control_tx.close()
-                except Exception:
-                    pass
-                ur_control_tx = None
-            time.sleep(1.0)
 
 
 def fetch_urp_list():
@@ -406,18 +335,6 @@ def _apply_sensor_options(sensor, ae, exp, gain, **kwargs):
         log.debug("sensor option error: %s", e)
 
 
-def realsense_device_present():
-    """Return True only when a RealSense camera is physically detected."""
-    if not _HAS_VISION:
-        return False
-    try:
-        ctx = rs.context()
-        return len(ctx.query_devices()) > 0
-    except Exception as e:
-        log.info("RealSense detection skipped: %s", e)
-        return False
-
-
 def camera_thread():
     """
     D435i capture thread.  Re-reads _rs_config on every pipeline (re-)start.
@@ -431,7 +348,7 @@ def camera_thread():
     """
     if not _HAS_VISION:
         return
-    global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame, camera_available
+    global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame
 
     while True:  # outer loop: restart pipeline on config change
         _rs_restart_evt.clear()
@@ -444,12 +361,6 @@ def camera_thread():
         sfps    = cfg_snap["stereo_fps"]
         rw, rh  = _parse_res(cfg_snap["rgb_res"])
         rfps    = cfg_snap["rgb_fps"]
-
-        if not realsense_device_present():
-            camera_available = False
-            log.info("RealSense not detected — camera module idle; UR control continues.")
-            time.sleep(5.0)
-            continue
 
         pipeline = rs.pipeline()
         rscfg    = rs.config()
@@ -474,7 +385,6 @@ def camera_thread():
 
         try:
             profile = pipeline.start(rscfg)
-            camera_available = True
             dev     = profile.get_device()
             serial  = dev.get_info(rs.camera_info.serial_number)
             log.info("RealSense D435i started  serial=%s  stereo=%dx%d@%d  rgb=%dx%d@%d",
@@ -527,9 +437,8 @@ def camera_thread():
                 log.debug("rgb sensor options: %s", e)
 
         except Exception as e:
-            camera_available = False
-            log.info("camera unavailable: %s — camera disabled for now; UR control continues", e)
-            time.sleep(5)
+            log.warning("camera startup failed: %s — retrying in 3 s", e)
+            time.sleep(3)
             continue
 
         # --- Inner frame loop ---
@@ -608,7 +517,7 @@ def execute_motion(data):
         if ok:
             log.debug("jog sent: q=%s vcap=%.2f", [f5(x) for x in q], vcap)
         else:
-            log.warning("jog DROPPED: 30002 command socket unavailable (check Remote Control / protective stop)")
+            log.warning("jog DROPPED: 30003 not connected (UR in Local mode?)")
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "movel":
@@ -629,7 +538,7 @@ def execute_motion(data):
         return True, "ok"
 
     if mtype == "speedl":
-        # Cartesian velocity via 30002 command socket — low-latency dead-man control.
+        # Cartesian velocity via 30003 long-lived socket — zero stop overhead.
         # t=0.15 auto-stops if no new command within 150ms (dead-man safety).
         xd = data.get("xd")
         if not xd or len(xd) != 6:
@@ -637,42 +546,56 @@ def execute_motion(data):
         a = float(data.get("a", 0.8))
         t = float(data.get("t", 0.15))
         script = (f"speedl([{f5(xd[0])},{f5(xd[1])},{f5(xd[2])},"
-                  f"{f5(xd[3])},{f5(xd[4])},{f5(xd[5])}], a={f5(a)}, t={f5(t)})")
+                  f"{f5(xd[3])},{f5(xd[4])},{f5(xd[5])}],a={f5(a)},t={f5(t)})")
         ok = send_realtime_script(script)
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "speedl_stop":
-        # A gentle stop prevents the TCP from feeling like it hits a brake.
-        ok = send_realtime_script("stopl(1.5)")
+        ok = send_realtime_script("stopl(3.0)")
+        return ok, "ok" if ok else "ur_not_connected"
+
+    if mtype == "speedj":
+        # Joint-space velocity command via the same persistent 30002 command
+        # channel used by the TCP joystick. This avoids high-rate run_script
+        # socket churn and gives smooth dead-man control.
+        qd = data.get("qd")
+        if not qd or len(qd) != 6:
+            return False, "bad_payload"
+        a = float(data.get("a", 1.2))
+        t = float(data.get("t", 0.08))
+        qd = [float(v) * vcap for v in qd]
+        script = (f"speedj([{f5(qd[0])},{f5(qd[1])},{f5(qd[2])},"
+                  f"{f5(qd[3])},{f5(qd[4])},{f5(qd[5])}],"
+                  f"a={f5(a)},t={f5(t)})")
+        ok = send_realtime_script(script)
+        return ok, "ok" if ok else "ur_not_connected"
+
+    if mtype == "speedj_stop":
+        a = float(data.get("a", 1.2))
+        ok = send_realtime_script(f"stopj({f5(a)})")
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "freedrive_start":
-        # Proper multi-line URScript. The previous one-line string could be
-        # parsed unreliably by the controller, so the UI changed state but the
-        # robot did not enter freedrive.
+        # freedrive_mode() via URScript works in Remote Control mode
+        # even though PolyScope UI blocks the button (Script Manual §13.1.15).
+        # Use stop_first=False to avoid disrupting 30003.
         axes = data.get("freeAxes", [1,1,1,1,1,1])
-        axes = [(1 if int(a) else 0) for a in axes][:6]
-        while len(axes) < 6:
-            axes.append(1)
-        axes_str = ",".join(str(a) for a in axes)
-        script = f"""def sonair_fd():
-  freedrive_mode(freeAxes=[{axes_str}])
-  while True:
-    sync()
-  end
-end
-"""
+        axes_str = ",".join(str(int(a)) for a in axes)
+        script = (f"def sonair_fd():"
+                  f"  freedrive_mode(freeAxes=[{axes_str}])"
+                  f"  sleep(30.0)"
+                  f"  end_freedrive_mode()"
+                  f"end")
         ok = send_urscript_to_robot(script, stop_first=False)
         audit("freedrive_start", {"freeAxes": axes})
         log.info("freedrive START axes=%s", axes)
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "freedrive_stop":
-        script = """def sonair_fd_stop():
-  end_freedrive_mode()
-  stopj(1.5)
-end
-"""
+        script = ("sec sonair_fd_stop():"
+                  "  end_freedrive_mode()"
+                  "  stopj(2.0)"
+                  "end")
         ok = send_urscript_to_robot(script, stop_first=False)
         audit("freedrive_stop", {})
         log.info("freedrive STOP")
@@ -697,31 +620,26 @@ async def local_handler(websocket):
     async def stream():
         while True:
             try:
-                if _HAS_VISION and camera_available:
+                if _HAS_VISION:
                     with camera_lock:
                         rgb   = global_rgb_frame
                         depth = global_depth_frame
                         ir1   = global_ir1_frame
                         ir2   = global_ir2_frame
                     frame_msg = {"type": "camera_frame"}
-                    with _rs_config_lock:
-                        show_rgb = bool(_rs_config.get("show_rgb", True))
-                        show_depth = bool(_rs_config.get("show_depth", True))
-                        show_ir1 = bool(_rs_config.get("show_ir1", False))
-                        show_ir2 = bool(_rs_config.get("show_ir2", False))
-                    if rgb is not None and show_rgb:
+                    if rgb is not None:
                         _, buf = cv2.imencode(".jpg", rgb,
                                               [cv2.IMWRITE_JPEG_QUALITY, 60])
                         frame_msg["rgb"] = base64.b64encode(buf).decode("utf-8")
-                    if depth is not None and show_depth:
+                    if depth is not None:
                         _, buf = cv2.imencode(".jpg", depth,
                                               [cv2.IMWRITE_JPEG_QUALITY, 50])
                         frame_msg["depth"] = base64.b64encode(buf).decode("utf-8")
-                    if ir1 is not None and show_ir1:
+                    if ir1 is not None:
                         _, buf = cv2.imencode(".jpg", ir1,
                                               [cv2.IMWRITE_JPEG_QUALITY, 50])
                         frame_msg["ir1"] = base64.b64encode(buf).decode("utf-8")
-                    if ir2 is not None and show_ir2:
+                    if ir2 is not None:
                         _, buf = cv2.imencode(".jpg", ir2,
                                               [cv2.IMWRITE_JPEG_QUALITY, 50])
                         frame_msg["ir2"] = base64.b64encode(buf).decode("utf-8")
@@ -769,7 +687,7 @@ async def local_handler(websocket):
                 estop_ur()
                 continue
             if mtype in ("jog", "movel", "run_script",
-                          "speedl", "speedl_stop",
+                          "speedl", "speedl_stop", "speedj", "speedj_stop",
                           "freedrive_start", "freedrive_stop"):
                 ok, reason = await asyncio.to_thread(execute_motion, data)
                 if not ok:
@@ -791,22 +709,19 @@ async def local_handler(websocket):
                                                  "res": res}))
                 continue
             if mtype == "camera_config":
-                # Camera is optional. If no RealSense is connected, acknowledge the
-                # request but keep the module idle so it cannot disturb UR motion.
+                # Frontend sends the full desired config dict.
+                # We merge it into _rs_config and signal the camera thread
+                # to restart the pipeline with new settings.
                 new_cfg = data.get("config", {})
                 with _rs_config_lock:
                     _rs_config.update(new_cfg)
-                if _HAS_VISION and realsense_device_present():
-                    _rs_restart_evt.set()
-                    audit("camera_config_applied", new_cfg)
-                    log.info("camera_config applied: %s", new_cfg)
-                else:
-                    log.info("camera_config stored, but no RealSense detected; camera remains idle")
+                _rs_restart_evt.set()
+                audit("camera_config_applied", new_cfg)
                 await websocket.send(json.dumps({
                     "type":   "camera_config_ack",
                     "config": {**_rs_config},
-                    "camera_available": bool(camera_available),
                 }))
+                log.info("camera_config applied: %s", new_cfg)
                 continue
             if mtype == "get_camera_config":
                 # Frontend requesting current live config (e.g. on reconnect)
@@ -815,7 +730,6 @@ async def local_handler(websocket):
                 await websocket.send(json.dumps({
                     "type":   "camera_config_ack",
                     "config": snap,
-                    "camera_available": bool(camera_available),
                 }))
                 continue
     except websockets.exceptions.ConnectionClosed:
@@ -875,24 +789,19 @@ async def relay_uplink():
                                     ir1   = global_ir1_frame
                                     ir2   = global_ir2_frame
                                 frame_msg = {"type": "camera_frame"}
-                                with _rs_config_lock:
-                                    show_rgb = bool(_rs_config.get("show_rgb", True))
-                                    show_depth = bool(_rs_config.get("show_depth", True))
-                                    show_ir1 = bool(_rs_config.get("show_ir1", False))
-                                    show_ir2 = bool(_rs_config.get("show_ir2", False))
-                                if rgb is not None and show_rgb:
+                                if rgb is not None:
                                     _, buf = cv2.imencode(".jpg", rgb,
                                                           [cv2.IMWRITE_JPEG_QUALITY, 50])
                                     frame_msg["rgb"] = base64.b64encode(buf).decode("utf-8")
-                                if depth is not None and show_depth:
+                                if depth is not None:
                                     _, buf = cv2.imencode(".jpg", depth,
                                                           [cv2.IMWRITE_JPEG_QUALITY, 40])
                                     frame_msg["depth"] = base64.b64encode(buf).decode("utf-8")
-                                if ir1 is not None and show_ir1:
+                                if ir1 is not None:
                                     _, buf = cv2.imencode(".jpg", ir1,
                                                           [cv2.IMWRITE_JPEG_QUALITY, 40])
                                     frame_msg["ir1"] = base64.b64encode(buf).decode("utf-8")
-                                if ir2 is not None and show_ir2:
+                                if ir2 is not None:
                                     _, buf = cv2.imencode(".jpg", ir2,
                                                           [cv2.IMWRITE_JPEG_QUALITY, 40])
                                     frame_msg["ir2"] = base64.b64encode(buf).decode("utf-8")
@@ -932,7 +841,7 @@ async def relay_uplink():
                                 estop_ur()
                                 continue
                             if mtype in ("jog", "movel", "run_script",
-                                          "speedl", "speedl_stop",
+                                          "speedl", "speedl_stop", "speedj", "speedj_stop",
                                           "freedrive_start", "freedrive_stop"):
                                 origin_role = data.get("_origin_role", "guest")
                                 authority_granted = data.get("_authority_granted", False)
@@ -953,19 +862,6 @@ async def relay_uplink():
                                                               data.get("cmd", ""))
                                 await ws.send(json.dumps({"type": "dashboard_res",
                                                           "res": res}))
-                                continue
-                            if mtype == "camera_config":
-                                new_cfg = data.get("config", {})
-                                with _rs_config_lock:
-                                    _rs_config.update(new_cfg)
-                                if _HAS_VISION and realsense_device_present():
-                                    _rs_restart_evt.set()
-                                    audit("relay_camera_config_applied", new_cfg)
-                                await ws.send(json.dumps({
-                                    "type": "camera_config_ack",
-                                    "config": {**_rs_config},
-                                    "camera_available": bool(camera_available),
-                                }))
                                 continue
                     finally:
                         stop_evt.set()
@@ -991,12 +887,8 @@ async def relay_uplink():
 # ============================================================
 async def main():
     threading.Thread(target=ur_io_thread, daemon=True).start()
-    threading.Thread(target=ur_control_thread, daemon=True).start()
-    if _HAS_VISION and realsense_device_present():
+    if _HAS_VISION:
         threading.Thread(target=camera_thread, daemon=True).start()
-        log.info("RealSense detected — camera module enabled")
-    elif _HAS_VISION:
-        log.info("RealSense not detected at startup — camera module disabled; UR control continues")
 
     log.info("=" * 64)
     log.info(" SONAIR UR Host Agent")
