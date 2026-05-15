@@ -4263,6 +4263,7 @@
         publicIp: null,
         ipGeo: null,
         browserGeo: null,
+        browserGeoPlace: null,
         lastPongSeq: null
       }
     };
@@ -4348,7 +4349,14 @@
       }
       if($('gpsLocationVal')) {
         const g = n.browserGeo;
-        $('gpsLocationVal').textContent = g ? `${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)} ±${Math.round(g.accuracy||0)}m` : 'not shared';
+        const place = n.browserGeoPlace;
+        if(g){
+          const coords = `${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)} ±${Math.round(g.accuracy||0)}m`;
+          const name = place && (place.display_name || place.name || place.locality || place.city || place.town || place.village || place.country);
+          $('gpsLocationVal').textContent = name ? `${name} (${coords})` : coords;
+        } else {
+          $('gpsLocationVal').textContent = 'not shared';
+        }
       }
     }
     function recordNetSample(sample){
@@ -4362,10 +4370,60 @@
       try { const r = await fetch('https://ipapi.co/json/', {cache:'no-store'}); const j = await r.json(); xsite.net.ipGeo = j || null; if(!xsite.net.publicIp && j.ip) xsite.net.publicIp = j.ip; } catch(_e) {}
       updateNetworkUi();
     }
+    function compactPlaceNameFromAddress(addr){
+      if(!addr) return null;
+      const parts = [
+        addr.amenity || addr.building || addr.road || addr.neighbourhood || addr.suburb || addr.quarter,
+        addr.city || addr.town || addr.village || addr.municipality || addr.county,
+        addr.state || addr.region,
+        addr.country
+      ].filter(Boolean);
+      return [...new Set(parts)].join(', ') || null;
+    }
+    async function reverseGeocodeBrowserLocation(lat, lon){
+      // This is a real reverse-geocoding request based on the UCL browser's
+      // geolocation coordinates. If the browser/service blocks it, we keep
+      // the verified coordinates and record the lookup error instead of
+      // fabricating a place name.
+      const urls = [
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=18&addressdetails=1`,
+        `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&localityLanguage=en`
+      ];
+      let lastError = null;
+      for(const url of urls){
+        try{
+          const r = await fetch(url, {cache:'no-store'});
+          if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          const j = await r.json();
+          if(url.includes('nominatim')){
+            return {
+              source:'OpenStreetMap Nominatim',
+              display_name:j.display_name || compactPlaceNameFromAddress(j.address),
+              name:compactPlaceNameFromAddress(j.address),
+              address:j.address || null,
+              raw:j
+            };
+          }
+          return {
+            source:'BigDataCloud reverse-geocode-client',
+            display_name:[j.locality, j.city, j.principalSubdivision, j.countryName].filter(Boolean).join(', ') || null,
+            name:j.locality || j.city || j.principalSubdivision || j.countryName || null,
+            address:j,
+            raw:j
+          };
+        }catch(e){
+          lastError = String(e && e.message ? e.message : e);
+        }
+      }
+      return {source:null, display_name:null, name:null, error:lastError};
+    }
     function requestBrowserLocation(){
       if(!navigator.geolocation){ alert('Browser Geolocation API is not available.'); return; }
-      navigator.geolocation.getCurrentPosition(pos => {
+      navigator.geolocation.getCurrentPosition(async pos => {
         xsite.net.browserGeo = { latitude:pos.coords.latitude, longitude:pos.coords.longitude, accuracy:pos.coords.accuracy, altitude:pos.coords.altitude, heading:pos.coords.heading, speed:pos.coords.speed, ts:new Date(pos.timestamp).toISOString() };
+        xsite.net.browserGeoPlace = {display_name:'Resolving place name…', source:'pending'};
+        updateNetworkUi();
+        xsite.net.browserGeoPlace = await reverseGeocodeBrowserLocation(pos.coords.latitude, pos.coords.longitude);
         updateNetworkUi();
       }, err => alert('Location was not shared: ' + err.message), {enableHighAccuracy:false, timeout:8000, maximumAge:60000});
     }
@@ -4387,12 +4445,97 @@
       const sorted = [...rtts].sort((a,b)=>a-b);
       const pct = p => sorted.length ? sorted[Math.min(sorted.length-1, Math.floor(sorted.length*p))] : null;
       const total = xsite.net.received + xsite.net.lost;
-      return { generated_at:netNow(), started_at:xsite.net.startedAt, role:xsite.role, room:$('remoteRoom')?.value||null, relay_url:$('remoteWsIp')?.value||null, samples:xsite.net.samples.length, ping_sent:xsite.net.sent, ping_received:xsite.net.received, ping_lost:xsite.net.lost, packet_loss_percent: total ? 100*xsite.net.lost/total : 0, rtt_ms_avg:avg, rtt_ms_min:rtts.length?Math.min(...rtts):null, rtt_ms_p50:pct(0.50), rtt_ms_p95:pct(0.95), rtt_ms_max:rtts.length?Math.max(...rtts):null, peer_info:xsite.net.peerInfo, public_ip:xsite.net.publicIp, ip_geolocation:xsite.net.ipGeo, browser_geolocation:xsite.net.browserGeo, browser_network:getNavNetInfo(), user_agent:navigator.userAgent, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone };
+      return { generated_at:netNow(), started_at:xsite.net.startedAt, role:xsite.role, room:$('remoteRoom')?.value||null, relay_url:$('remoteWsIp')?.value||null, samples:xsite.net.samples.length, ping_sent:xsite.net.sent, ping_received:xsite.net.received, ping_lost:xsite.net.lost, packet_loss_percent: total ? 100*xsite.net.lost/total : 0, rtt_ms_avg:avg, rtt_ms_min:rtts.length?Math.min(...rtts):null, rtt_ms_p50:pct(0.50), rtt_ms_p95:pct(0.95), rtt_ms_max:rtts.length?Math.max(...rtts):null, peer_info:xsite.net.peerInfo, public_ip:xsite.net.publicIp, ip_geolocation:xsite.net.ipGeo, browser_geolocation:xsite.net.browserGeo, browser_geolocation_place:xsite.net.browserGeoPlace, browser_network:getNavNetInfo(), user_agent:navigator.userAgent, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone };
     }
-    function crc32(str){ const table = crc32.table || (crc32.table = (()=>{let c,t=[]; for(let n=0;n<256;n++){c=n; for(let k=0;k<8;k++) c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1)); t[n]=c>>>0;} return t;})()); let crc = 0 ^ (-1); for(let i=0;i<str.length;i++) crc = (crc>>>8) ^ table[(crc ^ str.charCodeAt(i)) & 0xff]; return (crc ^ (-1)) >>> 0; }
-    function u16(n){ return String.fromCharCode(n & 255, (n>>>8)&255); }
-    function u32(n){ return String.fromCharCode(n & 255, (n>>>8)&255, (n>>>16)&255, (n>>>24)&255); }
-    function makeZip(files){ let local='', central='', offset=0; for(const f of files){ const name=f.name; const data=unescape(encodeURIComponent(f.content)); const crc=crc32(data), size=data.length; const lh='PK\x03\x04'+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+name+data; local+=lh; central+='PK\x01\x02'+u16(20)+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+u16(0)+u16(0)+u16(0)+u32(0)+u32(offset)+name; offset+=lh.length; } const end='PK\x05\x06'+u16(0)+u16(0)+u16(files.length)+u16(files.length)+u32(central.length)+u32(local.length)+u16(0); return new Blob([local, central, end], {type:'application/zip'}); }
+    // ZIP writer fixed in v18:
+    // The previous version concatenated binary ZIP bytes as a JavaScript string.
+    // Blob encoded that string as UTF-8, which corrupted bytes >= 0x80 and made
+    // Windows report "compressed (zipped) folder is invalid". This version writes
+    // real Uint8Array bytes, so the central directory and CRC values remain valid.
+    function crc32Bytes(bytes){
+      const table = crc32Bytes.table || (crc32Bytes.table = (()=>{let c,t=[]; for(let n=0;n<256;n++){c=n; for(let k=0;k<8;k++) c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1)); t[n]=c>>>0;} return t;})());
+      let crc = 0 ^ (-1);
+      for(let i=0;i<bytes.length;i++) crc = (crc>>>8) ^ table[(crc ^ bytes[i]) & 0xff];
+      return (crc ^ (-1)) >>> 0;
+    }
+    function pushU16(arr,n){ arr.push(n & 255, (n>>>8)&255); }
+    function pushU32(arr,n){ arr.push(n & 255, (n>>>8)&255, (n>>>16)&255, (n>>>24)&255); }
+    function pushAscii(arr,s){ for(let i=0;i<s.length;i++) arr.push(s.charCodeAt(i) & 255); }
+    function concatUint8(parts){
+      const total = parts.reduce((sum,p)=>sum+p.length,0);
+      const out = new Uint8Array(total);
+      let off = 0;
+      for(const p of parts){ out.set(p, off); off += p.length; }
+      return out;
+    }
+    function makeZip(files){
+      const enc = new TextEncoder();
+      const localParts = [];
+      const centralParts = [];
+      let offset = 0;
+
+      for(const f of files){
+        const nameBytes = enc.encode(f.name);
+        const dataBytes = enc.encode(f.content ?? '');
+        const crc = crc32Bytes(dataBytes);
+        const size = dataBytes.length;
+
+        const lh = [];
+        pushAscii(lh,'PK\x03\x04');
+        pushU16(lh,20);          // version needed
+        pushU16(lh,0x0800);      // UTF-8 filename flag
+        pushU16(lh,0);           // store only, no compression
+        pushU16(lh,0);           // mod time
+        pushU16(lh,0);           // mod date
+        pushU32(lh,crc);
+        pushU32(lh,size);
+        pushU32(lh,size);
+        pushU16(lh,nameBytes.length);
+        pushU16(lh,0);           // extra length
+        const localHeader = new Uint8Array(lh.length + nameBytes.length);
+        localHeader.set(lh,0);
+        localHeader.set(nameBytes,lh.length);
+        localParts.push(localHeader, dataBytes);
+
+        const cd = [];
+        pushAscii(cd,'PK\x01\x02');
+        pushU16(cd,20);          // version made by
+        pushU16(cd,20);          // version needed
+        pushU16(cd,0x0800);      // UTF-8 filename flag
+        pushU16(cd,0);           // compression
+        pushU16(cd,0);
+        pushU16(cd,0);
+        pushU32(cd,crc);
+        pushU32(cd,size);
+        pushU32(cd,size);
+        pushU16(cd,nameBytes.length);
+        pushU16(cd,0);           // extra length
+        pushU16(cd,0);           // comment length
+        pushU16(cd,0);           // disk number start
+        pushU16(cd,0);           // internal attrs
+        pushU32(cd,0);           // external attrs
+        pushU32(cd,offset);      // local header offset
+        const centralHeader = new Uint8Array(cd.length + nameBytes.length);
+        centralHeader.set(cd,0);
+        centralHeader.set(nameBytes,cd.length);
+        centralParts.push(centralHeader);
+
+        offset += localHeader.length + dataBytes.length;
+      }
+
+      const centralBytes = concatUint8(centralParts);
+      const end = [];
+      pushAscii(end,'PK\x05\x06');
+      pushU16(end,0);
+      pushU16(end,0);
+      pushU16(end,files.length);
+      pushU16(end,files.length);
+      pushU32(end,centralBytes.length);
+      pushU32(end,offset);
+      pushU16(end,0);
+      const finalBytes = concatUint8([...localParts, centralBytes, new Uint8Array(end)]);
+      return new Blob([finalBytes], {type:'application/zip'});
+    }
     function downloadNetworkBundle(){
       const files = [
         {name:'network_summary.json', content: JSON.stringify(netSummary(), null, 2)},
@@ -4400,7 +4543,7 @@
         {name:'network_samples.json', content: JSON.stringify(xsite.net.samples, null, 2)},
         {name:'command_ack_samples.json', content: JSON.stringify(xsite.net.cmdSamples, null, 2)},
         {name:'session_audit.csv', content: auditToCsv()},
-        {name:'browser_environment.json', content: JSON.stringify({userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, network:getNavNetInfo(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}, null, 2)}
+        {name:'browser_environment.json', content: JSON.stringify({userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, network:getNavNetInfo(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone, publicIp:xsite.net.publicIp, ipGeolocation:xsite.net.ipGeo, browserGeolocation:xsite.net.browserGeo, browserGeolocationPlace:xsite.net.browserGeoPlace}, null, 2)}
       ];
       const blob = makeZip(files); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `sonair_ucl_network_bundle_${Date.now()}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
     }
