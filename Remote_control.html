@@ -1302,7 +1302,7 @@
 <div class="group-hd" style="background:rgba(210,153,34,0.1);">Cross-Site Teleoperation <span class="badge" id="remoteWsStatus">OFFLINE</span></div>
 <div class="group-bd">
 <!-- Relay endpoint -->
-<input id="remoteWsIp" placeholder="Relay WSS URL" style="width:100%;" type="text" value="wss://relay.sonair.example/ws"/>
+<input id="remoteWsIp" placeholder="Relay WSS URL" style="width:100%;" type="text" value="ws://localhost:8770/ws"/>
 <div class="field-row" style="margin-top:4px;">
 <input id="remoteRoom" placeholder="Room ID" style="flex:0 0 90px;" title="Robot cell identifier — must match the agent's RELAY_ROOM" type="text" value="uon-cell-1"/>
 <input id="remoteToken" placeholder="Bearer Token" style="flex:1;" type="password"/>
@@ -3285,23 +3285,44 @@
           && remoteWs.readyState === WebSocket.OPEN;
       }
 
-      function sendCmd(msg) {
-        // Host/UoN path: direct low-latency local bridge to the robot.
-        if (localOk()) {
-          localWs.send(JSON.stringify(msg));
-          return true;
-        }
-        // Guest/UCL path: after host grant, send motion via the relay.
-        // This is essential for Tailscale/cross-site operation because the
-        // guest browser will not have a local ws://127.0.0.1:8765 bridge.
-        if (remoteOk()) {
-          const out = Object.assign({}, msg, {
-            seq: ++xsite.cmdSeq,
-            ts: Date.now()
+      function remoteOperatorOk() {
+        return xsite.role === 'guest' && xsite.authority === 'operator'
+               && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN;
+      }
+
+      function recordCmdSent(payload){
+        try {
+          if(!xsite.net || !payload || !payload.seq) return;
+          xsite.net.cmdSamples.push({
+            ts: (typeof netNow === 'function' ? netNow() : new Date().toISOString()),
+            dir:'OUT', type:payload.type, seq:payload.seq,
+            authority:xsite.authority, role:xsite.role
           });
-          remoteWs.send(JSON.stringify(out));
+          if(xsite.net.cmdSamples.length > 20000) xsite.net.cmdSamples.shift();
+        } catch(_e) {}
+      }
+
+      function sendCmd(msg) {
+        const payload = Object.assign({}, msg);
+        if (!payload.seq) payload.seq = ++xsite.cmdSeq;
+        if (!payload.ts) payload.ts = Date.now();
+
+        // Guest/UCL path: after Host grants authority, motion MUST go through relay.
+        // Do not try localWs on UCL, because ws://127.0.0.1:8765 would be UCL's own PC.
+        if (remoteOperatorOk()) {
+          remoteWs.send(JSON.stringify(payload));
+          recordCmdSent(payload);
           return true;
         }
+
+        // Host/UoN path: direct local bridge remains the low-latency primary path.
+        // When Host has granted remote control, local manual motion is intentionally not sent.
+        if (localOk() && xsite.authority !== 'remote-operator') {
+          localWs.send(JSON.stringify(payload));
+          recordCmdSent(payload);
+          return true;
+        }
+
         setHint('Not connected or no motion authority.');
         return false;
       }
