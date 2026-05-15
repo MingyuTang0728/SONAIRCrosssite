@@ -2,12 +2,12 @@
   "version": 1,
   "keys": [
     {
-      "id": "UoN-agent-2026-05-01-bc6c",
+      "id": "UoN-agent-runtime-v16",
       "institution": "UoN",
       "role": "agent",
-      "label": "UoN Cell 1 - Mingyu workstation",
-      "hash": "ed90c6e224d33754b1faa6141c10a9897870a960f75aa44e049f72b00859d872",
-      "issued_at": "2026-05-01T13:28:35.759655+00:00",
+      "label": "UoN Cell 1 Agent",
+      "hash": "c79d2f2b63af85459034ebe38c161deb9ef582bd39fce534679f5fc6563f938c",
+      "issued_at": "2026-05-15T00:00:00+00:00",
       "expires_at": null,
       "revoked": false,
       "rooms": [
@@ -15,12 +15,12 @@
       ]
     },
     {
-      "id": "UoN-host-2026-05-01-3a63",
+      "id": "UoN-host-runtime-v16",
       "institution": "UoN",
       "role": "host",
-      "label": "Mingyu Tang \u2014 UoN local browser",
-      "hash": "503104e52d30bf32dfb28377edfd91ad7aff95f0ee6a7b87d7b550db2a407004",
-      "issued_at": "2026-05-01T13:29:26.090255+00:00",
+      "label": "UoN Host Browser",
+      "hash": "b1c410bbb7301fbf164a02120184468fd7b096fe945ec1c7a215bc694efd3b7a",
+      "issued_at": "2026-05-15T00:00:00+00:00",
       "expires_at": null,
       "revoked": false,
       "rooms": [
@@ -28,13 +28,13 @@
       ]
     },
     {
-      "id": "UCL-guest-2026-05-01-e716",
+      "id": "UCL-guest-runtime-v16",
       "institution": "UCL",
       "role": "guest",
-      "label": "<UCL collaborator name>",
-      "hash": "d50e62469a44b1cef2a6cf62295eef29c8a220153f02e10834e91ac23b0c6e40",
-      "issued_at": "2026-05-01T13:29:50.550488+00:00",
-      "expires_at": "2026-07-30T13:29:50.549478+00:00",
+      "label": "UCL Guest Browser",
+      "hash": "f009e77448748c0377d0e6f64236b2865faf7c8355ea7903cdd904895fd9eaf2",
+      "issued_at": "2026-05-15T00:00:00+00:00",
+      "expires_at": null,
       "revoked": false,
       "rooms": [
         "uon-cell-1"
