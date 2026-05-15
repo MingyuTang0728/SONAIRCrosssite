@@ -3285,44 +3285,42 @@
           && remoteWs.readyState === WebSocket.OPEN;
       }
 
-      function remoteOperatorOk() {
-        return xsite.role === 'guest' && xsite.authority === 'operator'
-               && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN;
-      }
-
-      function recordCmdSent(payload){
-        try {
-          if(!xsite.net || !payload || !payload.seq) return;
-          xsite.net.cmdSamples.push({
-            ts: (typeof netNow === 'function' ? netNow() : new Date().toISOString()),
-            dir:'OUT', type:payload.type, seq:payload.seq,
-            authority:xsite.authority, role:xsite.role
-          });
-          if(xsite.net.cmdSamples.length > 20000) xsite.net.cmdSamples.shift();
-        } catch(_e) {}
-      }
-
       function sendCmd(msg) {
-        const payload = Object.assign({}, msg);
-        if (!payload.seq) payload.seq = ++xsite.cmdSeq;
-        if (!payload.ts) payload.ts = Date.now();
-
-        // Guest/UCL path: after Host grants authority, motion MUST go through relay.
-        // Do not try localWs on UCL, because ws://127.0.0.1:8765 would be UCL's own PC.
-        if (remoteOperatorOk()) {
-          remoteWs.send(JSON.stringify(payload));
-          recordCmdSent(payload);
-          return true;
+        // Guest/UCL path must go through relay first. Do not fall back to
+        // ws://127.0.0.1:8765 on the guest laptop, because that is not the
+        // UoN UR bridge. This keeps UCL TCP joystick and single-joint jog
+        // on the same relay→agent→UR path after authority is granted.
+        if (xsite.role === 'guest') {
+          if (remoteOk()) {
+            const out = Object.assign({}, msg, {
+              seq: ++xsite.cmdSeq,
+              ts: Date.now()
+            });
+            try {
+              if (xsite.net && Array.isArray(xsite.net.cmdSamples)) {
+                xsite.net.cmdSamples.push({
+                  ts: new Date().toISOString(),
+                  seq: out.seq,
+                  type: out.type,
+                  dir: 'OUT',
+                  authority: xsite.authority,
+                  buffered_amount: remoteWs ? remoteWs.bufferedAmount : null
+                });
+              }
+            } catch(_e){}
+            remoteWs.send(JSON.stringify(out));
+            return true;
+          }
+          setHint('Guest has no remote motion authority. Request control and wait for GRANT.');
+          return false;
         }
 
-        // Host/UoN path: direct local bridge remains the low-latency primary path.
-        // When Host has granted remote control, local manual motion is intentionally not sent.
-        if (localOk() && xsite.authority !== 'remote-operator') {
-          localWs.send(JSON.stringify(payload));
-          recordCmdSent(payload);
+        // Host/UoN path: direct low-latency local bridge to the robot, unless
+        // remote operator currently owns control.
+        if (localOk()) {
+          localWs.send(JSON.stringify(msg));
           return true;
         }
-
         setHint('Not connected or no motion authority.');
         return false;
       }
