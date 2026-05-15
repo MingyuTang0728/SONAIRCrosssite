@@ -1229,6 +1229,26 @@
   .connection-row,.motion-row{ grid-template-columns:1fr !important; }
 }
 </style>
+
+<style>
+/* v10 additions: single-joint jogger + manual TCP input. Core control JS unchanged. */
+.vjoy-joint-combo{display:flex;gap:14px;align-items:stretch;justify-content:center;width:100%;}
+.vjoy-left-pane{flex:1 1 58%;min-width:360px;}
+.single-joint-jogger{flex:1 1 42%;min-width:310px;border:1px solid var(--line);background:#0d1117;border-radius:3px;padding:8px;display:flex;flex-direction:column;gap:7px;}
+.single-joint-title{font-family:var(--font-mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--text-bright);display:flex;justify-content:space-between;align-items:center;}
+.single-joint-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
+.joint-jog-card{border:1px solid var(--line);background:#050709;border-radius:3px;padding:6px;display:grid;grid-template-columns:34px 1fr 1fr;gap:5px;align-items:center;}
+.joint-jog-card b{font-family:var(--font-display);font-size:11px;color:var(--text-bright);letter-spacing:.8px;}
+.joint-jog-btn{height:28px;border:1px solid #30363d;border-radius:3px;background:#151b24;color:#19e6c2;font-size:14px;font-weight:700;cursor:pointer;user-select:none;touch-action:none;}
+.joint-jog-btn:active{background:#0e8a76;color:#ffffff;}
+.tcp-manual-panel{margin-top:7px;border-top:1px solid var(--line);padding-top:7px;display:flex;flex-direction:column;gap:6px;}
+.tcp-manual-grid{display:grid;grid-template-columns:repeat(6,minmax(54px,1fr));gap:5px;}
+.tcp-manual-grid label{font-family:var(--font-mono);font-size:9px;color:var(--text-muted);display:flex;flex-direction:column;gap:2px;}
+.tcp-manual-grid input{width:100% !important;font-size:10px !important;padding:4px 5px !important;}
+.tcp-manual-actions{display:flex;gap:6px;align-items:center;}
+.tcp-manual-actions .btn{flex:1;}
+@media (max-width: 1200px){.vjoy-joint-combo{flex-direction:column}.vjoy-left-pane,.single-joint-jogger{min-width:0}.single-joint-grid{grid-template-columns:repeat(3,minmax(0,1fr));}.tcp-manual-grid{grid-template-columns:repeat(3,minmax(54px,1fr));}}
+</style>
 </head>
 <body>
 <div aria-hidden="true" id="keyCatcher" style="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none" tabindex="0"></div>
@@ -1332,6 +1352,31 @@
                     </label>
 </div>
 </div>
+<!-- Network Diagnostics / Evidence Capture -->
+<div id="networkDiagPanel" style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
+  <div class="muted-text" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+    <span>Network Diagnostics &amp; Evidence Capture</span>
+    <span id="netCaptureBadge" class="badge">CAPTURING</span>
+  </div>
+  <div class="status-kv" style="grid-template-columns: repeat(4, 1fr); font-size:10px;">
+    <div class="cell"><small>Loss</small><span id="pktLossVal">0.0%</span></div>
+    <div class="cell"><small>Samples</small><span id="netSampleCount">0</span></div>
+    <div class="cell"><small>Pending</small><span id="netPendingVal">0</span></div>
+    <div class="cell"><small>Downlink</small><span id="downlinkVal">—</span></div>
+  </div>
+  <div style="margin-top:5px; padding:5px; background:#050709; border:1px solid var(--line); border-radius:3px; font-family:var(--font-mono); font-size:9px; line-height:1.5; color:#8b949e;">
+    <div>Relay/Tailscale IP: <span id="relayPeerIpVal" style="color:#19e6c2;">—</span></div>
+    <div>Public IP: <span id="publicIpVal" style="color:#19e6c2;">—</span></div>
+    <div>Approx. IP location: <span id="ipLocationVal" style="color:#19e6c2;">—</span></div>
+    <div>Browser GPS: <span id="gpsLocationVal" style="color:#19e6c2;">not shared</span></div>
+  </div>
+  <div class="field-row" style="margin-top:5px; gap:4px;">
+    <button class="btn" id="captureNetBtn" style="flex:1;">Pause Capture</button>
+    <button class="btn outline" id="shareLocationBtn" style="flex:1;">Share Location</button>
+    <button class="btn warning" id="downloadNetBundleBtn" style="flex:1;">Download ZIP</button>
+  </div>
+  <div class="muted-text" style="font-size:9px; margin-top:4px;">Logs RTT, jitter, packet loss, WebSocket buffer, command ACK latency, relay IP, optional geolocation, and browser network hints.</div>
+</div>
 <!-- Workspace Envelope (Soft Limits for Remote Operator) -->
 <div style="margin-top:6px; padding:6px; background:#010409; border:1px solid var(--line); border-radius:4px;">
 <div class="muted-text" style="margin-bottom:4px;">Workspace Envelope (m, base frame)</div>
@@ -1370,8 +1415,26 @@
 <div class="cell"><small>J5</small><span id="sJ5">—</span></div>
 <div class="cell"><small>J6</small><span id="sJ6">—</span></div>
 </div>
-<div class="field-row" style="background:#010409; padding:4px; border-radius:4px; border:1px solid var(--line); justify-content:center;">
-<span id="tcpPoseDisplay" style="color:#3fb950; font-family:var(--font-mono); font-size:10px;">TCP: -- Waiting --</span>
+<div style="background:#010409; padding:6px; border-radius:4px; border:1px solid var(--line);">
+  <div class="field-row" style="justify-content:center;">
+    <span id="tcpPoseDisplay" style="color:#3fb950; font-family:var(--font-mono); font-size:10px;">TCP: -- Waiting --</span>
+  </div>
+  <div class="tcp-manual-panel" id="tcpManualPanel">
+    <div class="single-joint-title"><span>Manual TCP Target</span><span class="badge">movel</span></div>
+    <div class="tcp-manual-grid">
+      <label>X (m)<input id="tcpTargetX" type="number" step="0.001" value="0.000"/></label>
+      <label>Y (m)<input id="tcpTargetY" type="number" step="0.001" value="0.000"/></label>
+      <label>Z (m)<input id="tcpTargetZ" type="number" step="0.001" value="0.200"/></label>
+      <label>Rx<input id="tcpTargetRx" type="number" step="0.001" value="0.000"/></label>
+      <label>Ry<input id="tcpTargetRy" type="number" step="0.001" value="0.000"/></label>
+      <label>Rz<input id="tcpTargetRz" type="number" step="0.001" value="0.000"/></label>
+    </div>
+    <div class="tcp-manual-actions">
+      <button class="btn" id="tcpLoadCurrentBtn">Load Current TCP</button>
+      <button class="btn warning" id="tcpMoveTargetBtn">Move to TCP Target</button>
+    </div>
+    <div class="muted-text">Use metres and UR rotation vector values. Move command uses existing safety envelope.</div>
+  </div>
 </div>
 </div>
 </div><div class="motion-row"><div class="group freedrive-compact" style="border-color:#d29922;margin-top:8px;margin-bottom:8px;">
@@ -1401,6 +1464,8 @@
                 Virtual Joystick (TCP) <span class="badge success" id="vjoyModeBadge">XY·Z</span>
 </div>
 <div class="group-bd">
+<div class="vjoy-joint-combo">
+  <div class="vjoy-left-pane">
 <div style="display:flex;gap:4px;margin-bottom:5px;">
 <button id="vjoyModeXY" style="flex:1;font-size:10px;padding:3px;border-radius:4px;border:1px solid #3fb950;background:#0d2b0d;color:#3fb950;cursor:pointer;">XY·Z</button>
 <button id="vjoyModeXZ" style="flex:1;font-size:10px;padding:3px;border-radius:4px;border:1px solid #30363d;background:transparent;color:#8b949e;cursor:pointer;">XZ·Y</button>
@@ -1424,6 +1489,25 @@
 <div style="font-size:9px;color:#8b949e;margin-top:2px;">
                   Left-drag joystick + hold RIGHT mouse button = move · release either = stop
                 </div>
+  </div>
+  <div class="single-joint-jogger" id="singleJointJogger">
+    <div class="single-joint-title"><span>Single Joint Jog</span><span class="badge">120 Hz</span></div>
+    <div class="single-joint-grid">
+      <div class="joint-jog-card"><b>J1</b><button class="joint-jog-btn" data-joint="0" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="0" data-dir="1">＋</button></div>
+      <div class="joint-jog-card"><b>J2</b><button class="joint-jog-btn" data-joint="1" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="1" data-dir="1">＋</button></div>
+      <div class="joint-jog-card"><b>J3</b><button class="joint-jog-btn" data-joint="2" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="2" data-dir="1">＋</button></div>
+      <div class="joint-jog-card"><b>J4</b><button class="joint-jog-btn" data-joint="3" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="3" data-dir="1">＋</button></div>
+      <div class="joint-jog-card"><b>J5</b><button class="joint-jog-btn" data-joint="4" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="4" data-dir="1">＋</button></div>
+      <div class="joint-jog-card"><b>J6</b><button class="joint-jog-btn" data-joint="5" data-dir="-1">−</button><button class="joint-jog-btn" data-joint="5" data-dir="1">＋</button></div>
+    </div>
+    <div class="field-row" style="margin-top:2px;">
+      <span class="field-label">Step / tick</span>
+      <input id="singleJointStepDeg" type="number" value="2" step="0.5" min="0.1" max="60" style="width:70px"/>
+      <span class="muted-text">deg/s</span>
+    </div>
+    <div class="muted-text">Hold ＋/− to jog one joint continuously. Same dead-man style as TCP joystick; release = stop.</div>
+  </div>
+</div>
 </div>
 </div></div></div>
 <!-- Hidden legacy controls retained only for JS compatibility.
@@ -3222,6 +3306,113 @@
         return false;
       }
 
+
+      // ── SINGLE JOINT JOG + MANUAL TCP TARGET ───────────────────────
+      // Single Joint Jog now follows the same control style as Virtual Joystick:
+      // hold button = stream velocity command; release = explicit stop.
+      // It does NOT compute an absolute target angle, so it always moves from
+      // the robot's current joint state and avoids stale UI angle jumps.
+      const SINGLE_JOINT_HZ = 50;
+      const SINGLE_JOINT_INT = 20;
+      const SINGLE_JOINT_T = 0.08;
+      let singleJointTimer = null;
+      let singleJointActive = null;
+
+      function getSingleJointSpeedDegSec() {
+        const stepEl = el('singleJointStepDeg');
+        let speed = parseFloat(stepEl?.value || '2');
+        if(!isFinite(speed) || speed <= 0) speed = 2;
+        // Do not silently clamp user input down to tiny values. This field is
+        // now joint speed in deg/s, matching joystick-style velocity control.
+        return speed;
+      }
+
+      function sendSingleJointVelocity(jointIndex, dir) {
+        const j = Number(jointIndex);
+        const signedDir = Number(dir) < 0 ? -1 : 1;
+        if(!Number.isInteger(j) || j < 0 || j > 5) return false;
+
+        const degPerSecond = getSingleJointSpeedDegSec();
+        const qd = [0,0,0,0,0,0];
+        qd[j] = rad(degPerSecond) * signedDir;
+
+        return sendCmd({ type: 'speedj', qd, a: 1.2, t: SINGLE_JOINT_T });
+      }
+
+      function stopSingleJointJog() {
+        if(singleJointTimer) { clearInterval(singleJointTimer); singleJointTimer = null; }
+        if(singleJointActive) {
+          sendCmd({ type: 'speedj_stop', a: 1.2 });
+          singleJointActive = null;
+        }
+      }
+
+      function startSingleJointJog(jointIndex, dir) {
+        stopSingleJointJog();
+        singleJointActive = { jointIndex: Number(jointIndex), dir: Number(dir) < 0 ? -1 : 1 };
+        sendSingleJointVelocity(singleJointActive.jointIndex, singleJointActive.dir);
+        singleJointTimer = setInterval(() => {
+          if(singleJointActive) sendSingleJointVelocity(singleJointActive.jointIndex, singleJointActive.dir);
+        }, SINGLE_JOINT_INT);
+      }
+
+      function initSingleJointJogger() {
+        document.querySelectorAll('.joint-jog-btn').forEach(btn => {
+          const jointIndex = parseInt(btn.dataset.joint, 10);
+          const dir = parseInt(btn.dataset.dir, 10);
+          const down = ev => { ev.preventDefault(); ev.stopPropagation(); startSingleJointJog(jointIndex, dir); };
+          btn.addEventListener('pointerdown', down);
+          btn.addEventListener('mousedown', down);
+          btn.addEventListener('touchstart', down, {passive:false});
+          btn.addEventListener('contextmenu', ev => ev.preventDefault());
+        });
+        ['pointerup','pointercancel','mouseup','mouseleave','blur','touchend','touchcancel'].forEach(evt => {
+          window.addEventListener(evt, stopSingleJointJog);
+        });
+      }
+
+      function tcpTargetIds() {
+        return ['tcpTargetX','tcpTargetY','tcpTargetZ','tcpTargetRx','tcpTargetRy','tcpTargetRz'];
+      }
+
+      function setTcpTargetFromPose(pose) {
+        if(!pose || pose.length !== 6) return;
+        tcpTargetIds().forEach((id, i) => {
+          const input = el(id);
+          if(input) input.value = Number(pose[i]).toFixed(4);
+        });
+      }
+
+      function readTcpTargetPose() {
+        const pose = tcpTargetIds().map(id => parseFloat(el(id)?.value));
+        if(pose.some(v => !isFinite(v))) return null;
+        return pose;
+      }
+
+      window.refreshTcpTargetFromCurrent = function() {
+        if(!currentTcpPose || currentTcpPose.length !== 6) {
+          setHint('No current TCP pose available yet.');
+          return;
+        }
+        setTcpTargetFromPose(currentTcpPose);
+        setHint('Current TCP pose loaded into manual target fields.');
+      };
+
+      window.moveToManualTcpTarget = function() {
+        const pose = readTcpTargetPose();
+        if(!pose) { setHint('Invalid TCP target values.'); return; }
+        sendCmd({ type:'movel', pose });
+        setHint('Manual TCP movel command sent.');
+      };
+
+      function initManualTcpPanel() {
+        el('tcpLoadCurrentBtn')?.addEventListener('click', window.refreshTcpTargetFromCurrent);
+        el('tcpMoveTargetBtn')?.addEventListener('click', window.moveToManualTcpTarget);
+      }
+
+      initSingleJointJogger();
+      initManualTcpPanel();
+
       // ── FREEDRIVE ───────────────────────────────────────────────────
       let fdActive = false, fdSpaceDown = false;
 
@@ -4038,7 +4229,23 @@
       rttHistory: [],                // ring buffer for jitter calc
       rejectedCount: 0,
       auditTrail: [],                // {ts, dir, kind, detail}
-      vCap: 1.0                      // velocity multiplier 0..1 (latency-adaptive)
+      vCap: 1.0,                     // velocity multiplier 0..1 (latency-adaptive)
+      net: {
+        captureEnabled: true,
+        startedAt: new Date().toISOString(),
+        pingSeq: 0,
+        sent: 0,
+        received: 0,
+        lost: 0,
+        pending: {},
+        samples: [],
+        cmdSamples: [],
+        peerInfo: {},
+        publicIp: null,
+        ipGeo: null,
+        browserGeo: null,
+        lastPongSeq: null
+      }
     };
 
     // ---------- Authority badge / UI helpers ----------
@@ -4098,6 +4305,92 @@
       URL.revokeObjectURL(url);
     });
 
+    // ---------- Network diagnostics and downloadable evidence bundle ----------
+    function netNow(){ return new Date().toISOString(); }
+    function getNavNetInfo(){
+      const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+      return c ? { effectiveType:c.effectiveType||null, downlink_mbps:c.downlink||null, rtt_ms_hint:c.rtt||null, saveData:!!c.saveData } : {};
+    }
+    function updateNetworkUi(){
+      const n = xsite.net;
+      const total = n.received + n.lost;
+      const lossPct = total ? (100 * n.lost / total) : 0;
+      if($('pktLossVal')) $('pktLossVal').textContent = lossPct.toFixed(1) + '%';
+      if($('netSampleCount')) $('netSampleCount').textContent = String(n.samples.length);
+      if($('netPendingVal')) $('netPendingVal').textContent = String(Object.keys(n.pending).length);
+      const ni = getNavNetInfo();
+      if($('downlinkVal')) $('downlinkVal').textContent = ni.downlink_mbps ? `${ni.downlink_mbps} Mbps` : '—';
+      if($('netCaptureBadge')) { $('netCaptureBadge').textContent = n.captureEnabled ? 'CAPTURING' : 'PAUSED'; $('netCaptureBadge').className = n.captureEnabled ? 'badge success' : 'badge'; }
+      if($('relayPeerIpVal')) $('relayPeerIpVal').textContent = n.peerInfo.peer_ip || n.peerInfo.relay_peer_ip || '—';
+      if($('publicIpVal')) $('publicIpVal').textContent = n.publicIp || '—';
+      if($('ipLocationVal')) {
+        const g = n.ipGeo;
+        $('ipLocationVal').textContent = g ? `${g.city || ''} ${g.region || ''} ${g.country_name || g.country || ''} (${g.latitude || g.lat || '—'}, ${g.longitude || g.lon || '—'})` : '—';
+      }
+      if($('gpsLocationVal')) {
+        const g = n.browserGeo;
+        $('gpsLocationVal').textContent = g ? `${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)} ±${Math.round(g.accuracy||0)}m` : 'not shared';
+      }
+    }
+    function recordNetSample(sample){
+      if(!xsite.net.captureEnabled) return;
+      xsite.net.samples.push(Object.assign({ts: netNow(), role: xsite.role, authority: xsite.authority}, sample));
+      if(xsite.net.samples.length > 20000) xsite.net.samples.shift();
+      updateNetworkUi();
+    }
+    async function fetchPublicIpAndGeo(){
+      try { const r = await fetch('https://api.ipify.org?format=json', {cache:'no-store'}); const j = await r.json(); xsite.net.publicIp = j.ip || null; } catch(_e) {}
+      try { const r = await fetch('https://ipapi.co/json/', {cache:'no-store'}); const j = await r.json(); xsite.net.ipGeo = j || null; if(!xsite.net.publicIp && j.ip) xsite.net.publicIp = j.ip; } catch(_e) {}
+      updateNetworkUi();
+    }
+    function requestBrowserLocation(){
+      if(!navigator.geolocation){ alert('Browser Geolocation API is not available.'); return; }
+      navigator.geolocation.getCurrentPosition(pos => {
+        xsite.net.browserGeo = { latitude:pos.coords.latitude, longitude:pos.coords.longitude, accuracy:pos.coords.accuracy, altitude:pos.coords.altitude, heading:pos.coords.heading, speed:pos.coords.speed, ts:new Date(pos.timestamp).toISOString() };
+        updateNetworkUi();
+      }, err => alert('Location was not shared: ' + err.message), {enableHighAccuracy:false, timeout:8000, maximumAge:60000});
+    }
+    function csvEscape(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
+    function samplesToCsv(rows){
+      const headers = ['ts','role','authority','kind','seq','rtt_ms','jitter_ms','lost','pending','buffered_amount','vcap','ws_url','peer_ip','public_ip','effective_type','downlink_mbps','browser_rtt_hint','cmd_seq','cmd_type','ack_latency_ms','reason'];
+      const lines = [headers.join(',')];
+      rows.forEach(r => lines.push(headers.map(h => csvEscape(r[h])).join(',')));
+      return lines.join('\n');
+    }
+    function auditToCsv(){
+      const lines = ['timestamp,direction,kind,detail'];
+      xsite.auditTrail.forEach(e => lines.push([e.ts,e.dir,e.kind,e.detail].map(csvEscape).join(',')));
+      return lines.join('\n');
+    }
+    function netSummary(){
+      const rtts = xsite.net.samples.map(s=>Number(s.rtt_ms)).filter(v=>Number.isFinite(v));
+      const avg = rtts.length ? rtts.reduce((a,b)=>a+b,0)/rtts.length : null;
+      const sorted = [...rtts].sort((a,b)=>a-b);
+      const pct = p => sorted.length ? sorted[Math.min(sorted.length-1, Math.floor(sorted.length*p))] : null;
+      const total = xsite.net.received + xsite.net.lost;
+      return { generated_at:netNow(), started_at:xsite.net.startedAt, role:xsite.role, room:$('remoteRoom')?.value||null, relay_url:$('remoteWsIp')?.value||null, samples:xsite.net.samples.length, ping_sent:xsite.net.sent, ping_received:xsite.net.received, ping_lost:xsite.net.lost, packet_loss_percent: total ? 100*xsite.net.lost/total : 0, rtt_ms_avg:avg, rtt_ms_min:rtts.length?Math.min(...rtts):null, rtt_ms_p50:pct(0.50), rtt_ms_p95:pct(0.95), rtt_ms_max:rtts.length?Math.max(...rtts):null, peer_info:xsite.net.peerInfo, public_ip:xsite.net.publicIp, ip_geolocation:xsite.net.ipGeo, browser_geolocation:xsite.net.browserGeo, browser_network:getNavNetInfo(), user_agent:navigator.userAgent, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone };
+    }
+    function crc32(str){ const table = crc32.table || (crc32.table = (()=>{let c,t=[]; for(let n=0;n<256;n++){c=n; for(let k=0;k<8;k++) c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1)); t[n]=c>>>0;} return t;})()); let crc = 0 ^ (-1); for(let i=0;i<str.length;i++) crc = (crc>>>8) ^ table[(crc ^ str.charCodeAt(i)) & 0xff]; return (crc ^ (-1)) >>> 0; }
+    function u16(n){ return String.fromCharCode(n & 255, (n>>>8)&255); }
+    function u32(n){ return String.fromCharCode(n & 255, (n>>>8)&255, (n>>>16)&255, (n>>>24)&255); }
+    function makeZip(files){ let local='', central='', offset=0; for(const f of files){ const name=f.name; const data=unescape(encodeURIComponent(f.content)); const crc=crc32(data), size=data.length; const lh='PK\x03\x04'+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+name+data; local+=lh; central+='PK\x01\x02'+u16(20)+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+u16(0)+u16(0)+u16(0)+u32(0)+u32(offset)+name; offset+=lh.length; } const end='PK\x05\x06'+u16(0)+u16(0)+u16(files.length)+u16(files.length)+u32(central.length)+u32(local.length)+u16(0); return new Blob([local, central, end], {type:'application/zip'}); }
+    function downloadNetworkBundle(){
+      const files = [
+        {name:'network_summary.json', content: JSON.stringify(netSummary(), null, 2)},
+        {name:'network_samples.csv', content: samplesToCsv(xsite.net.samples)},
+        {name:'network_samples.json', content: JSON.stringify(xsite.net.samples, null, 2)},
+        {name:'command_ack_samples.json', content: JSON.stringify(xsite.net.cmdSamples, null, 2)},
+        {name:'session_audit.csv', content: auditToCsv()},
+        {name:'browser_environment.json', content: JSON.stringify({userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, network:getNavNetInfo(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}, null, 2)}
+      ];
+      const blob = makeZip(files); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `sonair_ucl_network_bundle_${Date.now()}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+    $('captureNetBtn')?.addEventListener('click', () => { xsite.net.captureEnabled = !xsite.net.captureEnabled; $('captureNetBtn').textContent = xsite.net.captureEnabled ? 'Pause Capture' : 'Start Capture'; updateNetworkUi(); });
+    $('shareLocationBtn')?.addEventListener('click', requestBrowserLocation);
+    $('downloadNetBundleBtn')?.addEventListener('click', downloadNetworkBundle);
+    setInterval(updateNetworkUi, 1000);
+    fetchPublicIpAndGeo();
+
     // ---------- Workspace envelope (soft limits applied on host before relay) ----------
     function envelopeAccepts(tcp){
       if(!$('envelopeChk')?.checked) return true;
@@ -4147,6 +4440,10 @@
         const j = Math.sqrt(v);
         const jEl = $('jitterVal'); if(jEl) jEl.textContent = j.toFixed(1) + ' ms';
       }
+      const ni = getNavNetInfo();
+      let jNow = null;
+      if(arr.length >= 2){ const mm = arr.reduce((a,b)=>a+b,0)/arr.length; jNow = Math.sqrt(arr.reduce((a,b)=>a+(b-mm)*(b-mm),0)/arr.length); }
+      recordNetSample({ kind:'pong', seq:xsite.net.lastPongSeq || null, rtt_ms:rttMs, jitter_ms:jNow, lost:xsite.net.lost, pending:Object.keys(xsite.net.pending).length, buffered_amount:remoteWs ? remoteWs.bufferedAmount : null, vcap:xsite.vCap, ws_url:$('remoteWsIp')?.value || null, peer_ip:xsite.net.peerInfo.peer_ip || null, public_ip:xsite.net.publicIp, effective_type:ni.effectiveType || null, downlink_mbps:ni.downlink_mbps || null, browser_rtt_hint:ni.rtt_ms_hint || null });
       recomputeVCap(rttMs);
     }
 
@@ -4157,8 +4454,13 @@
       heartbeatTimer = setInterval(() => {
         if(remoteWs && remoteWs.readyState === WebSocket.OPEN){
           xsite.pingTs = Date.now();
-          try { remoteWs.send(JSON.stringify({ type: 'ping', ts: xsite.pingTs })); } catch(_e){}
+          const seq = ++xsite.net.pingSeq;
+          xsite.net.sent++;
+          xsite.net.pending[seq] = {ts: xsite.pingTs};
+          try { remoteWs.send(JSON.stringify({ type: 'ping', ts: xsite.pingTs, seq })); } catch(_e){}
         }
+        const now = Date.now();
+        Object.keys(xsite.net.pending).forEach(k => { const p = xsite.net.pending[k]; if(p && now - p.ts > 2000){ xsite.net.lost++; recordNetSample({kind:'timeout', seq:k, rtt_ms:null, lost:xsite.net.lost, pending:Object.keys(xsite.net.pending).length, buffered_amount:remoteWs ? remoteWs.bufferedAmount : null, vcap:xsite.vCap, ws_url:$('remoteWsIp')?.value || null, peer_ip:xsite.net.peerInfo.peer_ip || null, public_ip:xsite.net.publicIp}); delete xsite.net.pending[k]; } });
       }, 250);
       watchdogTimer = setInterval(() => {
         if(!$('watchdogChk')?.checked) return;
@@ -4249,7 +4551,9 @@
           role:  xsite.role,
           site:  xsite.role === 'host' ? 'UoN' : 'UCL',
           room:  room,
-          ts:    Date.now()
+          ts:    Date.now(),
+          ua:    navigator.userAgent,
+          client_net: getNavNetInfo()
         }));
         isRemoteConnected = true;
         xsite.lastPeerHeartbeat = Date.now();
@@ -4300,7 +4604,13 @@
       }
       if(data.type === 'pong'){
         const rtt = Date.now() - data.ts;
+        if(data.seq && xsite.net.pending[data.seq]){ delete xsite.net.pending[data.seq]; xsite.net.received++; xsite.net.lastPongSeq = data.seq; }
         pushRtt(rtt);
+        return;
+      }
+      if(data.type === 'peer_info'){
+        xsite.net.peerInfo = Object.assign({}, xsite.net.peerInfo, data);
+        updateNetworkUi();
         return;
       }
 
@@ -4389,7 +4699,20 @@
         return;
       }
       if(data.type === 'cmd_ack'){
-        // optional: track for QoS — currently a no-op
+        const ackSample = {
+          ts: netNow(),
+          seq: data.seq ?? null,
+          relay_rtt_ms: data.relay_rtt_ms ?? null,
+          server_ts: data.server_ts ?? null,
+          role: xsite.role,
+          authority: xsite.authority,
+          buffered_amount: remoteWs ? remoteWs.bufferedAmount : null
+        };
+        if(xsite.net && Array.isArray(xsite.net.cmdSamples)){
+          xsite.net.cmdSamples.push(ackSample);
+          if(xsite.net.cmdSamples.length > 20000) xsite.net.cmdSamples.shift();
+        }
+        recordNetSample(Object.assign({kind:'cmd_ack'}, ackSample));
         return;
       }
 
@@ -4467,6 +4790,15 @@
           const tcp = data.q; currentTcpPose = tcp;
           if(tcp && tcp.length === 6 && $('tcpPoseDisplay')) {
             $('tcpPoseDisplay').textContent = `TCP: X:${tcp[0].toFixed(3)} Y:${tcp[1].toFixed(3)} Z:${tcp[2].toFixed(3)}`;
+          }
+          // Keep manual TCP target convenient: pre-fill once from live TCP, but
+          // do not overwrite after the user starts editing.
+          if (tcp && tcp.length === 6 && !window.__tcpTargetPrefilled) {
+            const ids = ['tcpTargetX','tcpTargetY','tcpTargetZ','tcpTargetRx','tcpTargetRy','tcpTargetRz'];
+            if (ids.every(id => document.getElementById(id))) {
+              ids.forEach((id, i) => { document.getElementById(id).value = Number(tcp[i]).toFixed(4); });
+              window.__tcpTargetPrefilled = true;
+            }
           }
 
           // [核心融合逻辑] 仅在启动 OmniScan 同步后，记录 TCP 并结合超声幅值绘图
