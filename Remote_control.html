@@ -3286,20 +3286,31 @@
       }
 
       function sendCmd(msg) {
+        // v30: Guest/UCL must use relay first. Never let a guest fall back to
+        // ws://127.0.0.1:8765, because that is the guest laptop, not the UoN UR agent.
+        // This also avoids any dependency on a separate remoteOk() helper.
+        if (xsite.role === 'guest') {
+          const canRemoteSend = (
+            xsite.authority === 'operator' &&
+            isRemoteConnected &&
+            remoteWs &&
+            remoteWs.readyState === WebSocket.OPEN
+          );
+          if (canRemoteSend) {
+            const out = Object.assign({}, msg, {
+              seq: ++xsite.cmdSeq,
+              ts: Date.now()
+            });
+            remoteWs.send(JSON.stringify(out));
+            return true;
+          }
+          setHint('Guest has no remote motion authority. Request control and wait for GRANT.');
+          return false;
+        }
+
         // Host/UoN path: direct low-latency local bridge to the robot.
         if (localOk()) {
           localWs.send(JSON.stringify(msg));
-          return true;
-        }
-        // Guest/UCL path: after host grant, send motion via the relay.
-        // This is essential for Tailscale/cross-site operation because the
-        // guest browser will not have a local ws://127.0.0.1:8765 bridge.
-        if (remoteOk()) {
-          const out = Object.assign({}, msg, {
-            seq: ++xsite.cmdSeq,
-            ts: Date.now()
-          });
-          remoteWs.send(JSON.stringify(out));
           return true;
         }
         setHint('Not connected or no motion authority.');
@@ -4870,15 +4881,36 @@
         focusKeyCatcher();
     });
 
+
+    // v30 helper: send a single short URScript movel through the normal command channel.
+    // This is intentionally not a long multi-waypoint script, because long scripts can be
+    // unreliable over the UCL -> relay -> UoN path. Each waypoint is sent as a tiny program.
+    function sendZScanTinyMovel(label, pose, opts={}) {
+        if (!pose || pose.length !== 6) {
+            setHint(`Error: bad pose for ${label || 'waypoint'}.`);
+            return false;
+        }
+        const a = Number.isFinite(opts.a) ? opts.a : 0.12;
+        const v = Number.isFinite(opts.v) ? opts.v : 0.04;
+        const r = Number.isFinite(opts.r) ? opts.r : 0.0;
+        const safeLabel = String(label || 'zscan').replace(/[^a-zA-Z0-9_]/g, '_').slice(0, 40);
+        const c = pose;
+        const scriptStr =
+          `def ${safeLabel}():\n` +
+          `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n` +
+          `end\n`;
+        return sendCmd({ type: 'run_script', script: scriptStr });
+    }
+
+    function sleepMs(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
     $('btnVerifyPos')?.addEventListener('click', () => {
         if (!scanHome) {
             setHint("Error: Target coordinates not generated/set yet.");
             return;
         }
-        // v29 FIX: use the common motion channel rather than localWs.
-        // UoN Host -> local bridge; UCL Guest -> relay -> UoN agent.
-        const ok = sendCmd({ type: "movel", pose: scanHome, a: 0.10, v: 0.05, r: 0.0 });
-        if (ok) setHint("Verifying... Move-to-center command sent through the active control channel.");
+        const ok = sendZScanTinyMovel('verify_center', scanHome, {a:0.12, v:0.04, r:0.0});
+        if (ok) setHint("Verifying... Robot is moving to the calculated Target Center via the active control channel.");
         focusKeyCatcher();
     });
 
@@ -4903,7 +4935,7 @@
             scanP4[0] - scanP1[0],
             scanP4[1] - scanP1[1]
         );
-        let num_lines = Math.max(1, Math.ceil(dist_scan_dir / spacing_m));
+        let num_lines = Math.max(1, Math.floor(dist_scan_dir / spacing_m));
 
         simulatedWaypoints = [];
 
@@ -4966,49 +4998,42 @@
         focusKeyCatcher();
     });
 
-    $('deployScanBtn')?.addEventListener('click', () => {
+    $('deployScanBtn')?.addEventListener('click', async () => {
         if (!simulatedWaypoints || simulatedWaypoints.length === 0) {
             setHint("Error: Please generate the path preview first.");
             return;
         }
-
-        // v29 FIX: execute remote-safe chunked movel sequence.
-        // Do not use localWs directly and do not send a single oversized run_script.
-        const points = simulatedWaypoints.map(wp => ({
-            name: wp.type,
-            pose: wp.coords,
-            isHome: String(wp.type || '').includes('HOME')
-        }));
-
-        let i = 0;
-        const stepDelayMs = 1100;
-
-        function sendNextScanPoint() {
-            if (i >= points.length) {
-                setHint(`✅ Auto Zig-Zag scan command sequence finished: ${points.length} points sent.`);
-                focusKeyCatcher();
-                return;
-            }
-            const p = points[i];
-            const ok = sendCmd({
-                type: "movel",
-                pose: p.pose,
-                a: p.isHome ? 0.10 : 0.08,
-                v: p.isHome ? 0.05 : 0.035,
-                r: 0.0
-            });
-            if (!ok) {
-                setHint(`Error: Scan stopped at point ${i + 1}/${points.length}. No active motion authority/channel.`);
-                focusKeyCatcher();
-                return;
-            }
-            setHint(`Auto Zig-Zag running: sent ${i + 1}/${points.length} (${p.name}).`);
-            i += 1;
-            window.setTimeout(sendNextScanPoint, stepDelayMs);
+        if (window.__zscanRunning) {
+            setHint("Z-Scan is already running. Wait for it to finish before starting another scan.");
+            return;
         }
 
-        sendNextScanPoint();
-        focusKeyCatcher();
+        window.__zscanRunning = true;
+        const btn = $('deployScanBtn');
+        if (btn) btn.disabled = true;
+        try {
+            setHint(`Starting remote-safe Z-Scan: ${simulatedWaypoints.length} waypoints.`);
+            for (let i = 0; i < simulatedWaypoints.length; i++) {
+                const wp = simulatedWaypoints[i];
+                const isHome = String(wp.type || '').includes('HOME');
+                const ok = sendZScanTinyMovel(`zscan_${i}_${wp.type}`, wp.coords, {
+                    a: isHome ? 0.12 : 0.10,
+                    v: isHome ? 0.04 : 0.025,
+                    r: 0.0
+                });
+                if (!ok) {
+                    setHint(`Z-Scan stopped before waypoint ${i}. Check authority / relay / agent connection.`);
+                    break;
+                }
+                setHint(`Z-Scan waypoint ${i + 1}/${simulatedWaypoints.length}: ${wp.type}`);
+                await sleepMs(isHome ? 1200 : 650);
+            }
+            setHint(`Z-Scan command sequence finished: ${simulatedWaypoints.length} waypoints sent.`);
+        } finally {
+            window.__zscanRunning = false;
+            if (btn) btn.disabled = false;
+            focusKeyCatcher();
+        }
     });
 
     function buildJointUI(){
