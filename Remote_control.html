@@ -4875,13 +4875,10 @@
             setHint("Error: Target coordinates not generated/set yet.");
             return;
         }
-        if (localWs && localWs.readyState === WebSocket.OPEN) {
-            let scriptStr = "def verify_center():\n";
-            scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
-            scriptStr += "end\n";
-            localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
-            setHint("Verifying... Robot is moving to the calculated Target Center.");
-        }
+        // v29 FIX: use the common motion channel rather than localWs.
+        // UoN Host -> local bridge; UCL Guest -> relay -> UoN agent.
+        const ok = sendCmd({ type: "movel", pose: scanHome, a: 0.10, v: 0.05, r: 0.0 });
+        if (ok) setHint("Verifying... Move-to-center command sent through the active control channel.");
         focusKeyCatcher();
     });
 
@@ -4906,7 +4903,7 @@
             scanP4[0] - scanP1[0],
             scanP4[1] - scanP1[1]
         );
-        let num_lines = Math.max(1, Math.floor(dist_scan_dir / spacing_m));
+        let num_lines = Math.max(1, Math.ceil(dist_scan_dir / spacing_m));
 
         simulatedWaypoints = [];
 
@@ -4969,80 +4966,49 @@
         focusKeyCatcher();
     });
 
-    // v28 fix: Execute Scan must use the same authority-aware command path as
-    // Move to Center. UCL/guest does NOT have a local bridge, so sending the
-    // scan directly to localWs makes the button appear dead. We also avoid one
-    // very long run_script over the relay and instead stream small movel commands
-    // waypoint-by-waypoint. This keeps TCP logging and all other modules unchanged.
-    let zScanRunning = false;
-    const zScanSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-    function estimateMovelDelayMs(fromPose, toPose) {
-        if (!fromPose || !toPose) return 850;
-        const dx = Number(toPose[0]) - Number(fromPose[0]);
-        const dy = Number(toPose[1]) - Number(fromPose[1]);
-        const dz = Number(toPose[2]) - Number(fromPose[2]);
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        // Bridge-side movel speed is conservative (~0.05 m/s). Add margin so
-        // commands do not pile up on the UR secondary interface during relay use.
-        return Math.max(650, Math.min(4500, Math.ceil((dist / 0.045) * 1000) + 350));
-    }
-
-    $('deployScanBtn')?.addEventListener('click', async () => {
-        if (zScanRunning) {
-            setHint("Z scan is already running. Please wait or use E-STOP if needed.");
-            return;
-        }
+    $('deployScanBtn')?.addEventListener('click', () => {
         if (!simulatedWaypoints || simulatedWaypoints.length === 0) {
             setHint("Error: Please generate the path preview first.");
             return;
         }
 
-        // Guest/UCL must have relay authority. Host/UoN uses the same sendCmd
-        // helper, which will use the local bridge when host owns control.
-        if (xsite.role === 'guest' && !remoteOk()) {
-            setHint("UCL cannot execute scan yet: REQUEST CONTROL and wait for UoN GRANT.");
-            return;
-        }
-        if (xsite.role !== 'guest' && !localOk()) {
-            setHint("Host cannot execute scan: local bridge is not connected or authority is remote.");
-            return;
-        }
+        // v29 FIX: execute remote-safe chunked movel sequence.
+        // Do not use localWs directly and do not send a single oversized run_script.
+        const points = simulatedWaypoints.map(wp => ({
+            name: wp.type,
+            pose: wp.coords,
+            isHome: String(wp.type || '').includes('HOME')
+        }));
 
-        const btn = $('deployScanBtn');
-        zScanRunning = true;
-        if (btn) btn.disabled = true;
-        setHint(`🚀 Z scan started: streaming ${simulatedWaypoints.length} movel points via ${xsite.role === 'guest' ? 'relay' : 'local bridge'}...`);
+        let i = 0;
+        const stepDelayMs = 1100;
 
-        try {
-            let previousPose = currentTcpPose || scanHome || simulatedWaypoints[0].coords;
-            for (let i = 0; i < simulatedWaypoints.length; i++) {
-                const wp = simulatedWaypoints[i];
-                const c = wp.coords;
-                const ok = sendCmd({
-                    type: "movel",
-                    pose: [Number(c[0]), Number(c[1]), Number(c[2]), Number(c[3]), Number(c[4]), Number(c[5])]
-                });
-                if (!ok) {
-                    setHint(`Z scan stopped before point ${i}: command path not available.`);
-                    break;
-                }
-                if (typeof recordUrOperation === 'function') {
-                    try { recordUrOperation('zscan_movel', { index: i, label: wp.type, pose: c }); } catch(_e) {}
-                }
-                setHint(`Z scan running: point ${i + 1}/${simulatedWaypoints.length} (${wp.type}).`);
-                await zScanSleep(estimateMovelDelayMs(previousPose, c));
-                previousPose = c;
+        function sendNextScanPoint() {
+            if (i >= points.length) {
+                setHint(`✅ Auto Zig-Zag scan command sequence finished: ${points.length} points sent.`);
+                focusKeyCatcher();
+                return;
             }
-            setHint(`✅ Z scan command stream completed: ${simulatedWaypoints.length} points sent.`);
-        } catch (err) {
-            console.error('Z scan execution failed:', err);
-            setHint(`Z scan error: ${err && err.message ? err.message : err}`);
-        } finally {
-            zScanRunning = false;
-            if (btn) btn.disabled = false;
-            focusKeyCatcher();
+            const p = points[i];
+            const ok = sendCmd({
+                type: "movel",
+                pose: p.pose,
+                a: p.isHome ? 0.10 : 0.08,
+                v: p.isHome ? 0.05 : 0.035,
+                r: 0.0
+            });
+            if (!ok) {
+                setHint(`Error: Scan stopped at point ${i + 1}/${points.length}. No active motion authority/channel.`);
+                focusKeyCatcher();
+                return;
+            }
+            setHint(`Auto Zig-Zag running: sent ${i + 1}/${points.length} (${p.name}).`);
+            i += 1;
+            window.setTimeout(sendNextScanPoint, stepDelayMs);
         }
+
+        sendNextScanPoint();
+        focusKeyCatcher();
     });
 
     function buildJointUI(){
