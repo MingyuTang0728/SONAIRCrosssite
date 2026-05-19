@@ -3286,9 +3286,10 @@
       }
 
       function sendCmd(msg) {
-        // v30: Guest/UCL must use relay first. Never let a guest fall back to
+        // v31: Guest/UCL must use relay first. Never let a guest fall back to
         // ws://127.0.0.1:8765, because that is the guest laptop, not the UoN UR agent.
-        // This also avoids any dependency on a separate remoteOk() helper.
+        // This function is now also exported to window so the Zig-Zag module,
+        // which lives outside this IIFE, can use the exact same safe control path.
         if (xsite.role === 'guest') {
           const canRemoteSend = (
             xsite.authority === 'operator' &&
@@ -3316,6 +3317,14 @@
         setHint('Not connected or no motion authority.');
         return false;
       }
+
+      // v31 critical fix:
+      // sendCmd is scoped inside sonairControls(). The Z-Scan module is outside
+      // this IIFE, so direct calls to sendCmd caused: ReferenceError: sendCmd is not defined.
+      // Exporting the function preserves the existing TCP logging, relay routing,
+      // authority checks, joystick, freedrive and all other working modules.
+      window.__sonairSendCmd = sendCmd;
+      window.sendCmd = sendCmd;
 
 
       // ── SINGLE JOINT JOG + MANUAL TCP TARGET ───────────────────────
@@ -4899,7 +4908,12 @@
           `def ${safeLabel}():\n` +
           `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n` +
           `end\n`;
-        return sendCmd({ type: 'run_script', script: scriptStr });
+        const zsend = window.__sonairSendCmd || window.sendCmd;
+        if (typeof zsend !== 'function') {
+            setHint('Error: command sender is not ready. Reload the page after deployment.');
+            return false;
+        }
+        return zsend({ type: 'run_script', script: scriptStr });
     }
 
     function sleepMs(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
