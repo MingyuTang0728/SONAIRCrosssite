@@ -4994,6 +4994,118 @@
     // ---------------------------
     let simulatedWaypoints = [];
 
+    // v33: in-browser 3D trajectory simulation overlay.
+    // This is only a visual overlay in the HTML stage; it does not send robot commands.
+    let zscanPathGroup = null;
+    let zscanMarker = null;
+    let zscanAnimTimer = null;
+
+    function zscanToScenePoint(pose) {
+        // Map UR TCP metres to the Three.js floor coordinate system.
+        // The visual path is scaled slightly so a small real scan area is visible on the stage.
+        const scale = 3.0;
+        const x = Number(pose[0] || 0) * scale;
+        const y = Math.max(0.035, Number(pose[2] || 0) * scale + 0.015);
+        const z = -Number(pose[1] || 0) * scale;
+        return new THREE.Vector3(x, y, z);
+    }
+
+    function clearZScanTrajectory3D() {
+        if (zscanAnimTimer) {
+            clearInterval(zscanAnimTimer);
+            zscanAnimTimer = null;
+        }
+        if (zscanPathGroup && scene) {
+            scene.remove(zscanPathGroup);
+            zscanPathGroup.traverse(obj => {
+                if (obj.geometry) obj.geometry.dispose();
+                if (obj.material) obj.material.dispose();
+            });
+        }
+        zscanPathGroup = null;
+        zscanMarker = null;
+    }
+
+    function renderZScanTrajectory3D(waypoints) {
+        if (typeof THREE === 'undefined' || !scene || !Array.isArray(waypoints) || waypoints.length < 2) return;
+        clearZScanTrajectory3D();
+        zscanPathGroup = new THREE.Group();
+        zscanPathGroup.name = 'ZScanTrajectoryPreview';
+
+        const pts = waypoints.map(wp => zscanToScenePoint(wp.coords));
+        const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
+        const lineMat = new THREE.LineBasicMaterial({ color: 0x19e6c2, linewidth: 2, transparent: true, opacity: 0.95 });
+        const line = new THREE.Line(lineGeom, lineMat);
+        zscanPathGroup.add(line);
+
+        // Small waypoint dots, alternating colours so the Z pattern is easy to read.
+        const startMat = new THREE.MeshBasicMaterial({ color: 0x58a6ff });
+        const scanMat = new THREE.MeshBasicMaterial({ color: 0x19e6c2 });
+        const homeMat = new THREE.MeshBasicMaterial({ color: 0xd29922 });
+        const dotGeom = new THREE.SphereGeometry(0.012, 12, 8);
+        waypoints.forEach((wp, idx) => {
+            const mat = String(wp.type || '').includes('HOME') ? homeMat : (idx % 2 ? scanMat : startMat);
+            const dot = new THREE.Mesh(dotGeom, mat);
+            dot.position.copy(pts[idx]);
+            dot.name = 'ZScanWaypoint_' + idx;
+            zscanPathGroup.add(dot);
+        });
+
+        zscanMarker = new THREE.Mesh(
+            new THREE.SphereGeometry(0.025, 20, 12),
+            new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+        );
+        zscanMarker.name = 'ZScanAnimatedMarker';
+        zscanMarker.position.copy(pts[0]);
+        zscanPathGroup.add(zscanMarker);
+
+        scene.add(zscanPathGroup);
+    }
+
+    function playZScanTrajectory3D(waypoints, stepMs=220) {
+        if (!Array.isArray(waypoints) || waypoints.length < 2) return;
+        if (!zscanPathGroup || !zscanMarker) renderZScanTrajectory3D(waypoints);
+        if (!zscanMarker) return;
+        if (zscanAnimTimer) clearInterval(zscanAnimTimer);
+        const pts = waypoints.map(wp => zscanToScenePoint(wp.coords));
+        let i = 0;
+        zscanMarker.position.copy(pts[0]);
+        zscanAnimTimer = setInterval(() => {
+            i += 1;
+            if (i >= pts.length) {
+                clearInterval(zscanAnimTimer);
+                zscanAnimTimer = null;
+                return;
+            }
+            zscanMarker.position.copy(pts[i]);
+        }, Math.max(60, stepMs));
+    }
+
+    function estimateMoveMs(fromPose, toPose, v) {
+        if (!fromPose || !toPose) return 900;
+        const dist = Math.hypot(
+            Number(toPose[0] || 0) - Number(fromPose[0] || 0),
+            Number(toPose[1] || 0) - Number(fromPose[1] || 0),
+            Number(toPose[2] || 0) - Number(fromPose[2] || 0)
+        );
+        const speed = Math.max(0.01, Number(v || 0.025));
+        return Math.max(700, Math.min(6000, Math.ceil((dist / speed) * 1000 + 450)));
+    }
+
+    function sendZScanScriptChunk(chunk, chunkIndex, opts={}) {
+        if (!chunk || !chunk.length) return false;
+        const a = Number.isFinite(opts.a) ? opts.a : 0.10;
+        const v = Number.isFinite(opts.v) ? opts.v : 0.025;
+        const r = Number.isFinite(opts.r) ? opts.r : 0.0015;
+        let scriptStr = `def zscan_chunk_${chunkIndex}():\n`;
+        for (const wp of chunk) {
+            const c = wp.coords;
+            scriptStr += `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n`;
+        }
+        scriptStr += 'end\n';
+        return sendZScanCommandDirect({ type: 'run_script', script: scriptStr });
+    }
+
     $('btnGenPath')?.addEventListener('click', () => {
         if (!scanP1 || !scanP2 || !scanP3 || !scanP4) {
             setHint("Error: Please set all 4 corners (P1, P2, P3, P4) first.");
@@ -5062,12 +5174,15 @@
                         </div>`;
             }).join('');
         }
-        setHint(`Preview Generated: ${simulatedWaypoints.length} waypoints calculated.`);
+        renderZScanTrajectory3D(simulatedWaypoints);
+        playZScanTrajectory3D(simulatedWaypoints, 120);
+        setHint(`Preview Generated: ${simulatedWaypoints.length} waypoints calculated. 3D trajectory overlay is shown on the stage.`);
         focusKeyCatcher();
     });
 
     $('clearSimPathBtn')?.addEventListener('click', () => {
         simulatedWaypoints = [];
+        clearZScanTrajectory3D();
         if ($('pathPtsCount')) $('pathPtsCount').textContent = `0 PTS`;
         if ($('simPathPreviewList')) $('simPathPreviewList').innerHTML = `<span class="muted-text">Preview cleared.</span>`;
         focusKeyCatcher();
@@ -5087,23 +5202,39 @@
         const btn = $('deployScanBtn');
         if (btn) btn.disabled = true;
         try {
-            setHint(`Starting remote-safe Z-Scan: ${simulatedWaypoints.length} waypoints.`);
-            for (let i = 0; i < simulatedWaypoints.length; i++) {
-                const wp = simulatedWaypoints[i];
-                const isHome = String(wp.type || '').includes('HOME');
-                const ok = sendZScanTinyMovel(`zscan_${i}_${wp.type}`, wp.coords, {
-                    a: isHome ? 0.12 : 0.10,
-                    v: isHome ? 0.04 : 0.025,
-                    r: 0.0
+            renderZScanTrajectory3D(simulatedWaypoints);
+            playZScanTrajectory3D(simulatedWaypoints, 180);
+            setHint(`Starting smoother remote Z-Scan: ${simulatedWaypoints.length} waypoints.`);
+
+            // v33: send small chunks instead of one command per waypoint.
+            // This reduces remote WebSocket overhead and makes UCL-side execution less jerky,
+            // while avoiding one very long URScript that some relay/browser paths drop.
+            const chunkSize = 4;
+            let sent = 0;
+            for (let start = 0; start < simulatedWaypoints.length; start += chunkSize) {
+                const chunk = simulatedWaypoints.slice(start, start + chunkSize);
+                const mostlyHome = chunk.some(wp => String(wp.type || '').includes('HOME'));
+                const v = mostlyHome ? 0.035 : 0.022;
+                const ok = sendZScanScriptChunk(chunk, Math.floor(start / chunkSize), {
+                    a: mostlyHome ? 0.10 : 0.08,
+                    v: v,
+                    r: mostlyHome ? 0.0 : 0.0015
                 });
                 if (!ok) {
-                    setHint(`Z-Scan stopped before waypoint ${i}. Check authority / relay / agent connection.`);
+                    setHint(`Z-Scan stopped before waypoint ${start}. Check authority / relay / agent connection.`);
                     break;
                 }
-                setHint(`Z-Scan waypoint ${i + 1}/${simulatedWaypoints.length}: ${wp.type}`);
-                await sleepMs(isHome ? 1200 : 650);
+                sent += chunk.length;
+                setHint(`Z-Scan chunk ${Math.floor(start / chunkSize) + 1}: ${sent}/${simulatedWaypoints.length} waypoints sent.`);
+
+                let waitMs = 400;
+                for (let j = 0; j < chunk.length; j++) {
+                    const prev = (start + j === 0) ? (currentTcpPose || chunk[j].coords) : simulatedWaypoints[start + j - 1].coords;
+                    waitMs += estimateMoveMs(prev, chunk[j].coords, v);
+                }
+                await sleepMs(waitMs);
             }
-            setHint(`Z-Scan command sequence finished: ${simulatedWaypoints.length} waypoints sent.`);
+            setHint(`Z-Scan command sequence finished: ${sent} waypoints sent. 3D trajectory overlay remains visible.`);
         } finally {
             window.__zscanRunning = false;
             if (btn) btn.disabled = false;
