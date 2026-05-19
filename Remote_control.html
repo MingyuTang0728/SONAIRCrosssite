@@ -5303,19 +5303,50 @@ function compactPlaceNameFromAddress(addr){
         focusKeyCatcher();
     });
 
+    // Route long URScript actions through the same authority-aware channel as
+    // the working remote jog/joystick controls.
+    // Host/UoN: direct local bridge. Guest/UCL: relay only after GRANT.
+    // Do not touch TCP pose capture or the data recorder.
+    function sendScriptWithAuthority(scriptStr, label, successHint) {
+        const payload = { type: "run_script", script: scriptStr };
+
+        if (xsite.role === 'guest') {
+            if (!(xsite.authority === 'operator' && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN)) {
+                setHint("Guest has no remote motion authority. Click REQUEST CONTROL and wait for UoN GRANT first.");
+                return false;
+            }
+            const out = Object.assign({}, payload, { seq: ++xsite.cmdSeq, ts: Date.now() });
+            remoteWs.send(JSON.stringify(out));
+            try { urRecQueueCommand(out, label || "remote_relay_run_script"); } catch(_e) {}
+            setHint(successHint || "Remote script deployed through relay.");
+            return true;
+        }
+
+        if (xsite.role === 'host' && xsite.authority === 'remote-operator') {
+            setHint("Host has granted control to remote operator. Release/recall control before running local script.");
+            return false;
+        }
+
+        if (localWs && localWs.readyState === WebSocket.OPEN) {
+            localWs.send(JSON.stringify(payload));
+            try { urRecQueueCommand(payload, label || "local_bridge_run_script"); } catch(_e) {}
+            setHint(successHint || "Local script deployed through bridge.");
+            return true;
+        }
+
+        setHint("Error: no active motion channel. Connect local bridge on UoN or relay authority on UCL.");
+        return false;
+    }
+
     $('btnVerifyPos')?.addEventListener('click', () => {
         if (!scanHome) {
             setHint("Error: Target coordinates not generated/set yet.");
             return;
         }
-        if (localWs && localWs.readyState === WebSocket.OPEN) {
-            let scriptStr = "def verify_center():\n";
-            scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
-            scriptStr += "end\n";
-            localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
-            urRecQueueCommand({ type: "run_script", script: scriptStr }, "local_bridge_direct");
-            setHint("Verifying... Robot is moving to the calculated Target Center.");
-        }
+        let scriptStr = "def verify_center():\n";
+        scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
+        scriptStr += "end\n";
+        sendScriptWithAuthority(scriptStr, "verify_center_script", "Verifying... Robot is moving to the calculated Target Center.");
         focusKeyCatcher();
     });
 
@@ -5431,12 +5462,19 @@ function compactPlaceNameFromAddress(addr){
 
         scriptStr += "end\n";
 
-        if (localWs && localWs.readyState === WebSocket.OPEN) {
-            localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
-            urRecQueueCommand({ type: "run_script", script: scriptStr, scan_waypoints: simulatedWaypoints.length }, "local_bridge_direct_scan");
-            setHint(`🚀 Auto Zig-Zag deployed safely! Executing ${simulatedWaypoints.length} points.`);
-        } else {
-            setHint("Error: Local Bridge is not connected.");
+        const ok = sendScriptWithAuthority(
+            scriptStr,
+            "zigzag_scan_script",
+            `🚀 Auto Zig-Zag deployed safely via ${xsite.role === 'guest' ? 'remote relay' : 'local bridge'}! Executing ${simulatedWaypoints.length} points.`
+        );
+        if (ok) {
+            try {
+                urRecQueueCommand({
+                    type: "run_script",
+                    scan_waypoints: simulatedWaypoints.length,
+                    route: xsite.role === 'guest' ? 'remote_relay' : 'local_bridge'
+                }, xsite.role === 'guest' ? "remote_relay_direct_scan" : "local_bridge_direct_scan");
+            } catch(_e) {}
         }
         focusKeyCatcher();
     });
