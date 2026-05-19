@@ -1437,6 +1437,30 @@
   </div>
 </div>
 </div>
+</div>
+<!-- UR Motion Data Recorder - restored in v35 -->
+<div class="group" id="urMotionDataRecorder" style="border-color:#58a6ff;margin-top:8px;margin-bottom:8px;">
+  <div class="group-hd" style="background:rgba(88,166,255,0.08);">
+    <span>UR Motion Data Recorder</span>
+    <span class="badge success" id="urCaptureBadge">CAPTURING</span>
+  </div>
+  <div class="group-bd">
+    <div class="status-kv" style="grid-template-columns:repeat(3,1fr);">
+      <div class="cell"><small>Operations</small><span id="urOpCount">0</span></div>
+      <div class="cell"><small>TCP Samples</small><span id="urPoseCount">0</span></div>
+      <div class="cell"><small>Joint Samples</small><span id="urJointCount">0</span></div>
+    </div>
+    <div style="background:#010409;border:1px solid var(--line);border-radius:4px;padding:6px;font-family:var(--font-mono);font-size:9px;line-height:1.5;color:#8b949e;">
+      <div>Last TCP: <span id="urLastTcpVal" style="color:#19e6c2;">—</span></div>
+      <div>Last Operation: <span id="urLastOpVal" style="color:#19e6c2;">—</span></div>
+    </div>
+    <div class="field-row" style="gap:4px;">
+      <button class="btn" id="toggleUrCaptureBtn" style="flex:1;">Pause</button>
+      <button class="btn outline" id="clearUrCaptureBtn" style="flex:1;">Clear</button>
+      <button class="btn warning" id="downloadUrDataBundleBtn" style="flex:1;">Export UR Data ZIP</button>
+    </div>
+    <div class="muted-text" style="font-size:9px;margin-top:4px;">Safe non-blocking logger: records outgoing commands, live TCP pose and joint state without intercepting WebSocket.send().</div>
+  </div>
 </div><div class="motion-row"><div class="group freedrive-compact" style="border-color:#d29922;margin-top:8px;margin-bottom:8px;">
 <div class="group-hd" style="background:rgba(210,153,34,0.1);">
                 Freedrive Mode <span class="badge" id="freedriveBadge">OFF</span>
@@ -3302,6 +3326,7 @@
               seq: ++xsite.cmdSeq,
               ts: Date.now()
             });
+            recordUrOperation('remote', 'out', out);
             remoteWs.send(JSON.stringify(out));
             return true;
           }
@@ -3311,6 +3336,7 @@
 
         // Host/UoN path: direct low-latency local bridge to the robot.
         if (localOk()) {
+          recordUrOperation('local', 'out', msg);
           localWs.send(JSON.stringify(msg));
           return true;
         }
@@ -4378,6 +4404,150 @@
       ];
       const blob = makeZip(files); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `sonair_ucl_network_bundle_${Date.now()}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
     }
+
+
+    // ---------- UR motion data recorder: v35 restored safe logger ----------
+    const UR_CAPTURE_IGNORED_TYPES = new Set(['ping','pong','camera_frame','get_camera_config','camera_config']);
+    const urMotionCapture = {
+      enabled: true,
+      startedAt: new Date().toISOString(),
+      operations: [],
+      tcpSamples: [],
+      jointSamples: [],
+      lastOperation: null,
+      maxRows: 100000,
+      lastUiUpdate: 0,
+      lastTcpSampleAt: 0,
+      lastJointSampleAt: 0
+    };
+    function vectorClone(v){ return Array.isArray(v) ? v.map(x => Number.isFinite(Number(x)) ? Number(x) : x) : null; }
+    function motionCaptureNow(){ return new Date().toISOString(); }
+    function redactPayload(msg){
+      const out = Object.assign({}, msg || {});
+      if(out.token) out.token = '[redacted]';
+      if(out.apiKey) out.apiKey = '[redacted]';
+      if(out.key) out.key = '[redacted]';
+      if(out.script){ out.script_size = String(out.script).length; out.script_preview = String(out.script).slice(0, 220); delete out.script; }
+      return out;
+    }
+    function pushCapped(arr, item){ arr.push(item); if(arr.length > urMotionCapture.maxRows) arr.splice(0, arr.length - urMotionCapture.maxRows); }
+    function recordUrOperation(channel, direction, msg){
+      if(!urMotionCapture.enabled || !msg || UR_CAPTURE_IGNORED_TYPES.has(msg.type)) return;
+      const rec = {
+        ts: motionCaptureNow(), channel, direction, type: msg.type || 'unknown', seq: msg.seq ?? null,
+        role: xsite?.role || null, authority: xsite?.authority || null, room: $('remoteRoom')?.value || null,
+        tcp_before: vectorClone(currentTcpPose), joint_deg_before: vectorClone(jointAnglesDeg), payload: redactPayload(msg)
+      };
+      pushCapped(urMotionCapture.operations, rec);
+      urMotionCapture.lastOperation = rec;
+      updateUrMotionCaptureUi();
+    }
+    function recordUrAck(channel, msg){
+      if(!urMotionCapture.enabled || !msg) return;
+      const rec = {
+        ts: motionCaptureNow(), channel, direction:'in', type: msg.type || 'unknown', seq: msg.seq ?? null,
+        reason: msg.reason || null, relay_rtt_ms: msg.relay_rtt_ms ?? null,
+        role: xsite?.role || null, authority: xsite?.authority || null, room: $('remoteRoom')?.value || null,
+        tcp_after: vectorClone(currentTcpPose), joint_deg_after: vectorClone(jointAnglesDeg), payload: redactPayload(msg)
+      };
+      pushCapped(urMotionCapture.operations, rec);
+      urMotionCapture.lastOperation = rec;
+      updateUrMotionCaptureUi();
+    }
+    function recordUrTcpPose(tcp, source='bridge'){
+      if(!urMotionCapture.enabled || !Array.isArray(tcp) || tcp.length < 6) return;
+      const now = Date.now();
+      if(now - urMotionCapture.lastTcpSampleAt < 200) return; // <=5 Hz, avoids UI load during motion
+      urMotionCapture.lastTcpSampleAt = now;
+      pushCapped(urMotionCapture.tcpSamples, {
+        ts: motionCaptureNow(), source, role:xsite?.role||null, authority:xsite?.authority||null,
+        x:tcp[0], y:tcp[1], z:tcp[2], rx:tcp[3], ry:tcp[4], rz:tcp[5]
+      });
+      updateUrMotionCaptureUi();
+    }
+    function recordUrJointState(q, source='bridge'){
+      if(!urMotionCapture.enabled || !Array.isArray(q) || q.length < 6) return;
+      const now = Date.now();
+      if(now - urMotionCapture.lastJointSampleAt < 200) return; // <=5 Hz
+      urMotionCapture.lastJointSampleAt = now;
+      pushCapped(urMotionCapture.jointSamples, {
+        ts: motionCaptureNow(), source, role:xsite?.role||null, authority:xsite?.authority||null,
+        q0:q[0], q1:q[1], q2:q[2], q3:q[3], q4:q[4], q5:q[5],
+        q0_deg:deg(q[0]), q1_deg:deg(q[1]), q2_deg:deg(q[2]), q3_deg:deg(q[3]), q4_deg:deg(q[4]), q5_deg:deg(q[5])
+      });
+      updateUrMotionCaptureUi();
+    }
+    function updateUrMotionCaptureUi(force=false){
+      const now = Date.now();
+      if(!force && now - urMotionCapture.lastUiUpdate < 500) return;
+      urMotionCapture.lastUiUpdate = now;
+      if($('urCaptureBadge')){ $('urCaptureBadge').textContent = urMotionCapture.enabled ? 'CAPTURING' : 'PAUSED'; $('urCaptureBadge').className = urMotionCapture.enabled ? 'badge success' : 'badge'; }
+      if($('urOpCount')) $('urOpCount').textContent = String(urMotionCapture.operations.length);
+      if($('urPoseCount')) $('urPoseCount').textContent = String(urMotionCapture.tcpSamples.length);
+      if($('urJointCount')) $('urJointCount').textContent = String(urMotionCapture.jointSamples.length);
+      if($('urLastTcpVal')){
+        const last = urMotionCapture.tcpSamples[urMotionCapture.tcpSamples.length - 1];
+        $('urLastTcpVal').textContent = last ? `X:${Number(last.x).toFixed(3)} Y:${Number(last.y).toFixed(3)} Z:${Number(last.z).toFixed(3)} RX:${Number(last.rx).toFixed(3)} RY:${Number(last.ry).toFixed(3)} RZ:${Number(last.rz).toFixed(3)}` : '—';
+      }
+      if($('urLastOpVal')){
+        const op = urMotionCapture.lastOperation;
+        $('urLastOpVal').textContent = op ? `${op.direction}/${op.channel}/${op.type}${op.seq ? ' #' + op.seq : ''}` : '—';
+      }
+    }
+    function objectsToCsv(rows, headers){ const lines = [headers.join(',')]; rows.forEach(r => lines.push(headers.map(h => csvEscape(r[h])).join(','))); return lines.join('\n'); }
+    function operationRowsForCsv(){
+      return urMotionCapture.operations.map(o => ({
+        ts:o.ts, channel:o.channel, direction:o.direction, type:o.type, seq:o.seq, role:o.role, authority:o.authority, room:o.room, reason:o.reason, relay_rtt_ms:o.relay_rtt_ms,
+        tcp_x:o.tcp_before?.[0] ?? o.tcp_after?.[0], tcp_y:o.tcp_before?.[1] ?? o.tcp_after?.[1], tcp_z:o.tcp_before?.[2] ?? o.tcp_after?.[2],
+        payload: JSON.stringify(o.payload || {})
+      }));
+    }
+    function urMotionSummary(){
+      const firstPose = urMotionCapture.tcpSamples[0] || null;
+      const lastPose = urMotionCapture.tcpSamples[urMotionCapture.tcpSamples.length - 1] || null;
+      return {
+        generated_at: motionCaptureNow(), started_at: urMotionCapture.startedAt, capture_enabled_at_export: urMotionCapture.enabled,
+        role:xsite?.role, authority:xsite?.authority, room:$('remoteRoom')?.value || null,
+        operations_count: urMotionCapture.operations.length, tcp_pose_samples_count: urMotionCapture.tcpSamples.length, joint_state_samples_count: urMotionCapture.jointSamples.length,
+        first_tcp_pose:firstPose, last_tcp_pose:lastPose,
+        browser_environment:{userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}
+      };
+    }
+    function downloadUrMotionBundle(){
+      const opCsvHeaders = ['ts','channel','direction','type','seq','role','authority','room','reason','relay_rtt_ms','tcp_x','tcp_y','tcp_z','payload'];
+      const tcpHeaders = ['ts','source','role','authority','x','y','z','rx','ry','rz'];
+      const jointHeaders = ['ts','source','role','authority','q0','q1','q2','q3','q4','q5','q0_deg','q1_deg','q2_deg','q3_deg','q4_deg','q5_deg'];
+      const files = [
+        {name:'ur_motion_summary.json', content: JSON.stringify(urMotionSummary(), null, 2)},
+        {name:'ur_operations.csv', content: objectsToCsv(operationRowsForCsv(), opCsvHeaders)},
+        {name:'ur_operations.json', content: JSON.stringify(urMotionCapture.operations, null, 2)},
+        {name:'ur_tcp_pose_samples.csv', content: objectsToCsv(urMotionCapture.tcpSamples, tcpHeaders)},
+        {name:'ur_tcp_pose_samples.json', content: JSON.stringify(urMotionCapture.tcpSamples, null, 2)},
+        {name:'ur_joint_state_samples.csv', content: objectsToCsv(urMotionCapture.jointSamples, jointHeaders)},
+        {name:'ur_joint_state_samples.json', content: JSON.stringify(urMotionCapture.jointSamples, null, 2)},
+        {name:'session_audit.csv', content: auditToCsv()},
+        {name:'network_summary.json', content: JSON.stringify(netSummary(), null, 2)}
+      ];
+      const blob = makeZip(files);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `sonair_ur_motion_data_${Date.now()}.zip`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+    $('toggleUrCaptureBtn')?.addEventListener('click', () => {
+      urMotionCapture.enabled = !urMotionCapture.enabled;
+      $('toggleUrCaptureBtn').textContent = urMotionCapture.enabled ? 'Pause' : 'Start';
+      updateUrMotionCaptureUi(true);
+    });
+    $('clearUrCaptureBtn')?.addEventListener('click', () => {
+      if(!confirm('Clear UR motion capture data in this browser session?')) return;
+      urMotionCapture.operations.length = 0; urMotionCapture.tcpSamples.length = 0; urMotionCapture.jointSamples.length = 0;
+      urMotionCapture.lastOperation = null; urMotionCapture.startedAt = new Date().toISOString();
+      updateUrMotionCaptureUi(true);
+    });
+    $('downloadUrDataBundleBtn')?.addEventListener('click', downloadUrMotionBundle);
+    setInterval(() => updateUrMotionCaptureUi(), 1000);
+
     $('captureNetBtn')?.addEventListener('click', () => { xsite.net.captureEnabled = !xsite.net.captureEnabled; $('captureNetBtn').textContent = xsite.net.captureEnabled ? 'Pause Capture' : 'Start Capture'; updateNetworkUi(); });
     $('shareLocationBtn')?.addEventListener('click', requestBrowserLocation);
     $('downloadNetBundleBtn')?.addEventListener('click', downloadNetworkBundle);
@@ -4687,12 +4857,13 @@
 
       // ---- Acks / rejects ----
       if(data.type === 'cmd_rejected'){
+        recordUrAck('remote', data);
         bumpRejected(`${data.reason} (seq=${data.seq})`);
         audit('IN', 'cmd_rejected', `${data.reason} seq=${data.seq}`);
         return;
       }
       if(data.type === 'cmd_ack'){
-        // optional: track for QoS — currently a no-op
+        recordUrAck('remote', data);
         return;
       }
 
@@ -4712,6 +4883,7 @@
 
         if (data.type === "state") {
           const rads = data.q;
+          recordUrJointState(rads, 'state');
           for (let i = 0; i < 6; i++) {
             jointAnglesDeg[i] = deg(rads[i]);  // always sync angles, GLB optional
             if(urModel) {
@@ -4768,6 +4940,7 @@
 
         if (data.type === "tcp_pose") {
           const tcp = data.q; currentTcpPose = tcp;
+          recordUrTcpPose(tcp, 'tcp_pose');
           if(tcp && tcp.length === 6 && $('tcpPoseDisplay')) {
             $('tcpPoseDisplay').textContent = `TCP: X:${tcp[0].toFixed(3)} Y:${tcp[1].toFixed(3)} Z:${tcp[2].toFixed(3)}`;
           }
@@ -4911,6 +5084,8 @@
                     seq: ++xsite.cmdSeq,
                     ts: Date.now()
                 });
+                recordUrOperation('remote', 'out', out);
+                recordUrOperation('remote', 'out', out);
                 remoteWs.send(JSON.stringify(out));
                 return true;
             }
@@ -4923,6 +5098,7 @@
                 !(xsite && xsite.role === 'host' && xsite.authority === 'remote-operator')
             );
             if (canLocalSend) {
+                recordUrOperation('local', 'out', msg);
                 localWs.send(JSON.stringify(msg));
                 return true;
             }
@@ -5000,14 +5176,68 @@
     let zscanMarker = null;
     let zscanAnimTimer = null;
 
+    // v34: align the visual scan trajectory to the robot's CURRENT visual TCP position.
+    // Previous versions plotted absolute UR base coordinates directly into the Three.js scene
+    // with an arbitrary scale, so the path appeared far away from the robot.  This version uses
+    // the selected scan home/current TCP as the UR reference and the visible tool/J6 location as
+    // the scene reference, then draws only the relative motion around that live TCP anchor.
+    let zscanSceneRefPose = null;
+    let zscanSceneRefPos = null;
+    const ZSCAN_VISUAL_SCALE = 1.0;   // metres -> scene metres; keep the real scan size
+
+    function getVisualTcpAnchorPosition() {
+        if (typeof THREE === 'undefined') return null;
+        try {
+            if (toolGroup) {
+                toolGroup.updateWorldMatrix(true, true);
+                const p = new THREE.Vector3();
+                toolGroup.getWorldPosition(p);
+                return p;
+            }
+            if (jointNodes && jointNodes[5]) {
+                jointNodes[5].updateWorldMatrix(true, true);
+                const p = new THREE.Vector3();
+                jointNodes[5].getWorldPosition(p);
+                return p;
+            }
+            if (urModel) {
+                urModel.updateWorldMatrix(true, true);
+                const box = new THREE.Box3().setFromObject(urModel);
+                if (isFinite(box.min.x)) {
+                    const p = new THREE.Vector3();
+                    box.getCenter(p);
+                    p.y = Math.max(p.y, box.max.y * 0.65);
+                    return p;
+                }
+            }
+        } catch(_e) {}
+        return new THREE.Vector3(0, 0.25, 0);
+    }
+
+    function resetZScanSceneReference(waypoints) {
+        const firstPose = Array.isArray(waypoints) && waypoints.length ? waypoints[0].coords : null;
+        zscanSceneRefPose = scanHome || currentTcpPose || firstPose || [0,0,0,0,0,0];
+        zscanSceneRefPos = getVisualTcpAnchorPosition() || new THREE.Vector3(0, 0.25, 0);
+    }
+
     function zscanToScenePoint(pose) {
-        // Map UR TCP metres to the Three.js floor coordinate system.
-        // The visual path is scaled slightly so a small real scan area is visible on the stage.
-        const scale = 3.0;
-        const x = Number(pose[0] || 0) * scale;
-        const y = Math.max(0.035, Number(pose[2] || 0) * scale + 0.015);
-        const z = -Number(pose[1] || 0) * scale;
-        return new THREE.Vector3(x, y, z);
+        if (!zscanSceneRefPose || !zscanSceneRefPos) resetZScanSceneReference([{coords: pose}]);
+        const p = pose || [0,0,0,0,0,0];
+        const b = zscanSceneRefPose || [0,0,0,0,0,0];
+
+        // UR TCP is [x,y,z,rx,ry,rz].  The stage uses X horizontal, Y vertical,
+        // and Z depth.  Keep the same mapping used by the previous preview but
+        // apply it as a delta around the live visual TCP instead of as an absolute
+        // scene coordinate.
+        const dx = (Number(p[0] || 0) - Number(b[0] || 0)) * ZSCAN_VISUAL_SCALE;
+        const dy = (Number(p[1] || 0) - Number(b[1] || 0)) * ZSCAN_VISUAL_SCALE;
+        const dz = (Number(p[2] || 0) - Number(b[2] || 0)) * ZSCAN_VISUAL_SCALE;
+
+        return new THREE.Vector3(
+            zscanSceneRefPos.x + dx,
+            Math.max(0.025, zscanSceneRefPos.y + dz),
+            zscanSceneRefPos.z - dy
+        );
     }
 
     function clearZScanTrajectory3D() {
@@ -5029,6 +5259,7 @@
     function renderZScanTrajectory3D(waypoints) {
         if (typeof THREE === 'undefined' || !scene || !Array.isArray(waypoints) || waypoints.length < 2) return;
         clearZScanTrajectory3D();
+        resetZScanSceneReference(waypoints);
         zscanPathGroup = new THREE.Group();
         zscanPathGroup.name = 'ZScanTrajectoryPreview';
 
@@ -5176,7 +5407,7 @@
         }
         renderZScanTrajectory3D(simulatedWaypoints);
         playZScanTrajectory3D(simulatedWaypoints, 120);
-        setHint(`Preview Generated: ${simulatedWaypoints.length} waypoints calculated. 3D trajectory overlay is shown on the stage.`);
+        setHint(`Preview Generated: ${simulatedWaypoints.length} waypoints calculated. 3D trajectory overlay is aligned to the current visual TCP on the stage.`);
         focusKeyCatcher();
     });
 
@@ -5234,7 +5465,7 @@
                 }
                 await sleepMs(waitMs);
             }
-            setHint(`Z-Scan command sequence finished: ${sent} waypoints sent. 3D trajectory overlay remains visible.`);
+            setHint(`Z-Scan command sequence finished: ${sent} waypoints sent. 3D trajectory overlay remains aligned to the visual TCP.`);
         } finally {
             window.__zscanRunning = false;
             if (btn) btn.disabled = false;
