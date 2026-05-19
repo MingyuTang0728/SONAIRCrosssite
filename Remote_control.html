@@ -4891,6 +4891,68 @@
     });
 
 
+    // v32 critical fix for GitHub Pages / UCL remote operation:
+    // This sender is top-level and does not depend on the local scoped sendCmd().
+    // UCL has no local Python bridge; therefore Guest must always use remoteWs -> relay -> UoN agent.
+    function sendZScanCommandDirect(msg) {
+        try {
+            if (xsite && xsite.role === 'guest') {
+                const canRemoteSend = (
+                    xsite.authority === 'operator' &&
+                    isRemoteConnected &&
+                    remoteWs &&
+                    remoteWs.readyState === WebSocket.OPEN
+                );
+                if (!canRemoteSend) {
+                    setHint('Guest has no remote motion authority. Request control and wait for UoN GRANT.');
+                    return false;
+                }
+                const out = Object.assign({}, msg, {
+                    seq: ++xsite.cmdSeq,
+                    ts: Date.now()
+                });
+                remoteWs.send(JSON.stringify(out));
+                return true;
+            }
+
+            // UoN Host path: use the existing local bridge if available.
+            const canLocalSend = (
+                isLocalConnected &&
+                localWs &&
+                localWs.readyState === WebSocket.OPEN &&
+                !(xsite && xsite.role === 'host' && xsite.authority === 'remote-operator')
+            );
+            if (canLocalSend) {
+                localWs.send(JSON.stringify(msg));
+                return true;
+            }
+
+            // Optional host fallback via relay, only if remote link is active and host has not granted away control.
+            const canHostRelaySend = (
+                xsite && xsite.role === 'host' &&
+                xsite.authority !== 'remote-operator' &&
+                isRemoteConnected &&
+                remoteWs &&
+                remoteWs.readyState === WebSocket.OPEN
+            );
+            if (canHostRelaySend) {
+                const out = Object.assign({}, msg, {
+                    seq: ++xsite.cmdSeq,
+                    ts: Date.now()
+                });
+                remoteWs.send(JSON.stringify(out));
+                return true;
+            }
+
+            setHint('No valid motion channel. UCL must use Guest + LINK ACTIVE + OPERATOR authority.');
+            return false;
+        } catch (e) {
+            console.error('[zscan] command send failed:', e);
+            setHint('JS error while sending Z-Scan command: ' + (e && e.message ? e.message : String(e)));
+            return false;
+        }
+    }
+
     // v30 helper: send a single short URScript movel through the normal command channel.
     // This is intentionally not a long multi-waypoint script, because long scripts can be
     // unreliable over the UCL -> relay -> UoN path. Each waypoint is sent as a tiny program.
@@ -4908,12 +4970,11 @@
           `def ${safeLabel}():\n` +
           `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n` +
           `end\n`;
-        const zsend = window.__sonairSendCmd || window.sendCmd;
-        if (typeof zsend !== 'function') {
-            setHint('Error: command sender is not ready. Reload the page after deployment.');
-            return false;
-        }
-        return zsend({ type: 'run_script', script: scriptStr });
+        // v32: do NOT call sendCmd here. On the deployed GitHub page the Zig-Zag
+        // module can run before/without the inner sonairControls() scope exporting
+        // sendCmd, which caused: ReferenceError: sendCmd is not defined on UCL.
+        // Send directly through the same global relay/local variables instead.
+        return sendZScanCommandDirect({ type: 'run_script', script: scriptStr });
     }
 
     function sleepMs(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
