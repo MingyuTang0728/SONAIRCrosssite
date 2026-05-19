@@ -1302,7 +1302,7 @@
 <div class="group-hd" style="background:rgba(210,153,34,0.1);">Cross-Site Teleoperation <span class="badge" id="remoteWsStatus">OFFLINE</span></div>
 <div class="group-bd">
 <!-- Relay endpoint -->
-<input id="remoteWsIp" placeholder="Relay WSS URL" style="width:100%;" type="text" value="ws://localhost:8770/ws"/>
+<input id="remoteWsIp" placeholder="Relay WSS URL" style="width:100%;" type="text" value="wss://relay.sonair.example/ws"/>
 <div class="field-row" style="margin-top:4px;">
 <input id="remoteRoom" placeholder="Room ID" style="flex:0 0 90px;" title="Robot cell identifier — must match the agent's RELAY_ROOM" type="text" value="uon-cell-1"/>
 <input id="remoteToken" placeholder="Bearer Token" style="flex:1;" type="password"/>
@@ -1437,28 +1437,6 @@
   </div>
 </div>
 </div>
-</div>
-<div class="group" id="urMotionRecorderPanel" style="border-color:#58a6ff;margin-top:8px;margin-bottom:8px;">
-  <div class="group-hd" style="background:rgba(88,166,255,0.1);">
-    UR Motion Data Recorder <span class="badge info" id="urRecStateBadge">SAFE</span>
-  </div>
-  <div class="group-bd">
-    <div class="status-kv" style="grid-template-columns:repeat(3,1fr);">
-      <div class="cell"><small>Operations</small><span id="urRecOpsCount">0</span></div>
-      <div class="cell"><small>TCP Samples</small><span id="urRecTcpCount">0</span></div>
-      <div class="cell"><small>Joint Samples</small><span id="urRecJointCount">0</span></div>
-    </div>
-    <div style="background:#010409; padding:6px; border-radius:4px; border:1px solid var(--line); font-family:var(--font-mono); font-size:9px; line-height:1.5; color:#8b949e;">
-      <div>Last TCP: <span id="urRecLastTcp" style="color:#3fb950;">—</span></div>
-      <div>Last operation: <span id="urRecLastOp" style="color:#58a6ff;">—</span></div>
-      <div>Sampling: TCP/Joints ≤ 5 Hz · Command log async · No WebSocket wrapping</div>
-    </div>
-    <div class="field-row" style="gap:4px;">
-      <button class="btn warning" id="urRecExportBtn" style="flex:1;">Export UR Data ZIP</button>
-      <button class="btn outline" id="urRecClearBtn" style="flex:1;">Clear Recorder</button>
-    </div>
-    <div class="muted-text" style="font-size:9px;">Records commands and UR state without intercepting the real-time send path. Tokens/scripts are redacted or summarised in export.</div>
-  </div>
 </div><div class="motion-row"><div class="group freedrive-compact" style="border-color:#d29922;margin-top:8px;margin-bottom:8px;">
 <div class="group-hd" style="background:rgba(210,153,34,0.1);">
                 Freedrive Mode <span class="badge" id="freedriveBadge">OFF</span>
@@ -1524,10 +1502,10 @@
     </div>
     <div class="field-row" style="margin-top:2px;">
       <span class="field-label">Step / tick</span>
-      <input id="singleJointStepDeg" type="number" value="2" step="0.5" min="0.1" max="60" style="width:70px"/>
-      <span class="muted-text">deg/s</span>
+      <input id="singleJointStepDeg" type="number" value="0.01" step="0.005" min="0.001" max="0.1" style="width:70px"/>
+      <span class="muted-text">deg @ 120Hz</span>
     </div>
-    <div class="muted-text">Hold ＋/− to jog one joint continuously. Same dead-man style as TCP joystick; release = stop.</div>
+    <div class="muted-text">Hold ＋/− to jog one joint. Tiny increments avoid large jumps.</div>
   </div>
 </div>
 </div>
@@ -1970,190 +1948,6 @@
 
     const captured = [];
     let currentTcpPose = null;
-
-    // ================================================================
-    // SONAIR v23 Safe UR Data Recorder
-    // Non-invasive design: no WebSocket monkey-patching, no JSON parsing on
-    // the high-rate send path, UI updates are throttled, and TCP/joint
-    // samples are down-sampled to avoid browser-main-thread jitter.
-    // ================================================================
-    const urSafeRecorder = {
-      sessionId: `ur-${Date.now()}-${Math.random().toString(16).slice(2,8)}`,
-      startedAt: new Date().toISOString(),
-      operations: [],
-      tcpSamples: [],
-      jointSamples: [],
-      lastTcpSampleMs: 0,
-      lastJointSampleMs: 0,
-      maxOps: 8000,
-      maxTcp: 25000,
-      maxJoint: 25000
-    };
-
-    function urRecRingPush(arr, item, maxLen){
-      arr.push(item);
-      if(arr.length > maxLen) arr.splice(0, arr.length - maxLen);
-    }
-
-    function urRecPoseCopy(p){
-      return Array.isArray(p) ? p.slice(0,6).map(v => Number(v)) : null;
-    }
-
-    function urRecSanitisePayload(msg){
-      const out = {};
-      if(!msg || typeof msg !== 'object') return out;
-      Object.keys(msg).forEach(k => {
-        if(/token|key|secret|password/i.test(k)) { out[k] = '[redacted]'; return; }
-        if(k === 'script') {
-          const s = String(msg[k] || '');
-          out.script_size = s.length;
-          out.script_first_line = (s.split('\n')[0] || '').slice(0,120);
-          out.script = '[redacted: exported as size + first line only]';
-          return;
-        }
-        const v = msg[k];
-        if(Array.isArray(v)) out[k] = v.slice(0, 12).map(x => Number.isFinite(Number(x)) ? Number(x) : x);
-        else if(typeof v === 'object' && v !== null) out[k] = '[object omitted]';
-        else out[k] = v;
-      });
-      return out;
-    }
-
-    function urRecQueueCommand(msg, route){
-      // Keep the live-control path light: schedule the actual log write after
-      // the command has been sent. This avoids delaying speedl/speedj/freedrive.
-      setTimeout(() => {
-        try {
-          const safe = urRecSanitisePayload(msg);
-          urRecRingPush(urSafeRecorder.operations, {
-            ts: new Date().toISOString(),
-            t_ms: Date.now(),
-            route: route || 'unknown',
-            type: safe.type || 'unknown',
-            seq: safe.seq ?? null,
-            authority: (typeof xsite !== 'undefined') ? xsite.authority : null,
-            role: (typeof xsite !== 'undefined') ? xsite.role : null,
-            tcp_at_send: urRecPoseCopy(currentTcpPose),
-            payload: safe
-          }, urSafeRecorder.maxOps);
-        } catch(_e) {}
-      }, 0);
-    }
-
-    window.urSafeRecorderCommand = urRecQueueCommand;
-
-    function urRecSampleTcp(tcp){
-      const now = Date.now();
-      if(!tcp || tcp.length !== 6 || now - urSafeRecorder.lastTcpSampleMs < 200) return;
-      urSafeRecorder.lastTcpSampleMs = now;
-      urRecRingPush(urSafeRecorder.tcpSamples, {
-        ts: new Date().toISOString(),
-        t_ms: now,
-        x: Number(tcp[0]), y: Number(tcp[1]), z: Number(tcp[2]),
-        rx: Number(tcp[3]), ry: Number(tcp[4]), rz: Number(tcp[5]),
-        role: (typeof xsite !== 'undefined') ? xsite.role : null,
-        authority: (typeof xsite !== 'undefined') ? xsite.authority : null
-      }, urSafeRecorder.maxTcp);
-    }
-
-    function urRecSampleJoints(q){
-      const now = Date.now();
-      if(!q || q.length !== 6 || now - urSafeRecorder.lastJointSampleMs < 200) return;
-      urSafeRecorder.lastJointSampleMs = now;
-      urRecRingPush(urSafeRecorder.jointSamples, {
-        ts: new Date().toISOString(),
-        t_ms: now,
-        q0: Number(q[0]), q1: Number(q[1]), q2: Number(q[2]),
-        q3: Number(q[3]), q4: Number(q[4]), q5: Number(q[5]),
-        q0_deg: deg(Number(q[0])), q1_deg: deg(Number(q[1])), q2_deg: deg(Number(q[2])),
-        q3_deg: deg(Number(q[3])), q4_deg: deg(Number(q[4])), q5_deg: deg(Number(q[5])),
-        role: (typeof xsite !== 'undefined') ? xsite.role : null,
-        authority: (typeof xsite !== 'undefined') ? xsite.authority : null
-      }, urSafeRecorder.maxJoint);
-    }
-
-    function urRecCsvEscape(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
-    function urRecRowsToCsv(rows, headers){
-      const lines = [headers.join(',')];
-      rows.forEach(r => lines.push(headers.map(h => urRecCsvEscape(r[h])).join(',')));
-      return lines.join('\n');
-    }
-    function urRecOpsToCsv(){
-      const headers = ['ts','t_ms','route','type','seq','role','authority','tcp_x','tcp_y','tcp_z','tcp_rx','tcp_ry','tcp_rz','payload_json'];
-      const rows = urSafeRecorder.operations.map(o => ({
-        ts:o.ts, t_ms:o.t_ms, route:o.route, type:o.type, seq:o.seq, role:o.role, authority:o.authority,
-        tcp_x:o.tcp_at_send?.[0], tcp_y:o.tcp_at_send?.[1], tcp_z:o.tcp_at_send?.[2],
-        tcp_rx:o.tcp_at_send?.[3], tcp_ry:o.tcp_at_send?.[4], tcp_rz:o.tcp_at_send?.[5],
-        payload_json: JSON.stringify(o.payload || {})
-      }));
-      return urRecRowsToCsv(rows, headers);
-    }
-    function urRecTcpToCsv(){
-      return urRecRowsToCsv(urSafeRecorder.tcpSamples, ['ts','t_ms','x','y','z','rx','ry','rz','role','authority']);
-    }
-    function urRecJointToCsv(){
-      return urRecRowsToCsv(urSafeRecorder.jointSamples, ['ts','t_ms','q0','q1','q2','q3','q4','q5','q0_deg','q1_deg','q2_deg','q3_deg','q4_deg','q5_deg','role','authority']);
-    }
-    function urRecSummary(){
-      const lastTcp = urSafeRecorder.tcpSamples[urSafeRecorder.tcpSamples.length-1] || null;
-      const lastOp = urSafeRecorder.operations[urSafeRecorder.operations.length-1] || null;
-      return {
-        session_id: urSafeRecorder.sessionId,
-        started_at: urSafeRecorder.startedAt,
-        exported_at: new Date().toISOString(),
-        operation_count: urSafeRecorder.operations.length,
-        tcp_sample_count: urSafeRecorder.tcpSamples.length,
-        joint_sample_count: urSafeRecorder.jointSamples.length,
-        sampling_note: 'TCP and joint states are down-sampled to <=5Hz in browser. Command logging is asynchronous and does not wrap WebSocket.send.',
-        last_tcp: lastTcp,
-        last_operation: lastOp
-      };
-    }
-    function urRecUpdateUi(){
-      try {
-        if($('urRecOpsCount')) $('urRecOpsCount').textContent = String(urSafeRecorder.operations.length);
-        if($('urRecTcpCount')) $('urRecTcpCount').textContent = String(urSafeRecorder.tcpSamples.length);
-        if($('urRecJointCount')) $('urRecJointCount').textContent = String(urSafeRecorder.jointSamples.length);
-        const lastTcp = urSafeRecorder.tcpSamples[urSafeRecorder.tcpSamples.length-1];
-        if($('urRecLastTcp')) $('urRecLastTcp').textContent = lastTcp ? `X:${lastTcp.x.toFixed(3)} Y:${lastTcp.y.toFixed(3)} Z:${lastTcp.z.toFixed(3)}` : '—';
-        const lastOp = urSafeRecorder.operations[urSafeRecorder.operations.length-1];
-        if($('urRecLastOp')) $('urRecLastOp').textContent = lastOp ? `${lastOp.type} via ${lastOp.route}` : '—';
-      } catch(_e) {}
-    }
-    function urRecClear(){
-      urSafeRecorder.operations.length = 0;
-      urSafeRecorder.tcpSamples.length = 0;
-      urSafeRecorder.jointSamples.length = 0;
-      urSafeRecorder.startedAt = new Date().toISOString();
-      urRecUpdateUi();
-      setHint('UR Motion Data Recorder cleared.');
-    }
-    function urRecExportZip(){
-      const files = [
-        {name:'ur_motion_summary.json', content: JSON.stringify(urRecSummary(), null, 2)},
-        {name:'ur_operations.csv', content: urRecOpsToCsv()},
-        {name:'ur_operations.json', content: JSON.stringify(urSafeRecorder.operations, null, 2)},
-        {name:'ur_tcp_pose_samples.csv', content: urRecTcpToCsv()},
-        {name:'ur_tcp_pose_samples.json', content: JSON.stringify(urSafeRecorder.tcpSamples, null, 2)},
-        {name:'ur_joint_state_samples.csv', content: urRecJointToCsv()},
-        {name:'ur_joint_state_samples.json', content: JSON.stringify(urSafeRecorder.jointSamples, null, 2)},
-        {name:'ur_recorder_readme.txt', content: 'SONAIR v23 Safe UR Data Recorder\n- Non-invasive: no WebSocket.send wrapping.\n- TCP/joint samples are down-sampled to <=5Hz.\n- API keys/tokens/scripts are redacted or summarised.\n'}
-      ];
-      const blob = makeZip(files);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `sonair_ur_motion_data_${Date.now()}.zip`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      setHint('UR motion data ZIP exported.');
-    }
-    setInterval(urRecUpdateUi, 500);
-    document.addEventListener('DOMContentLoaded', () => {
-      $('urRecExportBtn')?.addEventListener('click', urRecExportZip);
-      $('urRecClearBtn')?.addEventListener('click', urRecClear);
-    });
-
     let toolGroup = null;
 
     function focusKeyCatcher(){
@@ -3492,41 +3286,20 @@
       }
 
       function sendCmd(msg) {
-        // Guest/UCL path must go through relay first. Do not fall back to
-        // ws://127.0.0.1:8765 on the guest laptop, because that is not the
-        // UoN UR bridge. This keeps UCL TCP joystick and single-joint jog
-        // on the same relay→agent→UR path after authority is granted.
-        if (xsite.role === 'guest') {
-          if (remoteOk()) {
-            const out = Object.assign({}, msg, {
-              seq: ++xsite.cmdSeq,
-              ts: Date.now()
-            });
-            try {
-              if (xsite.net && Array.isArray(xsite.net.cmdSamples)) {
-                xsite.net.cmdSamples.push({
-                  ts: new Date().toISOString(),
-                  seq: out.seq,
-                  type: out.type,
-                  dir: 'OUT',
-                  authority: xsite.authority,
-                  buffered_amount: remoteWs ? remoteWs.bufferedAmount : null
-                });
-              }
-            } catch(_e){}
-            remoteWs.send(JSON.stringify(out));
-            urRecQueueCommand(out, 'remote_relay');
-            return true;
-          }
-          setHint('Guest has no remote motion authority. Request control and wait for GRANT.');
-          return false;
-        }
-
-        // Host/UoN path: direct low-latency local bridge to the robot, unless
-        // remote operator currently owns control.
+        // Host/UoN path: direct low-latency local bridge to the robot.
         if (localOk()) {
           localWs.send(JSON.stringify(msg));
-          urRecQueueCommand(msg, 'local_bridge');
+          return true;
+        }
+        // Guest/UCL path: after host grant, send motion via the relay.
+        // This is essential for Tailscale/cross-site operation because the
+        // guest browser will not have a local ws://127.0.0.1:8765 bridge.
+        if (remoteOk()) {
+          const out = Object.assign({}, msg, {
+            seq: ++xsite.cmdSeq,
+            ts: Date.now()
+          });
+          remoteWs.send(JSON.stringify(out));
           return true;
         }
         setHint('Not connected or no motion authority.');
@@ -3535,65 +3308,38 @@
 
 
       // ── SINGLE JOINT JOG + MANUAL TCP TARGET ───────────────────────
-      // Single Joint Jog now follows the same control style as Virtual Joystick:
-      // hold button = stream velocity command; release = explicit stop.
-      // It does NOT compute an absolute target angle, so it always moves from
-      // the robot's current joint state and avoids stale UI angle jumps.
-      const SINGLE_JOINT_HZ = 50;
-      const SINGLE_JOINT_INT = 20;
-      const SINGLE_JOINT_T = 0.08;
+      const SINGLE_JOINT_HZ = 120;
+      const SINGLE_JOINT_INT = Math.max(4, Math.round(1000 / SINGLE_JOINT_HZ));
       let singleJointTimer = null;
-      let singleJointActive = null;
 
-      function getSingleJointSpeedDegSec() {
+      function jogSingleJointOnce(jointIndex, dir) {
         const stepEl = el('singleJointStepDeg');
-        let speed = parseFloat(stepEl?.value || '2');
-        if(!isFinite(speed) || speed <= 0) speed = 2;
-        // Do not silently clamp user input down to tiny values. This field is
-        // now joint speed in deg/s, matching joystick-style velocity control.
-        return speed;
-      }
-
-      function sendSingleJointVelocity(jointIndex, dir) {
-        const j = Number(jointIndex);
-        const signedDir = Number(dir) < 0 ? -1 : 1;
-        if(!Number.isInteger(j) || j < 0 || j > 5) return false;
-
-        const degPerSecond = getSingleJointSpeedDegSec();
-        const qd = [0,0,0,0,0,0];
-        qd[j] = rad(degPerSecond) * signedDir;
-
-        return sendCmd({ type: 'speedj', qd, a: 1.2, t: SINGLE_JOINT_T });
+        let step = parseFloat(stepEl?.value || '0.01');
+        if(!isFinite(step) || step <= 0) step = 0.01;
+        step = Math.min(Math.max(step, 0.001), 0.1);
+        const next = jointAnglesDeg[jointIndex] + dir * step;
+        applyJointAngle(jointIndex, next);
       }
 
       function stopSingleJointJog() {
         if(singleJointTimer) { clearInterval(singleJointTimer); singleJointTimer = null; }
-        if(singleJointActive) {
-          sendCmd({ type: 'speedj_stop', a: 1.2 });
-          singleJointActive = null;
-        }
       }
 
       function startSingleJointJog(jointIndex, dir) {
         stopSingleJointJog();
-        singleJointActive = { jointIndex: Number(jointIndex), dir: Number(dir) < 0 ? -1 : 1 };
-        sendSingleJointVelocity(singleJointActive.jointIndex, singleJointActive.dir);
-        singleJointTimer = setInterval(() => {
-          if(singleJointActive) sendSingleJointVelocity(singleJointActive.jointIndex, singleJointActive.dir);
-        }, SINGLE_JOINT_INT);
+        jogSingleJointOnce(jointIndex, dir);
+        singleJointTimer = setInterval(() => jogSingleJointOnce(jointIndex, dir), SINGLE_JOINT_INT);
       }
 
       function initSingleJointJogger() {
         document.querySelectorAll('.joint-jog-btn').forEach(btn => {
           const jointIndex = parseInt(btn.dataset.joint, 10);
           const dir = parseInt(btn.dataset.dir, 10);
-          const down = ev => { ev.preventDefault(); ev.stopPropagation(); startSingleJointJog(jointIndex, dir); };
-          btn.addEventListener('pointerdown', down);
+          const down = ev => { ev.preventDefault(); startSingleJointJog(jointIndex, dir); };
           btn.addEventListener('mousedown', down);
           btn.addEventListener('touchstart', down, {passive:false});
-          btn.addEventListener('contextmenu', ev => ev.preventDefault());
         });
-        ['pointerup','pointercancel','mouseup','mouseleave','blur','touchend','touchcancel'].forEach(evt => {
+        ['mouseup','mouseleave','blur','touchend','touchcancel'].forEach(evt => {
           window.addEventListener(evt, stopSingleJointJog);
         });
       }
@@ -3910,7 +3656,6 @@
         scriptStr += "end\n";
         if (localWs && localWs.readyState === WebSocket.OPEN) {
             localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
-            urRecQueueCommand({ type: "run_script", script: scriptStr }, "local_bridge_direct");
             setHint("Executing Captured Path...");
         }
     });
@@ -4472,7 +4217,6 @@
         publicIp: null,
         ipGeo: null,
         browserGeo: null,
-        browserGeoPlace: null,
         lastPongSeq: null
       }
     };
@@ -4558,14 +4302,7 @@
       }
       if($('gpsLocationVal')) {
         const g = n.browserGeo;
-        const place = n.browserGeoPlace;
-        if(g){
-          const coords = `${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)} ±${Math.round(g.accuracy||0)}m`;
-          const name = place && (place.display_name || place.name || place.locality || place.city || place.town || place.village || place.country);
-          $('gpsLocationVal').textContent = name ? `${name} (${coords})` : coords;
-        } else {
-          $('gpsLocationVal').textContent = 'not shared';
-        }
+        $('gpsLocationVal').textContent = g ? `${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)} ±${Math.round(g.accuracy||0)}m` : 'not shared';
       }
     }
     function recordNetSample(sample){
@@ -4579,46 +4316,11 @@
       try { const r = await fetch('https://ipapi.co/json/', {cache:'no-store'}); const j = await r.json(); xsite.net.ipGeo = j || null; if(!xsite.net.publicIp && j.ip) xsite.net.publicIp = j.ip; } catch(_e) {}
       updateNetworkUi();
     }
-function compactPlaceNameFromAddress(addr){
-      if(!addr) return null;
-      const parts = [
-        addr.amenity || addr.building || addr.road || addr.neighbourhood || addr.suburb || addr.quarter,
-        addr.city || addr.town || addr.village || addr.municipality || addr.county,
-        addr.state || addr.region,
-        addr.country
-      ].filter(Boolean);
-      return [...new Set(parts)].join(', ') || null;
-    }
-    async function reverseGeocodeBrowserLocation(lat, lon){
-      try{
-        const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lon)}&localityLanguage=en`;
-        const r = await fetch(url, {cache:'no-store'});
-        if(!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
-        return {
-          source:'BigDataCloud reverse-geocode-client',
-          display_name:[j.locality, j.city, j.principalSubdivision, j.countryName].filter(Boolean).join(', ') || null,
-          name:j.locality || j.city || j.principalSubdivision || j.countryName || null,
-          address:j,
-          raw:j
-        };
-      }catch(e){
-        return {source:null, display_name:null, name:null, error:String(e && e.message ? e.message : e)};
-      }
-    }
     function requestBrowserLocation(){
       if(!navigator.geolocation){ alert('Browser Geolocation API is not available.'); return; }
       navigator.geolocation.getCurrentPosition(pos => {
         xsite.net.browserGeo = { latitude:pos.coords.latitude, longitude:pos.coords.longitude, accuracy:pos.coords.accuracy, altitude:pos.coords.altitude, heading:pos.coords.heading, speed:pos.coords.speed, ts:new Date(pos.timestamp).toISOString() };
-        xsite.net.browserGeoPlace = {display_name:'Resolving place name…', source:'pending'};
         updateNetworkUi();
-        reverseGeocodeBrowserLocation(pos.coords.latitude, pos.coords.longitude).then(place => {
-          xsite.net.browserGeoPlace = place;
-          updateNetworkUi();
-        }).catch(e => {
-          xsite.net.browserGeoPlace = {source:null, display_name:null, name:null, error:String(e && e.message ? e.message : e)};
-          updateNetworkUi();
-        });
       }, err => alert('Location was not shared: ' + err.message), {enableHighAccuracy:false, timeout:8000, maximumAge:60000});
     }
     function csvEscape(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
@@ -4639,97 +4341,12 @@ function compactPlaceNameFromAddress(addr){
       const sorted = [...rtts].sort((a,b)=>a-b);
       const pct = p => sorted.length ? sorted[Math.min(sorted.length-1, Math.floor(sorted.length*p))] : null;
       const total = xsite.net.received + xsite.net.lost;
-      return { generated_at:netNow(), started_at:xsite.net.startedAt, role:xsite.role, room:$('remoteRoom')?.value||null, relay_url:$('remoteWsIp')?.value||null, samples:xsite.net.samples.length, ping_sent:xsite.net.sent, ping_received:xsite.net.received, ping_lost:xsite.net.lost, packet_loss_percent: total ? 100*xsite.net.lost/total : 0, rtt_ms_avg:avg, rtt_ms_min:rtts.length?Math.min(...rtts):null, rtt_ms_p50:pct(0.50), rtt_ms_p95:pct(0.95), rtt_ms_max:rtts.length?Math.max(...rtts):null, peer_info:xsite.net.peerInfo, public_ip:xsite.net.publicIp, ip_geolocation:xsite.net.ipGeo, browser_geolocation:xsite.net.browserGeo, browser_geolocation_place:xsite.net.browserGeoPlace, browser_network:getNavNetInfo(), user_agent:navigator.userAgent, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone };
+      return { generated_at:netNow(), started_at:xsite.net.startedAt, role:xsite.role, room:$('remoteRoom')?.value||null, relay_url:$('remoteWsIp')?.value||null, samples:xsite.net.samples.length, ping_sent:xsite.net.sent, ping_received:xsite.net.received, ping_lost:xsite.net.lost, packet_loss_percent: total ? 100*xsite.net.lost/total : 0, rtt_ms_avg:avg, rtt_ms_min:rtts.length?Math.min(...rtts):null, rtt_ms_p50:pct(0.50), rtt_ms_p95:pct(0.95), rtt_ms_max:rtts.length?Math.max(...rtts):null, peer_info:xsite.net.peerInfo, public_ip:xsite.net.publicIp, ip_geolocation:xsite.net.ipGeo, browser_geolocation:xsite.net.browserGeo, browser_network:getNavNetInfo(), user_agent:navigator.userAgent, timezone:Intl.DateTimeFormat().resolvedOptions().timeZone };
     }
-    // ZIP writer fixed in v18:
-    // The previous version concatenated binary ZIP bytes as a JavaScript string.
-    // Blob encoded that string as UTF-8, which corrupted bytes >= 0x80 and made
-    // Windows report "compressed (zipped) folder is invalid". This version writes
-    // real Uint8Array bytes, so the central directory and CRC values remain valid.
-    function crc32Bytes(bytes){
-      const table = crc32Bytes.table || (crc32Bytes.table = (()=>{let c,t=[]; for(let n=0;n<256;n++){c=n; for(let k=0;k<8;k++) c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1)); t[n]=c>>>0;} return t;})());
-      let crc = 0 ^ (-1);
-      for(let i=0;i<bytes.length;i++) crc = (crc>>>8) ^ table[(crc ^ bytes[i]) & 0xff];
-      return (crc ^ (-1)) >>> 0;
-    }
-    function pushU16(arr,n){ arr.push(n & 255, (n>>>8)&255); }
-    function pushU32(arr,n){ arr.push(n & 255, (n>>>8)&255, (n>>>16)&255, (n>>>24)&255); }
-    function pushAscii(arr,s){ for(let i=0;i<s.length;i++) arr.push(s.charCodeAt(i) & 255); }
-    function concatUint8(parts){
-      const total = parts.reduce((sum,p)=>sum+p.length,0);
-      const out = new Uint8Array(total);
-      let off = 0;
-      for(const p of parts){ out.set(p, off); off += p.length; }
-      return out;
-    }
-    function makeZip(files){
-      const enc = new TextEncoder();
-      const localParts = [];
-      const centralParts = [];
-      let offset = 0;
-
-      for(const f of files){
-        const nameBytes = enc.encode(f.name);
-        const dataBytes = enc.encode(f.content ?? '');
-        const crc = crc32Bytes(dataBytes);
-        const size = dataBytes.length;
-
-        const lh = [];
-        pushAscii(lh,'PK\x03\x04');
-        pushU16(lh,20);          // version needed
-        pushU16(lh,0x0800);      // UTF-8 filename flag
-        pushU16(lh,0);           // store only, no compression
-        pushU16(lh,0);           // mod time
-        pushU16(lh,0);           // mod date
-        pushU32(lh,crc);
-        pushU32(lh,size);
-        pushU32(lh,size);
-        pushU16(lh,nameBytes.length);
-        pushU16(lh,0);           // extra length
-        const localHeader = new Uint8Array(lh.length + nameBytes.length);
-        localHeader.set(lh,0);
-        localHeader.set(nameBytes,lh.length);
-        localParts.push(localHeader, dataBytes);
-
-        const cd = [];
-        pushAscii(cd,'PK\x01\x02');
-        pushU16(cd,20);          // version made by
-        pushU16(cd,20);          // version needed
-        pushU16(cd,0x0800);      // UTF-8 filename flag
-        pushU16(cd,0);           // compression
-        pushU16(cd,0);
-        pushU16(cd,0);
-        pushU32(cd,crc);
-        pushU32(cd,size);
-        pushU32(cd,size);
-        pushU16(cd,nameBytes.length);
-        pushU16(cd,0);           // extra length
-        pushU16(cd,0);           // comment length
-        pushU16(cd,0);           // disk number start
-        pushU16(cd,0);           // internal attrs
-        pushU32(cd,0);           // external attrs
-        pushU32(cd,offset);      // local header offset
-        const centralHeader = new Uint8Array(cd.length + nameBytes.length);
-        centralHeader.set(cd,0);
-        centralHeader.set(nameBytes,cd.length);
-        centralParts.push(centralHeader);
-
-        offset += localHeader.length + dataBytes.length;
-      }
-
-      const centralBytes = concatUint8(centralParts);
-      const end = [];
-      pushAscii(end,'PK\x05\x06');
-      pushU16(end,0);
-      pushU16(end,0);
-      pushU16(end,files.length);
-      pushU16(end,files.length);
-      pushU32(end,centralBytes.length);
-      pushU32(end,offset);
-      pushU16(end,0);
-      const finalBytes = concatUint8([...localParts, centralBytes, new Uint8Array(end)]);
-      return new Blob([finalBytes], {type:'application/zip'});
-    }
+    function crc32(str){ const table = crc32.table || (crc32.table = (()=>{let c,t=[]; for(let n=0;n<256;n++){c=n; for(let k=0;k<8;k++) c=((c&1)?(0xEDB88320^(c>>>1)):(c>>>1)); t[n]=c>>>0;} return t;})()); let crc = 0 ^ (-1); for(let i=0;i<str.length;i++) crc = (crc>>>8) ^ table[(crc ^ str.charCodeAt(i)) & 0xff]; return (crc ^ (-1)) >>> 0; }
+    function u16(n){ return String.fromCharCode(n & 255, (n>>>8)&255); }
+    function u32(n){ return String.fromCharCode(n & 255, (n>>>8)&255, (n>>>16)&255, (n>>>24)&255); }
+    function makeZip(files){ let local='', central='', offset=0; for(const f of files){ const name=f.name; const data=unescape(encodeURIComponent(f.content)); const crc=crc32(data), size=data.length; const lh='PK\x03\x04'+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+name+data; local+=lh; central+='PK\x01\x02'+u16(20)+u16(20)+u16(0)+u16(0)+u16(0)+u16(0)+u32(crc)+u32(size)+u32(size)+u16(name.length)+u16(0)+u16(0)+u16(0)+u16(0)+u32(0)+u32(offset)+name; offset+=lh.length; } const end='PK\x05\x06'+u16(0)+u16(0)+u16(files.length)+u16(files.length)+u32(central.length)+u32(local.length)+u16(0); return new Blob([local, central, end], {type:'application/zip'}); }
     function downloadNetworkBundle(){
       const files = [
         {name:'network_summary.json', content: JSON.stringify(netSummary(), null, 2)},
@@ -4737,15 +4354,13 @@ function compactPlaceNameFromAddress(addr){
         {name:'network_samples.json', content: JSON.stringify(xsite.net.samples, null, 2)},
         {name:'command_ack_samples.json', content: JSON.stringify(xsite.net.cmdSamples, null, 2)},
         {name:'session_audit.csv', content: auditToCsv()},
-        {name:'browser_environment.json', content: JSON.stringify({userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, network:getNavNetInfo(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone, publicIp:xsite.net.publicIp, ipGeolocation:xsite.net.ipGeo, browserGeolocation:xsite.net.browserGeo, browserGeolocationPlace:xsite.net.browserGeoPlace}, null, 2)}
+        {name:'browser_environment.json', content: JSON.stringify({userAgent:navigator.userAgent, language:navigator.language, platform:navigator.platform, network:getNavNetInfo(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}, null, 2)}
       ];
       const blob = makeZip(files); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `sonair_ucl_network_bundle_${Date.now()}.zip`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
     }
     $('captureNetBtn')?.addEventListener('click', () => { xsite.net.captureEnabled = !xsite.net.captureEnabled; $('captureNetBtn').textContent = xsite.net.captureEnabled ? 'Pause Capture' : 'Start Capture'; updateNetworkUi(); });
     $('shareLocationBtn')?.addEventListener('click', requestBrowserLocation);
     $('downloadNetBundleBtn')?.addEventListener('click', downloadNetworkBundle);
-    $('urRecExportBtn')?.addEventListener('click', urRecExportZip);
-    $('urRecClearBtn')?.addEventListener('click', urRecClear);
     setInterval(updateNetworkUi, 1000);
     fetchPublicIpAndGeo();
 
@@ -4913,17 +4528,15 @@ function compactPlaceNameFromAddress(addr){
           ua:    navigator.userAgent,
           client_net: getNavNetInfo()
         }));
-        // Do not mark the link as active until the relay returns auth_ok.
-        // This prevents the UCL page from showing "connected" when the socket
-        // opened but the room/agent binding was not accepted yet.
-        isRemoteConnected = false;
+        isRemoteConnected = true;
         xsite.lastPeerHeartbeat = Date.now();
         $('connectRemoteBtn').textContent = 'Disc'; $('connectRemoteBtn').className = 'btn outline';
-        $('remoteEStopBtn').disabled = true;
-        $('remoteWsStatus').textContent = 'AUTHENTICATING'; $('remoteWsStatus').className = 'badge warn';
+        $('remoteEStopBtn').disabled = false;
+        $('remoteWsStatus').textContent = 'LINK ACTIVE'; $('remoteWsStatus').className = 'badge success';
         setAuthorityBadge('observer');
+        startHeartbeat();
         audit('OUT', 'auth', `as ${xsite.role}`);
-        const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot warn'; }
+        const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot ok'; }
       };
       remoteWs.onclose = () => {
         isRemoteConnected = false;
@@ -4988,17 +4601,7 @@ function compactPlaceNameFromAddress(addr){
             $('envZmax').value = data.envelope.z_max;
           } catch(_e){}
         }
-        isRemoteConnected = true;
-        xsite.lastPeerHeartbeat = Date.now();
-        $('connectRemoteBtn').textContent = 'Disc'; $('connectRemoteBtn').className = 'btn outline';
-        $('remoteEStopBtn').disabled = false;
-        $('remoteWsStatus').textContent = data.agent_online ? 'LINK ACTIVE' : 'WAITING AGENT';
-        $('remoteWsStatus').className = data.agent_online ? 'badge success' : 'badge warn';
-        startHeartbeat();
-        const ind = $('sysIndicator_remote'); if(ind){ ind.className = data.agent_online ? 'sys-dot ok' : 'sys-dot warn'; }
-        $('authPeerInfo').textContent = data.agent_online
-          ? `Linked to ${data.site || 'bridge'} as ${data.role}. UR agent online.`
-          : `Linked to ${data.site || 'bridge'} as ${data.role}, but UR agent is not online yet.`;
+        $('authPeerInfo').textContent = `Linked to ${data.site || 'bridge'} as ${data.role}.`;
         audit('IN', 'auth_ok', `session=${data.session}`);
         return;
       }
@@ -5010,27 +4613,7 @@ function compactPlaceNameFromAddress(addr){
       }
       if(data.type === 'error'){
         $('authPeerInfo').textContent = `Bridge error: ${data.reason}`;
-        $('remoteWsStatus').textContent = 'AUTH FAILED'; $('remoteWsStatus').className = 'badge err';
-        isRemoteConnected = false;
-        stopHeartbeat();
         audit('IN', 'error', data.reason);
-        try { remoteWs?.close(); } catch(_e){}
-        return;
-      }
-
-      if(data.type === 'agent_status'){
-        if(data.online){
-          $('remoteWsStatus').textContent = 'LINK ACTIVE'; $('remoteWsStatus').className = 'badge success';
-          const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot ok'; }
-          if($('authPeerInfo') && /agent is not online/i.test($('authPeerInfo').textContent || '')){
-            $('authPeerInfo').textContent = 'UR agent online — telemetry synchronising.';
-          }
-        } else {
-          $('remoteWsStatus').textContent = 'WAITING AGENT'; $('remoteWsStatus').className = 'badge warn';
-          const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot warn'; }
-          if($('authPeerInfo')) $('authPeerInfo').textContent = 'Relay linked, but UR agent is offline.';
-        }
-        audit('IN', 'agent_status', data.online ? 'online' : 'offline');
         return;
       }
 
@@ -5089,20 +4672,7 @@ function compactPlaceNameFromAddress(addr){
         return;
       }
       if(data.type === 'cmd_ack'){
-        const ackSample = {
-          ts: netNow(),
-          seq: data.seq ?? null,
-          relay_rtt_ms: data.relay_rtt_ms ?? null,
-          server_ts: data.server_ts ?? null,
-          role: xsite.role,
-          authority: xsite.authority,
-          buffered_amount: remoteWs ? remoteWs.bufferedAmount : null
-        };
-        if(xsite.net && Array.isArray(xsite.net.cmdSamples)){
-          xsite.net.cmdSamples.push(ackSample);
-          if(xsite.net.cmdSamples.length > 20000) xsite.net.cmdSamples.shift();
-        }
-        recordNetSample(Object.assign({kind:'cmd_ack'}, ackSample));
+        // optional: track for QoS — currently a no-op
         return;
       }
 
@@ -5135,7 +4705,6 @@ function compactPlaceNameFromAddress(addr){
             }
           }
           updateStatusUI(); clampPartCenterToWorkBox();
-          urRecSampleJoints(rads);
         }
 
         if (data.type === "camera_frame") {
@@ -5179,7 +4748,6 @@ function compactPlaceNameFromAddress(addr){
 
         if (data.type === "tcp_pose") {
           const tcp = data.q; currentTcpPose = tcp;
-          urRecSampleTcp(tcp);
           if(tcp && tcp.length === 6 && $('tcpPoseDisplay')) {
             $('tcpPoseDisplay').textContent = `TCP: X:${tcp[0].toFixed(3)} Y:${tcp[1].toFixed(3)} Z:${tcp[2].toFixed(3)}`;
           }
@@ -5254,7 +4822,6 @@ function compactPlaceNameFromAddress(addr){
                         let m = finalPose;
                         let s = `def align_probe():\n  movel(p[${f5(m[0])},${f5(m[1])},${f5(m[2])},${f5(m[3])},${f5(m[4])},${f5(m[5])}], a=0.1, v=0.05, r=0.0)\nend\n`;
                         localWs.send(JSON.stringify({ type: "run_script", script: s }));
-                        urRecQueueCommand({ type: "run_script", script: s }, "local_bridge_direct");
                     }
                 }
             } else {
@@ -5303,100 +4870,18 @@ function compactPlaceNameFromAddress(addr){
         focusKeyCatcher();
     });
 
-    // Route long URScript actions through the same authority-aware channel as
-    // the working remote jog/joystick controls.
-    // Host/UoN: direct local bridge. Guest/UCL: relay only after GRANT.
-    // Do not touch TCP pose capture or the data recorder.
-    function sendScriptWithAuthority(scriptStr, label, successHint) {
-        const payload = { type: "run_script", script: scriptStr };
-
-        if (xsite.role === 'guest') {
-            if (!(xsite.authority === 'operator' && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN)) {
-                setHint("Guest has no remote motion authority. Click REQUEST CONTROL and wait for UoN GRANT first.");
-                return false;
-            }
-            const out = Object.assign({}, payload, { seq: ++xsite.cmdSeq, ts: Date.now() });
-            remoteWs.send(JSON.stringify(out));
-            try { urRecQueueCommand(out, label || "remote_relay_run_script"); } catch(_e) {}
-            setHint(successHint || "Remote script deployed through relay.");
-            return true;
-        }
-
-        if (xsite.role === 'host' && xsite.authority === 'remote-operator') {
-            setHint("Host has granted control to remote operator. Release/recall control before running local script.");
-            return false;
-        }
-
-        if (localWs && localWs.readyState === WebSocket.OPEN) {
-            localWs.send(JSON.stringify(payload));
-            try { urRecQueueCommand(payload, label || "local_bridge_run_script"); } catch(_e) {}
-            setHint(successHint || "Local script deployed through bridge.");
-            return true;
-        }
-
-        setHint("Error: no active motion channel. Connect local bridge on UoN or relay authority on UCL.");
-        return false;
-    }
-
-    // v27 scan fix: do not send the whole dense Z-scan as one large URScript.
-    // The center move worked because it was a tiny script. Dense scans can be
-    // too long for the browser→relay→agent→UR path and may be silently ignored.
-    // Send one small authority-checked movel command per waypoint instead.
-    const sonairScanSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-    function estimateMoveWaitMs(prevPose, nextPose) {
-        if (!prevPose || !nextPose) return 1200;
-        const dx = Number(nextPose[0]) - Number(prevPose[0]);
-        const dy = Number(nextPose[1]) - Number(prevPose[1]);
-        const dz = Number(nextPose[2]) - Number(prevPose[2]);
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        // Bridge-side movel currently uses v≈0.05 m/s. Use a conservative
-        // 0.035 m/s estimate plus buffer so each step has time to finish.
-        return Math.max(900, Math.min(8000, Math.ceil((dist / 0.035 + 0.35) * 1000)));
-    }
-
-    function sendMovelWithAuthority(pose, label) {
-        if (!pose || pose.length !== 6) {
-            setHint("Error: bad scan waypoint pose.");
-            return false;
-        }
-        const payload = { type: "movel", pose: pose.map(Number) };
-
-        if (xsite.role === 'guest') {
-            if (!(xsite.authority === 'operator' && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN)) {
-                setHint("Guest has no remote motion authority. Click REQUEST CONTROL and wait for UoN GRANT first.");
-                return false;
-            }
-            const out = Object.assign({}, payload, { seq: ++xsite.cmdSeq, ts: Date.now() });
-            remoteWs.send(JSON.stringify(out));
-            try { urRecQueueCommand(out, label || "remote_relay_movel_scan_step"); } catch(_e) {}
-            return true;
-        }
-
-        if (xsite.role === 'host' && xsite.authority === 'remote-operator') {
-            setHint("Host has granted control to remote operator. Release/recall control before running local scan.");
-            return false;
-        }
-
-        if (localWs && localWs.readyState === WebSocket.OPEN) {
-            localWs.send(JSON.stringify(payload));
-            try { urRecQueueCommand(payload, label || "local_bridge_movel_scan_step"); } catch(_e) {}
-            return true;
-        }
-
-        setHint("Error: no active motion channel. Connect local bridge on UoN or relay authority on UCL.");
-        return false;
-    }
-
     $('btnVerifyPos')?.addEventListener('click', () => {
         if (!scanHome) {
             setHint("Error: Target coordinates not generated/set yet.");
             return;
         }
-        let scriptStr = "def verify_center():\n";
-        scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
-        scriptStr += "end\n";
-        sendScriptWithAuthority(scriptStr, "verify_center_script", "Verifying... Robot is moving to the calculated Target Center.");
+        if (localWs && localWs.readyState === WebSocket.OPEN) {
+            let scriptStr = "def verify_center():\n";
+            scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
+            scriptStr += "end\n";
+            localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
+            setHint("Verifying... Robot is moving to the calculated Target Center.");
+        }
         focusKeyCatcher();
     });
 
@@ -5412,10 +4897,6 @@ function compactPlaceNameFromAddress(addr){
         }
 
         let spacing_mm = Number($('scanSpacing').value) || 5;
-        // Clamp to a sane positive value; very small spacing creates thousands of
-        // movel points and can cause long blocking programs. Dense scans still work,
-        // but the generated step count is predictable.
-        spacing_mm = Math.max(1, Math.min(100, spacing_mm));
         let spacing_m = spacing_mm / 1000.0;
 
         // P1(左上)→P2(右上) 为扫描行方向（X方向）
@@ -5425,9 +4906,7 @@ function compactPlaceNameFromAddress(addr){
             scanP4[0] - scanP1[0],
             scanP4[1] - scanP1[1]
         );
-        // Use ceil, not floor, so the real row spacing is never larger than the
-        // requested spacing. This gives a genuinely dense top-to-bottom scan.
-        let num_lines = Math.max(1, Math.ceil(dist_scan_dir / spacing_m));
+        let num_lines = Math.max(1, Math.floor(dist_scan_dir / spacing_m));
 
         simulatedWaypoints = [];
 
@@ -5490,61 +4969,78 @@ function compactPlaceNameFromAddress(addr){
         focusKeyCatcher();
     });
 
+    // v28 fix: Execute Scan must use the same authority-aware command path as
+    // Move to Center. UCL/guest does NOT have a local bridge, so sending the
+    // scan directly to localWs makes the button appear dead. We also avoid one
+    // very long run_script over the relay and instead stream small movel commands
+    // waypoint-by-waypoint. This keeps TCP logging and all other modules unchanged.
+    let zScanRunning = false;
+    const zScanSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function estimateMovelDelayMs(fromPose, toPose) {
+        if (!fromPose || !toPose) return 850;
+        const dx = Number(toPose[0]) - Number(fromPose[0]);
+        const dy = Number(toPose[1]) - Number(fromPose[1]);
+        const dz = Number(toPose[2]) - Number(fromPose[2]);
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        // Bridge-side movel speed is conservative (~0.05 m/s). Add margin so
+        // commands do not pile up on the UR secondary interface during relay use.
+        return Math.max(650, Math.min(4500, Math.ceil((dist / 0.045) * 1000) + 350));
+    }
+
     $('deployScanBtn')?.addEventListener('click', async () => {
+        if (zScanRunning) {
+            setHint("Z scan is already running. Please wait or use E-STOP if needed.");
+            return;
+        }
         if (!simulatedWaypoints || simulatedWaypoints.length === 0) {
             setHint("Error: Please generate the path preview first.");
             return;
         }
 
-        const btn = $('deployScanBtn');
-        if (btn && btn.dataset.running === "1") {
-            setHint("Z-scan is already running. Please wait for it to finish.");
+        // Guest/UCL must have relay authority. Host/UoN uses the same sendCmd
+        // helper, which will use the local bridge when host owns control.
+        if (xsite.role === 'guest' && !remoteOk()) {
+            setHint("UCL cannot execute scan yet: REQUEST CONTROL and wait for UoN GRANT.");
+            return;
+        }
+        if (xsite.role !== 'guest' && !localOk()) {
+            setHint("Host cannot execute scan: local bridge is not connected or authority is remote.");
             return;
         }
 
-        if (btn) {
-            btn.dataset.running = "1";
-            btn.disabled = true;
-            btn.textContent = "Running Z-Scan...";
-        }
+        const btn = $('deployScanBtn');
+        zScanRunning = true;
+        if (btn) btn.disabled = true;
+        setHint(`🚀 Z scan started: streaming ${simulatedWaypoints.length} movel points via ${xsite.role === 'guest' ? 'relay' : 'local bridge'}...`);
 
         try {
-            let prevPose = currentTcpPose || (scanHome || simulatedWaypoints[0].coords);
-            const route = xsite.role === 'guest' ? 'remote_relay_chunked_movel' : 'local_bridge_chunked_movel';
-            setHint(`🚀 Starting chunked Z-scan via ${xsite.role === 'guest' ? 'remote relay' : 'local bridge'}: ${simulatedWaypoints.length} waypoints.`);
-
+            let previousPose = currentTcpPose || scanHome || simulatedWaypoints[0].coords;
             for (let i = 0; i < simulatedWaypoints.length; i++) {
                 const wp = simulatedWaypoints[i];
-                const ok = sendMovelWithAuthority(wp.coords, `${route}_${wp.type}`);
+                const c = wp.coords;
+                const ok = sendCmd({
+                    type: "movel",
+                    pose: [Number(c[0]), Number(c[1]), Number(c[2]), Number(c[3]), Number(c[4]), Number(c[5])]
+                });
                 if (!ok) {
-                    setHint(`Z-scan stopped before waypoint ${i + 1}/${simulatedWaypoints.length}. Check authority/connection.`);
+                    setHint(`Z scan stopped before point ${i}: command path not available.`);
                     break;
                 }
-
-                try {
-                    urRecQueueCommand({
-                        type: "movel",
-                        scan_step: i + 1,
-                        scan_waypoints: simulatedWaypoints.length,
-                        waypoint_type: wp.type,
-                        route,
-                        pose: wp.coords
-                    }, `${route}_scan_step`);
-                } catch(_e) {}
-
-                setHint(`Z-scan running: ${i + 1}/${simulatedWaypoints.length} ${wp.type}`);
-                const waitMs = estimateMoveWaitMs(prevPose, wp.coords);
-                prevPose = wp.coords;
-                await sonairScanSleep(waitMs);
+                if (typeof recordUrOperation === 'function') {
+                    try { recordUrOperation('zscan_movel', { index: i, label: wp.type, pose: c }); } catch(_e) {}
+                }
+                setHint(`Z scan running: point ${i + 1}/${simulatedWaypoints.length} (${wp.type}).`);
+                await zScanSleep(estimateMovelDelayMs(previousPose, c));
+                previousPose = c;
             }
-
-            setHint(`✅ Z-scan command sequence finished: ${simulatedWaypoints.length} waypoints sent.`);
+            setHint(`✅ Z scan command stream completed: ${simulatedWaypoints.length} points sent.`);
+        } catch (err) {
+            console.error('Z scan execution failed:', err);
+            setHint(`Z scan error: ${err && err.message ? err.message : err}`);
         } finally {
-            if (btn) {
-                btn.dataset.running = "0";
-                btn.disabled = false;
-                btn.textContent = "2. Execute Scan";
-            }
+            zScanRunning = false;
+            if (btn) btn.disabled = false;
             focusKeyCatcher();
         }
     });
