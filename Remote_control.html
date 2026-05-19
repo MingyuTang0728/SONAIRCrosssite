@@ -5338,6 +5338,56 @@ function compactPlaceNameFromAddress(addr){
         return false;
     }
 
+    // v27 scan fix: do not send the whole dense Z-scan as one large URScript.
+    // The center move worked because it was a tiny script. Dense scans can be
+    // too long for the browser→relay→agent→UR path and may be silently ignored.
+    // Send one small authority-checked movel command per waypoint instead.
+    const sonairScanSleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function estimateMoveWaitMs(prevPose, nextPose) {
+        if (!prevPose || !nextPose) return 1200;
+        const dx = Number(nextPose[0]) - Number(prevPose[0]);
+        const dy = Number(nextPose[1]) - Number(prevPose[1]);
+        const dz = Number(nextPose[2]) - Number(prevPose[2]);
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        // Bridge-side movel currently uses v≈0.05 m/s. Use a conservative
+        // 0.035 m/s estimate plus buffer so each step has time to finish.
+        return Math.max(900, Math.min(8000, Math.ceil((dist / 0.035 + 0.35) * 1000)));
+    }
+
+    function sendMovelWithAuthority(pose, label) {
+        if (!pose || pose.length !== 6) {
+            setHint("Error: bad scan waypoint pose.");
+            return false;
+        }
+        const payload = { type: "movel", pose: pose.map(Number) };
+
+        if (xsite.role === 'guest') {
+            if (!(xsite.authority === 'operator' && isRemoteConnected && remoteWs && remoteWs.readyState === WebSocket.OPEN)) {
+                setHint("Guest has no remote motion authority. Click REQUEST CONTROL and wait for UoN GRANT first.");
+                return false;
+            }
+            const out = Object.assign({}, payload, { seq: ++xsite.cmdSeq, ts: Date.now() });
+            remoteWs.send(JSON.stringify(out));
+            try { urRecQueueCommand(out, label || "remote_relay_movel_scan_step"); } catch(_e) {}
+            return true;
+        }
+
+        if (xsite.role === 'host' && xsite.authority === 'remote-operator') {
+            setHint("Host has granted control to remote operator. Release/recall control before running local scan.");
+            return false;
+        }
+
+        if (localWs && localWs.readyState === WebSocket.OPEN) {
+            localWs.send(JSON.stringify(payload));
+            try { urRecQueueCommand(payload, label || "local_bridge_movel_scan_step"); } catch(_e) {}
+            return true;
+        }
+
+        setHint("Error: no active motion channel. Connect local bridge on UoN or relay authority on UCL.");
+        return false;
+    }
+
     $('btnVerifyPos')?.addEventListener('click', () => {
         if (!scanHome) {
             setHint("Error: Target coordinates not generated/set yet.");
@@ -5440,43 +5490,63 @@ function compactPlaceNameFromAddress(addr){
         focusKeyCatcher();
     });
 
-    $('deployScanBtn')?.addEventListener('click', () => {
+    $('deployScanBtn')?.addEventListener('click', async () => {
         if (!simulatedWaypoints || simulatedWaypoints.length === 0) {
             setHint("Error: Please generate the path preview first.");
             return;
         }
 
-        let scriptStr = "def auto_zigzag_scan():\n";
-        scriptStr += `  popup("Starting Auto Zig-Zag Scan!", "Sim2Real", False, False, blocking=False)\n`;
-
-        simulatedWaypoints.forEach(wp => {
-            let c = wp.coords;
-            // 对于 HOME 点可以设置稍不同的速度参数，这里以平滑执行为主
-            // Conservative scan motion: lower acceleration/speed and no blend radius.
-            // This reduces abrupt corner transitions during dense zig-zag scanning.
-            let a = wp.type.includes("HOME") ? 0.12 : 0.08;
-            let v = wp.type.includes("HOME") ? 0.04 : 0.025;
-            let r = 0.0;
-            scriptStr += `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n`;
-        });
-
-        scriptStr += "end\n";
-
-        const ok = sendScriptWithAuthority(
-            scriptStr,
-            "zigzag_scan_script",
-            `🚀 Auto Zig-Zag deployed safely via ${xsite.role === 'guest' ? 'remote relay' : 'local bridge'}! Executing ${simulatedWaypoints.length} points.`
-        );
-        if (ok) {
-            try {
-                urRecQueueCommand({
-                    type: "run_script",
-                    scan_waypoints: simulatedWaypoints.length,
-                    route: xsite.role === 'guest' ? 'remote_relay' : 'local_bridge'
-                }, xsite.role === 'guest' ? "remote_relay_direct_scan" : "local_bridge_direct_scan");
-            } catch(_e) {}
+        const btn = $('deployScanBtn');
+        if (btn && btn.dataset.running === "1") {
+            setHint("Z-scan is already running. Please wait for it to finish.");
+            return;
         }
-        focusKeyCatcher();
+
+        if (btn) {
+            btn.dataset.running = "1";
+            btn.disabled = true;
+            btn.textContent = "Running Z-Scan...";
+        }
+
+        try {
+            let prevPose = currentTcpPose || (scanHome || simulatedWaypoints[0].coords);
+            const route = xsite.role === 'guest' ? 'remote_relay_chunked_movel' : 'local_bridge_chunked_movel';
+            setHint(`🚀 Starting chunked Z-scan via ${xsite.role === 'guest' ? 'remote relay' : 'local bridge'}: ${simulatedWaypoints.length} waypoints.`);
+
+            for (let i = 0; i < simulatedWaypoints.length; i++) {
+                const wp = simulatedWaypoints[i];
+                const ok = sendMovelWithAuthority(wp.coords, `${route}_${wp.type}`);
+                if (!ok) {
+                    setHint(`Z-scan stopped before waypoint ${i + 1}/${simulatedWaypoints.length}. Check authority/connection.`);
+                    break;
+                }
+
+                try {
+                    urRecQueueCommand({
+                        type: "movel",
+                        scan_step: i + 1,
+                        scan_waypoints: simulatedWaypoints.length,
+                        waypoint_type: wp.type,
+                        route,
+                        pose: wp.coords
+                    }, `${route}_scan_step`);
+                } catch(_e) {}
+
+                setHint(`Z-scan running: ${i + 1}/${simulatedWaypoints.length} ${wp.type}`);
+                const waitMs = estimateMoveWaitMs(prevPose, wp.coords);
+                prevPose = wp.coords;
+                await sonairScanSleep(waitMs);
+            }
+
+            setHint(`✅ Z-scan command sequence finished: ${simulatedWaypoints.length} waypoints sent.`);
+        } finally {
+            if (btn) {
+                btn.dataset.running = "0";
+                btn.disabled = false;
+                btn.textContent = "2. Execute Scan";
+            }
+            focusKeyCatcher();
+        }
     });
 
     function buildJointUI(){
