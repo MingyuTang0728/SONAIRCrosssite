@@ -4913,15 +4913,17 @@ function compactPlaceNameFromAddress(addr){
           ua:    navigator.userAgent,
           client_net: getNavNetInfo()
         }));
-        isRemoteConnected = true;
+        // Do not mark the link as active until the relay returns auth_ok.
+        // This prevents the UCL page from showing "connected" when the socket
+        // opened but the room/agent binding was not accepted yet.
+        isRemoteConnected = false;
         xsite.lastPeerHeartbeat = Date.now();
         $('connectRemoteBtn').textContent = 'Disc'; $('connectRemoteBtn').className = 'btn outline';
-        $('remoteEStopBtn').disabled = false;
-        $('remoteWsStatus').textContent = 'LINK ACTIVE'; $('remoteWsStatus').className = 'badge success';
+        $('remoteEStopBtn').disabled = true;
+        $('remoteWsStatus').textContent = 'AUTHENTICATING'; $('remoteWsStatus').className = 'badge warn';
         setAuthorityBadge('observer');
-        startHeartbeat();
         audit('OUT', 'auth', `as ${xsite.role}`);
-        const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot ok'; }
+        const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot warn'; }
       };
       remoteWs.onclose = () => {
         isRemoteConnected = false;
@@ -4986,7 +4988,17 @@ function compactPlaceNameFromAddress(addr){
             $('envZmax').value = data.envelope.z_max;
           } catch(_e){}
         }
-        $('authPeerInfo').textContent = `Linked to ${data.site || 'bridge'} as ${data.role}.`;
+        isRemoteConnected = true;
+        xsite.lastPeerHeartbeat = Date.now();
+        $('connectRemoteBtn').textContent = 'Disc'; $('connectRemoteBtn').className = 'btn outline';
+        $('remoteEStopBtn').disabled = false;
+        $('remoteWsStatus').textContent = data.agent_online ? 'LINK ACTIVE' : 'WAITING AGENT';
+        $('remoteWsStatus').className = data.agent_online ? 'badge success' : 'badge warn';
+        startHeartbeat();
+        const ind = $('sysIndicator_remote'); if(ind){ ind.className = data.agent_online ? 'sys-dot ok' : 'sys-dot warn'; }
+        $('authPeerInfo').textContent = data.agent_online
+          ? `Linked to ${data.site || 'bridge'} as ${data.role}. UR agent online.`
+          : `Linked to ${data.site || 'bridge'} as ${data.role}, but UR agent is not online yet.`;
         audit('IN', 'auth_ok', `session=${data.session}`);
         return;
       }
@@ -4998,7 +5010,27 @@ function compactPlaceNameFromAddress(addr){
       }
       if(data.type === 'error'){
         $('authPeerInfo').textContent = `Bridge error: ${data.reason}`;
+        $('remoteWsStatus').textContent = 'AUTH FAILED'; $('remoteWsStatus').className = 'badge err';
+        isRemoteConnected = false;
+        stopHeartbeat();
         audit('IN', 'error', data.reason);
+        try { remoteWs?.close(); } catch(_e){}
+        return;
+      }
+
+      if(data.type === 'agent_status'){
+        if(data.online){
+          $('remoteWsStatus').textContent = 'LINK ACTIVE'; $('remoteWsStatus').className = 'badge success';
+          const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot ok'; }
+          if($('authPeerInfo') && /agent is not online/i.test($('authPeerInfo').textContent || '')){
+            $('authPeerInfo').textContent = 'UR agent online — telemetry synchronising.';
+          }
+        } else {
+          $('remoteWsStatus').textContent = 'WAITING AGENT'; $('remoteWsStatus').className = 'badge warn';
+          const ind = $('sysIndicator_remote'); if(ind){ ind.className = 'sys-dot warn'; }
+          if($('authPeerInfo')) $('authPeerInfo').textContent = 'Relay linked, but UR agent is offline.';
+        }
+        audit('IN', 'agent_status', data.online ? 'online' : 'offline');
         return;
       }
 
