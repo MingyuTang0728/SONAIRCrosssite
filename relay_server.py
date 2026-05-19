@@ -86,7 +86,7 @@ ENVELOPE = {
 # Watchdog: if the operator currently holding authority misses heartbeats
 # for this long, force E-STOP and revoke. 700ms accommodates ~250ms WAN
 # RTT plus a few missed pings.
-REMOTE_WATCHDOG_MS = 700
+REMOTE_WATCHDOG_MS = 2500
 
 # Audit log root directory (JSONL, one file per day)
 AUDIT_DIR = Path(os.environ.get("RELAY_AUDIT_DIR", "./relay_audit"))
@@ -374,20 +374,21 @@ async def watchdog_loop():
                 continue
             silent_ms = int(time.time() * 1000) - rs.last_seen_ms
             if silent_ms > REMOTE_WATCHDOG_MS:
-                log.warning("WATCHDOG[%s]: remote %s silent %dms — E-STOP",
+                log.warning("WATCHDOG[%s]: remote %s silent %dms — release to host and stop UR",
                             room.id, rs.id, silent_ms)
                 async with room.lock:
-                    room.state = Room.LOCKED
+                    room.state = Room.HOST_OPERATOR
                     room.remote_session = None
                     room.pending_request = None
-                # Tell the agent to E-STOP the physical robot
+                # Do not permanently lock the room on transient UCL link jitter.
+                # Stop the robot motion, then allow the host to grant again.
                 if room.agent:
-                    await safe_send(room.agent, {"type": "estop"})
-                audit("watchdog_estop", rs, {"silent_ms": silent_ms})
+                    await safe_send(room.agent, {"type": "dashboard", "cmd": "stop"})
+                audit("watchdog_release_to_host", rs, {"silent_ms": silent_ms})
                 await broadcast_room(room, {
                     "type":  "authority_changed",
-                    "state": "locked",
-                    "by":    "watchdog",
+                    "state": room.state,
+                    "by":    "watchdog_release",
                 })
 
 
@@ -772,19 +773,23 @@ async def handle_connection(websocket):
                 elif session.role == "guest":
                     room.guests.discard(session)
 
-                # If this session was the active remote, force E-STOP
+                # If the active UCL remote disconnects, stop motion and return
+                # authority to the UoN host. This matches the older remote-link
+                # behaviour more closely and avoids leaving later UCL sessions in
+                # LOCKED OUT / session_sync after a transient browser/Tailscale drop.
                 if room.remote_session is session:
-                    room.state = Room.LOCKED
+                    room.state = Room.HOST_OPERATOR
                     room.remote_session = None
-                    log.warning("remote %s disconnected mid-control — E-STOP",
+                    room.pending_request = None
+                    log.warning("remote %s disconnected mid-control — released to host and stopped UR",
                                 session.id)
                     if room.agent:
-                        await safe_send(room.agent, {"type": "estop"})
-                    audit("remote_disconnect_estop", session)
+                        await safe_send(room.agent, {"type": "dashboard", "cmd": "stop"})
+                    audit("remote_disconnect_release_to_host", session)
                     await broadcast_room(room, {
                         "type":  "authority_changed",
-                        "state": "locked",
-                        "by":    "remote_disconnect",
+                        "state": room.state,
+                        "by":    "remote_disconnect_release",
                     })
                 # If the agent dropped, lock the room — nobody can drive
                 # without an agent anyway
