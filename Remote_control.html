@@ -1437,6 +1437,28 @@
   </div>
 </div>
 </div>
+</div>
+<div class="group" id="urMotionRecorderPanel" style="border-color:#58a6ff;margin-top:8px;margin-bottom:8px;">
+  <div class="group-hd" style="background:rgba(88,166,255,0.1);">
+    UR Motion Data Recorder <span class="badge info" id="urRecStateBadge">SAFE</span>
+  </div>
+  <div class="group-bd">
+    <div class="status-kv" style="grid-template-columns:repeat(3,1fr);">
+      <div class="cell"><small>Operations</small><span id="urRecOpsCount">0</span></div>
+      <div class="cell"><small>TCP Samples</small><span id="urRecTcpCount">0</span></div>
+      <div class="cell"><small>Joint Samples</small><span id="urRecJointCount">0</span></div>
+    </div>
+    <div style="background:#010409; padding:6px; border-radius:4px; border:1px solid var(--line); font-family:var(--font-mono); font-size:9px; line-height:1.5; color:#8b949e;">
+      <div>Last TCP: <span id="urRecLastTcp" style="color:#3fb950;">—</span></div>
+      <div>Last operation: <span id="urRecLastOp" style="color:#58a6ff;">—</span></div>
+      <div>Sampling: TCP/Joints ≤ 5 Hz · Command log async · No WebSocket wrapping</div>
+    </div>
+    <div class="field-row" style="gap:4px;">
+      <button class="btn warning" id="urRecExportBtn" style="flex:1;">Export UR Data ZIP</button>
+      <button class="btn outline" id="urRecClearBtn" style="flex:1;">Clear Recorder</button>
+    </div>
+    <div class="muted-text" style="font-size:9px;">Records commands and UR state without intercepting the real-time send path. Tokens/scripts are redacted or summarised in export.</div>
+  </div>
 </div><div class="motion-row"><div class="group freedrive-compact" style="border-color:#d29922;margin-top:8px;margin-bottom:8px;">
 <div class="group-hd" style="background:rgba(210,153,34,0.1);">
                 Freedrive Mode <span class="badge" id="freedriveBadge">OFF</span>
@@ -1948,6 +1970,190 @@
 
     const captured = [];
     let currentTcpPose = null;
+
+    // ================================================================
+    // SONAIR v23 Safe UR Data Recorder
+    // Non-invasive design: no WebSocket monkey-patching, no JSON parsing on
+    // the high-rate send path, UI updates are throttled, and TCP/joint
+    // samples are down-sampled to avoid browser-main-thread jitter.
+    // ================================================================
+    const urSafeRecorder = {
+      sessionId: `ur-${Date.now()}-${Math.random().toString(16).slice(2,8)}`,
+      startedAt: new Date().toISOString(),
+      operations: [],
+      tcpSamples: [],
+      jointSamples: [],
+      lastTcpSampleMs: 0,
+      lastJointSampleMs: 0,
+      maxOps: 8000,
+      maxTcp: 25000,
+      maxJoint: 25000
+    };
+
+    function urRecRingPush(arr, item, maxLen){
+      arr.push(item);
+      if(arr.length > maxLen) arr.splice(0, arr.length - maxLen);
+    }
+
+    function urRecPoseCopy(p){
+      return Array.isArray(p) ? p.slice(0,6).map(v => Number(v)) : null;
+    }
+
+    function urRecSanitisePayload(msg){
+      const out = {};
+      if(!msg || typeof msg !== 'object') return out;
+      Object.keys(msg).forEach(k => {
+        if(/token|key|secret|password/i.test(k)) { out[k] = '[redacted]'; return; }
+        if(k === 'script') {
+          const s = String(msg[k] || '');
+          out.script_size = s.length;
+          out.script_first_line = (s.split('\n')[0] || '').slice(0,120);
+          out.script = '[redacted: exported as size + first line only]';
+          return;
+        }
+        const v = msg[k];
+        if(Array.isArray(v)) out[k] = v.slice(0, 12).map(x => Number.isFinite(Number(x)) ? Number(x) : x);
+        else if(typeof v === 'object' && v !== null) out[k] = '[object omitted]';
+        else out[k] = v;
+      });
+      return out;
+    }
+
+    function urRecQueueCommand(msg, route){
+      // Keep the live-control path light: schedule the actual log write after
+      // the command has been sent. This avoids delaying speedl/speedj/freedrive.
+      setTimeout(() => {
+        try {
+          const safe = urRecSanitisePayload(msg);
+          urRecRingPush(urSafeRecorder.operations, {
+            ts: new Date().toISOString(),
+            t_ms: Date.now(),
+            route: route || 'unknown',
+            type: safe.type || 'unknown',
+            seq: safe.seq ?? null,
+            authority: (typeof xsite !== 'undefined') ? xsite.authority : null,
+            role: (typeof xsite !== 'undefined') ? xsite.role : null,
+            tcp_at_send: urRecPoseCopy(currentTcpPose),
+            payload: safe
+          }, urSafeRecorder.maxOps);
+        } catch(_e) {}
+      }, 0);
+    }
+
+    window.urSafeRecorderCommand = urRecQueueCommand;
+
+    function urRecSampleTcp(tcp){
+      const now = Date.now();
+      if(!tcp || tcp.length !== 6 || now - urSafeRecorder.lastTcpSampleMs < 200) return;
+      urSafeRecorder.lastTcpSampleMs = now;
+      urRecRingPush(urSafeRecorder.tcpSamples, {
+        ts: new Date().toISOString(),
+        t_ms: now,
+        x: Number(tcp[0]), y: Number(tcp[1]), z: Number(tcp[2]),
+        rx: Number(tcp[3]), ry: Number(tcp[4]), rz: Number(tcp[5]),
+        role: (typeof xsite !== 'undefined') ? xsite.role : null,
+        authority: (typeof xsite !== 'undefined') ? xsite.authority : null
+      }, urSafeRecorder.maxTcp);
+    }
+
+    function urRecSampleJoints(q){
+      const now = Date.now();
+      if(!q || q.length !== 6 || now - urSafeRecorder.lastJointSampleMs < 200) return;
+      urSafeRecorder.lastJointSampleMs = now;
+      urRecRingPush(urSafeRecorder.jointSamples, {
+        ts: new Date().toISOString(),
+        t_ms: now,
+        q0: Number(q[0]), q1: Number(q[1]), q2: Number(q[2]),
+        q3: Number(q[3]), q4: Number(q[4]), q5: Number(q[5]),
+        q0_deg: deg(Number(q[0])), q1_deg: deg(Number(q[1])), q2_deg: deg(Number(q[2])),
+        q3_deg: deg(Number(q[3])), q4_deg: deg(Number(q[4])), q5_deg: deg(Number(q[5])),
+        role: (typeof xsite !== 'undefined') ? xsite.role : null,
+        authority: (typeof xsite !== 'undefined') ? xsite.authority : null
+      }, urSafeRecorder.maxJoint);
+    }
+
+    function urRecCsvEscape(v){ return '"' + String(v ?? '').replace(/"/g,'""') + '"'; }
+    function urRecRowsToCsv(rows, headers){
+      const lines = [headers.join(',')];
+      rows.forEach(r => lines.push(headers.map(h => urRecCsvEscape(r[h])).join(',')));
+      return lines.join('\n');
+    }
+    function urRecOpsToCsv(){
+      const headers = ['ts','t_ms','route','type','seq','role','authority','tcp_x','tcp_y','tcp_z','tcp_rx','tcp_ry','tcp_rz','payload_json'];
+      const rows = urSafeRecorder.operations.map(o => ({
+        ts:o.ts, t_ms:o.t_ms, route:o.route, type:o.type, seq:o.seq, role:o.role, authority:o.authority,
+        tcp_x:o.tcp_at_send?.[0], tcp_y:o.tcp_at_send?.[1], tcp_z:o.tcp_at_send?.[2],
+        tcp_rx:o.tcp_at_send?.[3], tcp_ry:o.tcp_at_send?.[4], tcp_rz:o.tcp_at_send?.[5],
+        payload_json: JSON.stringify(o.payload || {})
+      }));
+      return urRecRowsToCsv(rows, headers);
+    }
+    function urRecTcpToCsv(){
+      return urRecRowsToCsv(urSafeRecorder.tcpSamples, ['ts','t_ms','x','y','z','rx','ry','rz','role','authority']);
+    }
+    function urRecJointToCsv(){
+      return urRecRowsToCsv(urSafeRecorder.jointSamples, ['ts','t_ms','q0','q1','q2','q3','q4','q5','q0_deg','q1_deg','q2_deg','q3_deg','q4_deg','q5_deg','role','authority']);
+    }
+    function urRecSummary(){
+      const lastTcp = urSafeRecorder.tcpSamples[urSafeRecorder.tcpSamples.length-1] || null;
+      const lastOp = urSafeRecorder.operations[urSafeRecorder.operations.length-1] || null;
+      return {
+        session_id: urSafeRecorder.sessionId,
+        started_at: urSafeRecorder.startedAt,
+        exported_at: new Date().toISOString(),
+        operation_count: urSafeRecorder.operations.length,
+        tcp_sample_count: urSafeRecorder.tcpSamples.length,
+        joint_sample_count: urSafeRecorder.jointSamples.length,
+        sampling_note: 'TCP and joint states are down-sampled to <=5Hz in browser. Command logging is asynchronous and does not wrap WebSocket.send.',
+        last_tcp: lastTcp,
+        last_operation: lastOp
+      };
+    }
+    function urRecUpdateUi(){
+      try {
+        if($('urRecOpsCount')) $('urRecOpsCount').textContent = String(urSafeRecorder.operations.length);
+        if($('urRecTcpCount')) $('urRecTcpCount').textContent = String(urSafeRecorder.tcpSamples.length);
+        if($('urRecJointCount')) $('urRecJointCount').textContent = String(urSafeRecorder.jointSamples.length);
+        const lastTcp = urSafeRecorder.tcpSamples[urSafeRecorder.tcpSamples.length-1];
+        if($('urRecLastTcp')) $('urRecLastTcp').textContent = lastTcp ? `X:${lastTcp.x.toFixed(3)} Y:${lastTcp.y.toFixed(3)} Z:${lastTcp.z.toFixed(3)}` : '—';
+        const lastOp = urSafeRecorder.operations[urSafeRecorder.operations.length-1];
+        if($('urRecLastOp')) $('urRecLastOp').textContent = lastOp ? `${lastOp.type} via ${lastOp.route}` : '—';
+      } catch(_e) {}
+    }
+    function urRecClear(){
+      urSafeRecorder.operations.length = 0;
+      urSafeRecorder.tcpSamples.length = 0;
+      urSafeRecorder.jointSamples.length = 0;
+      urSafeRecorder.startedAt = new Date().toISOString();
+      urRecUpdateUi();
+      setHint('UR Motion Data Recorder cleared.');
+    }
+    function urRecExportZip(){
+      const files = [
+        {name:'ur_motion_summary.json', content: JSON.stringify(urRecSummary(), null, 2)},
+        {name:'ur_operations.csv', content: urRecOpsToCsv()},
+        {name:'ur_operations.json', content: JSON.stringify(urSafeRecorder.operations, null, 2)},
+        {name:'ur_tcp_pose_samples.csv', content: urRecTcpToCsv()},
+        {name:'ur_tcp_pose_samples.json', content: JSON.stringify(urSafeRecorder.tcpSamples, null, 2)},
+        {name:'ur_joint_state_samples.csv', content: urRecJointToCsv()},
+        {name:'ur_joint_state_samples.json', content: JSON.stringify(urSafeRecorder.jointSamples, null, 2)},
+        {name:'ur_recorder_readme.txt', content: 'SONAIR v23 Safe UR Data Recorder\n- Non-invasive: no WebSocket.send wrapping.\n- TCP/joint samples are down-sampled to <=5Hz.\n- API keys/tokens/scripts are redacted or summarised.\n'}
+      ];
+      const blob = makeZip(files);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sonair_ur_motion_data_${Date.now()}.zip`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setHint('UR motion data ZIP exported.');
+    }
+    setInterval(urRecUpdateUi, 500);
+    document.addEventListener('DOMContentLoaded', () => {
+      $('urRecExportBtn')?.addEventListener('click', urRecExportZip);
+      $('urRecClearBtn')?.addEventListener('click', urRecClear);
+    });
+
     let toolGroup = null;
 
     function focusKeyCatcher(){
@@ -3309,6 +3515,7 @@
               }
             } catch(_e){}
             remoteWs.send(JSON.stringify(out));
+            urRecQueueCommand(out, 'remote_relay');
             return true;
           }
           setHint('Guest has no remote motion authority. Request control and wait for GRANT.');
@@ -3319,6 +3526,7 @@
         // remote operator currently owns control.
         if (localOk()) {
           localWs.send(JSON.stringify(msg));
+          urRecQueueCommand(msg, 'local_bridge');
           return true;
         }
         setHint('Not connected or no motion authority.');
@@ -3702,6 +3910,7 @@
         scriptStr += "end\n";
         if (localWs && localWs.readyState === WebSocket.OPEN) {
             localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
+            urRecQueueCommand({ type: "run_script", script: scriptStr }, "local_bridge_direct");
             setHint("Executing Captured Path...");
         }
     });
@@ -4535,6 +4744,8 @@ function compactPlaceNameFromAddress(addr){
     $('captureNetBtn')?.addEventListener('click', () => { xsite.net.captureEnabled = !xsite.net.captureEnabled; $('captureNetBtn').textContent = xsite.net.captureEnabled ? 'Pause Capture' : 'Start Capture'; updateNetworkUi(); });
     $('shareLocationBtn')?.addEventListener('click', requestBrowserLocation);
     $('downloadNetBundleBtn')?.addEventListener('click', downloadNetworkBundle);
+    $('urRecExportBtn')?.addEventListener('click', urRecExportZip);
+    $('urRecClearBtn')?.addEventListener('click', urRecClear);
     setInterval(updateNetworkUi, 1000);
     fetchPublicIpAndGeo();
 
@@ -4892,6 +5103,7 @@ function compactPlaceNameFromAddress(addr){
             }
           }
           updateStatusUI(); clampPartCenterToWorkBox();
+          urRecSampleJoints(rads);
         }
 
         if (data.type === "camera_frame") {
@@ -4935,6 +5147,7 @@ function compactPlaceNameFromAddress(addr){
 
         if (data.type === "tcp_pose") {
           const tcp = data.q; currentTcpPose = tcp;
+          urRecSampleTcp(tcp);
           if(tcp && tcp.length === 6 && $('tcpPoseDisplay')) {
             $('tcpPoseDisplay').textContent = `TCP: X:${tcp[0].toFixed(3)} Y:${tcp[1].toFixed(3)} Z:${tcp[2].toFixed(3)}`;
           }
@@ -5009,6 +5222,7 @@ function compactPlaceNameFromAddress(addr){
                         let m = finalPose;
                         let s = `def align_probe():\n  movel(p[${f5(m[0])},${f5(m[1])},${f5(m[2])},${f5(m[3])},${f5(m[4])},${f5(m[5])}], a=0.1, v=0.05, r=0.0)\nend\n`;
                         localWs.send(JSON.stringify({ type: "run_script", script: s }));
+                        urRecQueueCommand({ type: "run_script", script: s }, "local_bridge_direct");
                     }
                 }
             } else {
@@ -5067,6 +5281,7 @@ function compactPlaceNameFromAddress(addr){
             scriptStr += `  movel(p[${f5(scanHome[0])},${f5(scanHome[1])},${f5(scanHome[2])},${f5(scanHome[3])},${f5(scanHome[4])},${f5(scanHome[5])}], a=0.2, v=0.1, r=0.0)\n`;
             scriptStr += "end\n";
             localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
+            urRecQueueCommand({ type: "run_script", script: scriptStr }, "local_bridge_direct");
             setHint("Verifying... Robot is moving to the calculated Target Center.");
         }
         focusKeyCatcher();
@@ -5084,6 +5299,10 @@ function compactPlaceNameFromAddress(addr){
         }
 
         let spacing_mm = Number($('scanSpacing').value) || 5;
+        // Clamp to a sane positive value; very small spacing creates thousands of
+        // movel points and can cause long blocking programs. Dense scans still work,
+        // but the generated step count is predictable.
+        spacing_mm = Math.max(1, Math.min(100, spacing_mm));
         let spacing_m = spacing_mm / 1000.0;
 
         // P1(左上)→P2(右上) 为扫描行方向（X方向）
@@ -5093,7 +5312,9 @@ function compactPlaceNameFromAddress(addr){
             scanP4[0] - scanP1[0],
             scanP4[1] - scanP1[1]
         );
-        let num_lines = Math.max(1, Math.floor(dist_scan_dir / spacing_m));
+        // Use ceil, not floor, so the real row spacing is never larger than the
+        // requested spacing. This gives a genuinely dense top-to-bottom scan.
+        let num_lines = Math.max(1, Math.ceil(dist_scan_dir / spacing_m));
 
         simulatedWaypoints = [];
 
@@ -5168,9 +5389,11 @@ function compactPlaceNameFromAddress(addr){
         simulatedWaypoints.forEach(wp => {
             let c = wp.coords;
             // 对于 HOME 点可以设置稍不同的速度参数，这里以平滑执行为主
-            let a = wp.type.includes("HOME") ? 0.2 : 0.5;
-            let v = wp.type.includes("HOME") ? 0.1 : 0.1;
-            let r = wp.type.includes("HOME") ? 0.0 : 0.005;
+            // Conservative scan motion: lower acceleration/speed and no blend radius.
+            // This reduces abrupt corner transitions during dense zig-zag scanning.
+            let a = wp.type.includes("HOME") ? 0.12 : 0.08;
+            let v = wp.type.includes("HOME") ? 0.04 : 0.025;
+            let r = 0.0;
             scriptStr += `  movel(p[${f5(c[0])},${f5(c[1])},${f5(c[2])},${f5(c[3])},${f5(c[4])},${f5(c[5])}], a=${a}, v=${v}, r=${r})\n`;
         });
 
@@ -5178,7 +5401,8 @@ function compactPlaceNameFromAddress(addr){
 
         if (localWs && localWs.readyState === WebSocket.OPEN) {
             localWs.send(JSON.stringify({ type: "run_script", script: scriptStr }));
-            setHint(`🚀 Auto Zig-Zag deployed! Executing ${simulatedWaypoints.length} points.`);
+            urRecQueueCommand({ type: "run_script", script: scriptStr, scan_waypoints: simulatedWaypoints.length }, "local_bridge_direct_scan");
+            setHint(`🚀 Auto Zig-Zag deployed safely! Executing ${simulatedWaypoints.length} points.`);
         } else {
             setHint("Error: Local Bridge is not connected.");
         }
