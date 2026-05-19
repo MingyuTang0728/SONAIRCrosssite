@@ -635,26 +635,33 @@ def execute_motion(data):
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "freedrive_start":
-        # freedrive_mode() via URScript works in Remote Control mode
-        # even though PolyScope UI blocks the button (Script Manual §13.1.15).
-        # Use stop_first=False to avoid disrupting 30003.
+        # Freedrive must be sent as valid multi-line URScript. The previous
+        # compact string could be parsed unreliably by URScript. Keep this
+        # isolated from the realtime speedl/speedj socket.
         axes = data.get("freeAxes", [1,1,1,1,1,1])
-        axes_str = ",".join(str(int(a)) for a in axes)
-        script = (f"def sonair_fd():"
-                  f"  freedrive_mode(freeAxes=[{axes_str}])"
-                  f"  sleep(30.0)"
-                  f"  end_freedrive_mode()"
-                  f"end")
+        axes = [1 if int(a) else 0 for a in axes[:6]]
+        if len(axes) != 6:
+            axes = [1,1,1,1,1,1]
+        axes_str = ",".join(str(a) for a in axes)
+        script = (
+            "def sonair_fd():\n"
+            f"  freedrive_mode(freeAxes=[{axes_str}])\n"
+            "  sleep(30.0)\n"
+            "  end_freedrive_mode()\n"
+            "end\n"
+        )
         ok = send_urscript_to_robot(script, stop_first=False)
         audit("freedrive_start", {"freeAxes": axes})
         log.info("freedrive START axes=%s", axes)
         return ok, "ok" if ok else "ur_not_connected"
 
     if mtype == "freedrive_stop":
-        script = ("sec sonair_fd_stop():"
-                  "  end_freedrive_mode()"
-                  "  stopj(2.0)"
-                  "end")
+        script = (
+            "def sonair_fd_stop():\n"
+            "  end_freedrive_mode()\n"
+            "  stopj(2.0)\n"
+            "end\n"
+        )
         ok = send_urscript_to_robot(script, stop_first=False)
         audit("freedrive_stop", {})
         log.info("freedrive STOP")
