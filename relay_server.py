@@ -248,6 +248,10 @@ class Room:
         self.state              = self.HOST_OPERATOR
         self.remote_session     = None     # the guest holding REMOTE_OPERATOR
         self.pending_request    = None     # guest session awaiting host's grant
+        # Last low-rate agent telemetry is cached so a newly connected UCL/host
+        # browser immediately synchronises with the current UR state instead of
+        # waiting for the next frame. Only small messages are cached here.
+        self.last_agent_msgs    = {}
         self.lock               = asyncio.Lock()
 
     def all_sessions(self):
@@ -452,12 +456,17 @@ async def handle_connection(websocket):
         # Bind session into the room
         async with room.lock:
             if role == "agent":
-                if room.agent is not None:
-                    # Don't allow two agents — second connection is a sign of
-                    # split-brain and would be unsafe.
-                    await websocket.send(json.dumps({
-                        "type": "error", "reason": "agent_already_bound"}))
-                    return
+                if room.agent is not None and room.agent is not session:
+                    # A reconnecting bridge can arrive before the relay has
+                    # received the old TCP close. Replace only the agent socket;
+                    # the old session's finally block will not clear this fresh
+                    # agent because it checks object identity.
+                    old_agent = room.agent
+                    try:
+                        await old_agent.websocket.close(code=1012, reason="agent_replaced")
+                    except Exception:
+                        pass
+                    audit("agent_replaced", old_agent, {"new_session": session.id})
                 room.agent = session
             elif role == "host":
                 if room.host_operator is not None:
@@ -496,8 +505,26 @@ async def handle_connection(websocket):
             "peer_ip": session.peer_ip,
             "peer_port": session.peer_port,
         }, exclude=session)
+        if role == "agent":
+            room.last_agent_msgs["agent_status"] = {"type": "agent_status", "online": True}
+            await broadcast_room(room, {"type": "agent_status", "online": True}, exclude=session)
 
         await safe_send(session, await session_public_info(session))
+
+        # If an operator connects after the agent, replay the latest UR state so
+        # UCL immediately sees the robot pose/joints instead of appearing linked
+        # but unsynchronised. This does not change any motion-control logic.
+        if role in ("host", "guest"):
+            await safe_send(session, {"type": "agent_status", "online": room.agent is not None})
+            for cached_type in ("state", "tcp_pose", "agent_status"):
+                cached = room.last_agent_msgs.get(cached_type)
+                if cached:
+                    await safe_send(session, cached)
+            await safe_send(session, {
+                "type":  "authority_changed",
+                "state": room.state,
+                "by":    "session_sync",
+            })
 
         # Start relay-side RTT measurement for this session.
         ping_task = asyncio.create_task(relay_ping_loop(session))
@@ -540,6 +567,8 @@ async def handle_connection(websocket):
             if session.role == "agent":
                 if mtype in ("state", "tcp_pose", "camera_frame", "urp_list",
                              "dashboard_res", "agent_status"):
+                    if mtype in ("state", "tcp_pose", "agent_status"):
+                        room.last_agent_msgs[mtype] = data
                     for op in room.operators():
                         await safe_send(op, data)
                     continue
