@@ -63,6 +63,15 @@ except ImportError:
 # Benchmark acquisition — inertial ingestion, the time master, run recording.
 # Kept in its own module so the bridge stays responsible only for the robot.
 try:
+    import ur_bridge_ext
+    _HAS_EXT = True
+except Exception as _e:          # noqa: BLE001
+    _HAS_EXT = False
+    ur_bridge_ext = None
+    print(f"[agent] WARNING: ur_bridge_ext unavailable ({_e}); "
+          "full UR telemetry, control and 3D scanning disabled.")
+
+try:
     import bench_agent
     _HAS_BENCH = True
 except Exception as _e:          # noqa: BLE001 - never block the robot on this
@@ -142,7 +151,9 @@ def audit(event_kind, payload=None):
 # Global UR state (shared between threads)
 # ============================================================
 global_rgb_frame   = None
-global_depth_frame = None   # D435i aligned depth (colormap JPEG)
+global_depth_frame = None   # D435i aligned depth (colormap, for display)
+global_depth_raw   = None   # D435i aligned depth, RAW uint16 — metric, for scan3d
+global_depth_intr  = None   # CameraIntrinsics read FROM the camera, never guessed
 global_ir1_frame   = None   # D435i left IR
 global_ir2_frame   = None   # D435i right IR
 global_actual_q    = [0.0] * 6
@@ -425,6 +436,7 @@ def camera_thread():
     if not _HAS_VISION:
         return
     global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame
+    global global_depth_raw, global_depth_intr
 
     while True:  # outer loop: restart pipeline on config change
         _rs_restart_evt.clear()
@@ -463,6 +475,23 @@ def camera_thread():
             profile = pipeline.start(rscfg)
             dev     = profile.get_device()
             serial  = dev.get_info(rs.camera_info.serial_number)
+
+            # Intrinsics come from the camera itself. Every 3D measurement
+            # downstream is scaled by these, and a datasheet value for "the
+            # D435i" is wrong for any individual unit.
+            try:
+                depth_sensor_for_scale = dev.first_depth_sensor()
+                _scale = depth_sensor_for_scale.get_depth_scale()
+                _vsp = profile.get_stream(rs.stream.depth).as_video_stream_profile()
+                _i = _vsp.get_intrinsics()
+                if _HAS_EXT:
+                    from scan3d import CameraIntrinsics
+                    global_depth_intr = CameraIntrinsics.from_realsense(_i, _scale)
+                    log.info("depth intrinsics fx=%.1f fy=%.1f cx=%.1f cy=%.1f "
+                             "scale=%.6f", _i.fx, _i.fy, _i.ppx, _i.ppy, _scale)
+            except Exception as e:
+                log.warning("could not read depth intrinsics: %s — "
+                            "3D reconstruction will refuse to start", e)
             log.info("RealSense D435i started  serial=%s  stereo=%dx%d@%d  rgb=%dx%d@%d",
                      serial, sw, sh, sfps, rw, rh, rfps)
 
@@ -535,6 +564,9 @@ def camera_thread():
                     depth_f = hole_fill.process(depth_f)
 
                 rgb_arr   = np.asanyarray(color_f.get_data())  if color_f else None
+                # RAW first: the colourised copy is for the operator's eyes and
+                # has no metric content left in it.
+                depth_raw = np.asanyarray(depth_f.get_data()).copy() if depth_f else None
                 depth_arr = np.asanyarray(
                     colorizer.colorize(depth_f).get_data()
                 ) if depth_f else None
@@ -549,6 +581,7 @@ def camera_thread():
                 with camera_lock:
                     global_rgb_frame   = rgb_arr
                     global_depth_frame = depth_arr
+                    global_depth_raw   = depth_raw
                     global_ir1_frame   = ir1_arr
                     global_ir2_frame   = ir2_arr
 
@@ -736,15 +769,24 @@ async def local_handler(websocket):
                 if tcp:
                     await websocket.send(json.dumps({"type": "tcp_pose", "q": tcp}))
                 if _HAS_BENCH:
-                    # One message carrying every inertial unit at once. The
-                    # browser renders it; acquisition does not depend on it,
-                    # so a slow or absent browser cannot back-pressure a run.
+                    # One message carrying every inertial unit at once, in both
+                    # the flat single-unit shape the console reads and the map
+                    # the recorder needs. The browser renders it; acquisition
+                    # never depends on it, so a slow or absent browser cannot
+                    # back-pressure a run.
                     units = bench_agent.HUB.latest()
                     if units:
-                        await websocket.send(json.dumps({
-                            "type": "imu", "units": units,
-                            "rec": bench_agent.RECORDER.status()["recording"],
-                        }))
+                        msg = (ur_bridge_ext.imu_message(units) if _HAS_EXT
+                               else {"type": "imu", "units": units})
+                        msg["rec"] = bench_agent.RECORDER.status()["recording"]
+                        await websocket.send(json.dumps(msg))
+                if _HAS_EXT and ur_bridge_ext.UR.enabled:
+                    # The full field set, at a tenth of the RTDE rate. The UI
+                    # cannot use 125 Hz and sending it would spend the whole
+                    # socket budget on numbers nobody reads.
+                    st = ur_bridge_ext.UR.state()
+                    if st:
+                        await websocket.send(json.dumps({"type": "ur_state", "s": st}))
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
                 break
@@ -779,6 +821,11 @@ async def local_handler(websocket):
             if mtype == "estop":
                 estop_ur()
                 continue
+            if _HAS_EXT:
+                reply = await asyncio.to_thread(ur_bridge_ext.handle_message, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
+                    continue
             if _HAS_BENCH and str(mtype or "").startswith("bench_"):
                 reply = await asyncio.to_thread(bench_agent.handle_message, data)
                 if reply is not None:
@@ -988,6 +1035,42 @@ async def main():
     threading.Thread(target=ur_control_thread, daemon=True).start()
     if _HAS_VISION:
         threading.Thread(target=camera_thread, daemon=True).start()
+
+    if _HAS_EXT:
+        # Full telemetry + control. The existing 30003 reader in ur_io_thread
+        # stays as it is; this is a second, richer view that the new panels
+        # read, so nothing that already worked changes behaviour.
+        res = ur_bridge_ext.UR.start(UR_IP, envelope={
+            "x": (ENVELOPE["x_min"], ENVELOPE["x_max"]),
+            "y": (ENVELOPE["y_min"], ENVELOPE["y_max"]),
+            "z": (ENVELOPE["z_min"], ENVELOPE["z_max"]),
+        })
+        log.info(" UR service:   %s", res)
+
+        # Wire the 3D reconstruction to the live camera and the live TCP pose.
+        def _depth_now():
+            with camera_lock:
+                return global_depth_raw
+
+        def _tcp_now():
+            with data_lock:
+                return list(global_tcp_pose)
+
+        def _intr_now():
+            with camera_lock:
+                return global_depth_intr
+
+        ur_bridge_ext.SCAN3D.frames_fn = _depth_now
+        ur_bridge_ext.SCAN3D.pose_fn = _tcp_now
+        ur_bridge_ext.SCAN3D.intrinsics_fn = _intr_now
+
+        handeye = os.environ.get("HANDEYE_T_TCP_CAM", "")
+        if handeye:
+            try:
+                ur_bridge_ext.SCAN3D.T_tcp_cam = json.loads(handeye)
+                log.info(" Hand-eye:     loaded from HANDEYE_T_TCP_CAM")
+            except Exception as e:
+                log.warning("HANDEYE_T_TCP_CAM is not valid JSON: %s", e)
 
     if _HAS_BENCH:
         # The recorder reads robot state through this hook rather than
