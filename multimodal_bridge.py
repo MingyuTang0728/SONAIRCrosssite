@@ -1079,6 +1079,17 @@ async def main():
         bench_agent.RECORDER.out_dir.mkdir(parents=True, exist_ok=True)
 
         def _robot_state():
+            # Prefer the new telemetry: it is version-negotiated over RTDE where
+            # available, its 30003 parser refuses rather than guessing on an
+            # unexpected packet length, and it carries the full field set. The
+            # legacy globals stay as the fallback so recording still works if
+            # the UR service failed to start.
+            if _HAS_EXT and ur_bridge_ext.UR.enabled:
+                st = ur_bridge_ext.UR.state()
+                q = st.get("actual_q")
+                pose = st.get("actual_TCP_pose")
+                if q and pose:
+                    return list(q), list(pose)
             with data_lock:
                 return list(global_actual_q), list(global_tcp_pose)
 

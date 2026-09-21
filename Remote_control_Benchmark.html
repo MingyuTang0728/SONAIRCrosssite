@@ -1869,6 +1869,38 @@ view taken mid-motion smears the depth image and poisons the fused cloud.</p>
 </div>
 </div>
 
+<h2>5 &middot; Record a benchmark run</h2>
+<p>Writes one canonical <code>.jsonl</code> per run: the manifest on line&nbsp;1,
+then every sample stamped against the master clock. A run killed halfway is still
+a valid file up to where it died.</p>
+<div class="bg">
+  <label>Elbow velocity (rad/s)<input id="rbRunVel" type="number" step="0.1" value="0.4"></label>
+  <label>Repeat index<input id="rbRunRepeat" type="number" step="1" value="0"></label>
+  <label>Arm configuration<select id="rbRunConfig">
+    <option value="mid_workspace">mid_workspace</option>
+    <option value="near_singular">near_singular</option>
+    <option value="extended">extended</option></select></label>
+  <label>Trajectory type<select id="rbRunTraj">
+    <option value="contour">contour</option>
+    <option value="point_to_point">point_to_point</option>
+    <option value="stop_start">stop_start</option></select></label>
+  <label>Calibration version<input id="rbRunCalib" value="calib-1"></label>
+  <label>Sample rate (Hz)<input id="rbRunRate" type="number" step="5" value="125"></label>
+</div>
+<p class="warn">The calibration version is written into every run. Runs recorded
+either side of a recalibration cannot be pooled, and without this field there is
+no way to find out afterwards which side a run fell on.</p>
+<button class="go" id="rbRecStart">&#9679; Record run</button>
+<button class="danger" id="rbRecStop" disabled>&#9632; Stop</button>
+<button id="rbTapVerify">Verify tap alignment</button>
+<span class="srcbadge">tap the carrier once, firmly, then press</span>
+<table>
+  <thead><tr><th>Run</th><th class="n">Samples</th><th class="n">Rate Hz</th>
+  <th class="n">Tap spread ms</th></tr></thead>
+  <tbody id="rbRecRows"><tr><td colspan="4" style="color:#6d7f92">Idle.</td></tr></tbody>
+</table>
+<div id="rbRecMsg" class="msg">Not recording.</div>
+
 <details><summary>What each backend module does</summary>
 <p><b>ur_telemetry.py</b> &mdash; RTDE on 30004 for the full field set, falling back to
 the 30003 primary interface if RTDE cannot be negotiated. The panel shows which
@@ -5775,6 +5807,37 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
         break;
       case 'scan3d_reconstruct_res': renderComponent(d); break;
       case 'scan3d_plan_res':        renderPlan(d); break;
+
+      case 'bench_status': {
+        var rec = d.recorder || {};
+        var units = d.units || {};
+        var anyRate = 0;
+        Object.keys(units).forEach(function(u){ anyRate = Math.max(anyRate, units[u].rate_hz || 0); });
+        recRow(rec.current || rec.last, anyRate);
+        $('rbRecStart').disabled = !!rec.recording;
+        $('rbRecStop').disabled = !rec.recording;
+        if(!d.bench_available){
+          say('rbRecMsg', 'The host agent cannot import sonair_benchmark, so recording '
+            + 'is disabled there. Run the agent from the project folder.');
+        }
+        break;
+      }
+      case 'bench_start_res':
+        say('rbRecMsg', d.ok ? ('Recording ' + d.run_id + '  \u2192  ' + d.path)
+                             : ('Could not start: ' + d.error));
+        break;
+      case 'bench_stop_res':
+        say('rbRecMsg', d.ok ? ('Run ' + d.run_id + ' written: ' + d.n + ' samples.')
+                             : ('Stop failed: ' + d.error));
+        break;
+      case 'bench_tap_res':
+        if(d.spread_ms !== undefined){
+          recTap = d.spread_ms;
+          say('rbRecMsg', 'Tap spread ' + fmt(d.spread_ms, 2) + ' ms. ' + (d.advice || ''));
+        } else {
+          say('rbRecMsg', d.error || 'Tap not detected.');
+        }
+        break;
     }
   }
 
@@ -6133,6 +6196,51 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
          + (d.cloud ? d.cloud.voxels : 0) + ' voxels')
       : 'Depth source and hand-eye ready. Start a session.');
   }
+
+  /* ------------------------------------------------------- run recording */
+  var recTap = null;
+
+  function recRow(cur, rate){
+    $('rbRecRows').innerHTML = '<tr><td>' + esc(cur ? cur.run_id : '\u2014') + '</td>'
+      + '<td class="n">' + ((cur && cur.n) || 0) + '</td>'
+      + '<td class="n">' + fmt(rate, 0) + '</td>'
+      + '<td class="n">' + (recTap === null ? '\u2014' : fmt(recTap, 2)) + '</td></tr>';
+  }
+
+  bind('rbRecStart', function(){
+    var vel = Number($('rbRunVel').value);
+    if(!isFinite(vel) || vel <= 0){
+      say('rbRecMsg', 'Elbow velocity must be a positive number.'); return;
+    }
+    var calib = ($('rbRunCalib').value || '').trim();
+    if(!calib){
+      say('rbRecMsg', 'Calibration version is mandatory \u2014 a run without it '
+        + 'cannot be pooled with anything recorded later.');
+      return;
+    }
+    var cfg = $('rbRunConfig').value, traj = $('rbRunTraj').value;
+    var rep = parseInt($('rbRunRepeat').value, 10) || 0;
+    // The run id encodes the cell, so a file name alone locates a run in the
+    // sweep. Dots become 'p' because they read as extensions to some tools.
+    var runId = ('v' + vel.toFixed(2) + '_' + cfg + '_' + traj + '_r'
+                 + String(rep).padStart(2, '0')).replace(/\./g, 'p');
+    send({type:'bench_start', run_id: runId, joint_vel: vel, arm_config: cfg,
+          traj_type: traj, repeat_idx: rep, calib_version: calib,
+          rate_hz: Number($('rbRunRate').value) || 125});
+    say('rbRecMsg', 'Starting ' + runId + ' \u2026');
+  });
+
+  bind('rbRecStop', function(){ send({type:'bench_stop'}); });
+
+  bind('rbTapVerify', function(){
+    say('rbRecMsg', 'Listening for a tap over the last 5 s \u2026');
+    send({type:'bench_tap', window_s: 5.0});
+  });
+
+  // Poll the recorder so the sample count moves while a run is in progress.
+  setInterval(function(){
+    if(ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'bench_status'}));
+  }, 1000);
 
   /* ------------------------------------------------------------------- nav */
   var btn = $('showRobot');
