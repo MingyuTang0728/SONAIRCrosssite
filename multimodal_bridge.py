@@ -42,6 +42,7 @@ import os
 import time
 import socket
 import struct
+import sys
 import threading
 import logging
 from ftplib import FTP
@@ -55,8 +56,10 @@ try:
     import numpy as np
     import pyrealsense2 as rs
     _HAS_VISION = True
-except ImportError:
+    _VISION_ERR = ""
+except ImportError as _ve:
     _HAS_VISION = False
+    _VISION_ERR = str(_ve)
     print("[agent] WARNING: vision deps missing (cv2/numpy/pyrealsense2). "
           "Camera streaming disabled.")
 
@@ -863,18 +866,27 @@ async def local_handler(websocket):
                 _rs_restart_evt.set()
                 audit("camera_config_applied", new_cfg)
                 await websocket.send(json.dumps({
-                    "type":   "camera_config_ack",
-                    "config": {**_rs_config},
+                    "type":            "camera_config_ack",
+                    "config":          {**_rs_config},
+                    "vision_available": _HAS_VISION,
+                    "vision_error":    "" if _HAS_VISION else _VISION_ERR,
                 }))
-                log.info("camera_config applied: %s", new_cfg)
+                if _HAS_VISION:
+                    log.info("camera_config applied: %s", new_cfg)
+                else:
+                    log.warning("camera_config stored but NO CAMERA SUPPORT on this "
+                                "agent (%s) — the config will take effect only once "
+                                "the vision dependencies are installed", _VISION_ERR)
                 continue
             if mtype == "get_camera_config":
                 # Frontend requesting current live config (e.g. on reconnect)
                 with _rs_config_lock:
                     snap = dict(_rs_config)
                 await websocket.send(json.dumps({
-                    "type":   "camera_config_ack",
-                    "config": snap,
+                    "type":            "camera_config_ack",
+                    "config":          snap,
+                    "vision_available": _HAS_VISION,
+                    "vision_error":    "" if _HAS_VISION else _VISION_ERR,
                 }))
                 continue
     except websockets.exceptions.ConnectionClosed:
@@ -1109,6 +1121,18 @@ async def main():
     log.info(" Relay URL:    %s", RELAY_URL or "(disabled — local-only mode)")
     log.info(" Relay room:   %s", RELAY_ROOM)
     log.info(" Audit dir:    %s", AUDIT_DIR.resolve())
+    if _HAS_VISION:
+        log.info(" Camera:       RealSense support present")
+    else:
+        log.info("=" * 64)
+        log.warning(" CAMERA DISABLED — the vision dependencies are missing:")
+        log.warning("   %s", _VISION_ERR)
+        log.warning(" No camera thread will start, so no frames will ever reach")
+        log.warning(" the browser and 3D scanning will refuse to run. Install them")
+        log.warning(" into THIS interpreter:")
+        log.warning("   %s -m pip install pyrealsense2 opencv-python numpy", sys.executable)
+        log.warning(" If pyrealsense2 has no wheel for this Python, use Python 3.11.")
+        log.warning(" Everything else — the robot, FusionHub, the recorder — works.")
     log.info("=" * 64)
 
     # Run the local server and the relay uplink concurrently

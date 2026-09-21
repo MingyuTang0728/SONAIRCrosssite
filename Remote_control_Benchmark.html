@@ -6315,6 +6315,12 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
   var lastFrame = 0;
   var acked = null;
   var stickyUntil = 0;     // a config message holds the badge briefly
+  var noCamera = false;    // the agent reported no vision support
+
+  function esc(t){
+    return String(t === undefined || t === null ? '' : t)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
 
   /* Whichever socket is open. Prefer the teleoperation one when both are,
      because that is the one the rest of the console already talks on. */
@@ -6369,7 +6375,8 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
       return;
     }
     if (send({type:'camera_config', config: cfg})){
-      setBadge('APPLYING…', '#d29922', 3000);
+      setBadge(noCamera ? 'NO CAMERA ON AGENT' : 'APPLYING…',
+               noCamera ? '#f85149' : '#d29922', 3000);
     }
   }
 
@@ -6408,6 +6415,30 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
   function onBridgeMessage(d){
     if (d.type === 'camera_config_ack'){
       acked = d.config || {};
+
+      // The agent accepts and stores a config even when it has no camera
+      // support at all. Saying CONFIG OK for a camera that will never stream
+      // is worse than saying nothing, so this case is called out first.
+      if (d.vision_available === false){
+        noCamera = true;
+        setBadge('NO CAMERA ON AGENT', '#f85149', 60000);
+        var hint = $('rgbHint');
+        if (hint){
+          hint.style.display = 'block';
+          // Clear of the absolutely-positioned "Color Stream" label, and
+          // left-aligned: this is a paragraph to read, not a centred caption.
+          hint.style.cssText += ';padding:26px 12px 12px;text-align:left;'
+            + 'font:11px/1.6 ui-monospace,monospace;color:#c9d1d9;';
+          hint.innerHTML = '<b style="color:#f85149">The host agent has no camera support.</b>'
+            + '<br><br>It could not import: <code>' + esc(d.vision_error || 'cv2 / numpy / pyrealsense2')
+            + '</code><br><br>No camera thread is running, so no frames will ever arrive '
+            + 'and 3D scanning will refuse to start. Install the packages into the '
+            + 'interpreter the agent runs under, then restart it.'
+            + '<br><br>The robot, FusionHub and the recorder are unaffected.';
+        }
+        return;
+      }
+      noCamera = false;
       // Reflect what the CAMERA actually accepted, not what we asked for.
       // The device silently substitutes an unsupported resolution or rate,
       // and a panel showing the request rather than the result is a panel
@@ -6441,6 +6472,7 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
   /* A frame is 30 fps; if none has landed for a second the link is not live.
      Say so, rather than leaving the last still frame on screen looking live. */
   setInterval(function(){
+    if (noCamera){ setBadge('NO CAMERA ON AGENT', '#f85149'); return; }
     if (performance.now() < stickyUntil) return;
     if (!bridge()){ setBadge('NO BRIDGE', '#f85149'); return; }
     var age = performance.now() - lastFrame;
