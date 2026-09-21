@@ -9,3 +9,9 @@ campaign/
 calib/
 phase0/
 node_modules/
+
+# PyCharm: keep the shared run configurations, ignore the machine-specific rest
+# (workspace.xml records your window layout and open tabs; misc.xml records the
+# absolute path to your interpreter — neither travels between machines).
+.idea/*
+!.idea/runConfigurations/
