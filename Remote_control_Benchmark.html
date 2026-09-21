@@ -4522,11 +4522,16 @@ clustering, PCA localisation and height-field path planning. numpy only.</p>
       }
       const wsUrl = ($('localWsIp').value || 'ws://127.0.0.1:8765').trim();
       $('localWsStatus').textContent = 'CONNECTING'; $('localWsStatus').className = 'badge warn';
-      try { localWs = new WebSocket(wsUrl); } catch (e) {
+      try { localWs = new WebSocket(wsUrl); window.localWs = localWs; } catch (e) {
         $('localWsStatus').textContent = 'CONNECT FAILED'; $('localWsStatus').className = 'badge err';
         setHint('Local bridge address invalid. Use ws://127.0.0.1:8765');
         return;
       }
+
+      window.localWs = localWs;
+      localWs.addEventListener('close', () => {
+        if (window.localWs === localWs) window.localWs = null;
+      });
 
       localWs.onopen = () => {
         isLocalConnected = true;
@@ -5220,6 +5225,12 @@ function compactPlaceNameFromAddress(addr){
     function handleSharedWsMessage(event) {
       try {
         const data = JSON.parse(event.data);
+
+        // Broadcast so the monitor bar and the camera panel see this traffic.
+        // Without it they only ever saw the Robot panel's socket, and a
+        // perfectly healthy teleoperation link still read as NO TELEMETRY.
+        try { window.dispatchEvent(new CustomEvent('sonair-telemetry', {detail: data})); }
+        catch(_e) {}
         window.dispatchEvent(new CustomEvent("sonair-telemetry", {detail:data}));
 
         if (data.type === "state") {
@@ -5274,7 +5285,9 @@ function compactPlaceNameFromAddress(addr){
              }
           }
           if(hasSignal && $('rsStatusBadge')) {
-             $('rsStatusBadge').textContent = 'STREAMING'; $('rsStatusBadge').className = 'badge info';
+             // Badge text is owned by the camera module, which also knows about
+             // the link and the config states. Only the class is set here.
+             $('rsStatusBadge').className = 'badge info';
           }
         }
 
@@ -5750,11 +5763,23 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
       send({type:'ur_service_status'});
       send({type:'scan3d_status'});
     };
-    ws.onclose = function(){ say('rbMsg', 'Bridge disconnected.'); ws = null; };
+    ws.onclose = function(){
+      say('rbMsg', 'Bridge disconnected.');
+      if (window.__robotWs === ws) window.__robotWs = null;
+      ws = null;
+    };
     ws.onerror = function(){ say('rbMsg', 'Bridge socket error — is the agent running?'); };
+    window.__robotWs = ws;
     ws.onmessage = function(ev){
       var d;
       try{ d = JSON.parse(ev.data); }catch(e){ return; }
+      // Camera frames go through the console's existing renderer. Writing a
+      // second one here would mean two places to keep in step, and they would
+      // drift the first time either changed.
+      if (d.type === 'camera_frame' && typeof handleSharedWsMessage === 'function'){
+        try { handleSharedWsMessage(ev); } catch(e){}
+        return;
+      }
       onMessage(d);
     };
   });
@@ -6266,6 +6291,174 @@ document.getElementById('showVision').onclick=()=>{document.body.classList.remov
       if(prev) prev.call(this, ev);
     };
   });
+})();
+</script>
+
+<!-- =====================================================================
+     Camera bring-up.
+
+     The RealSense panel shipped with its controls unbound: Apply Config, all
+     four view toggles and the status badge did nothing. Streams still arrived,
+     because the agent starts colour and depth by default, but nothing in the
+     browser could change resolution, frame rate, the emitter, or turn IR on.
+     This wires them.
+
+     It also removes a trap: the console now has two sockets — the original
+     teleoperation one and the Robot panel's — and camera frames only ever
+     arrived on the first. Either connection now serves the camera, so you do
+     not have to know which button you pressed.
+     ===================================================================== -->
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var lastFrame = 0;
+  var acked = null;
+  var stickyUntil = 0;     // a config message holds the badge briefly
+
+  /* Whichever socket is open. Prefer the teleoperation one when both are,
+     because that is the one the rest of the console already talks on. */
+  function bridge(){
+    if (window.localWs && window.localWs.readyState === WebSocket.OPEN) return window.localWs;
+    if (window.__robotWs && window.__robotWs.readyState === WebSocket.OPEN) return window.__robotWs;
+    return null;
+  }
+
+  function send(msg){
+    var ws = bridge();
+    if (!ws){
+      setBadge('NO BRIDGE', '#f85149');
+      return false;
+    }
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+
+  function setBadge(text, colour, stickMs){
+    var b = $('rsStatusBadge');
+    if (!b) return;
+    b.textContent = text;
+    b.style.color = colour || '';
+    if (stickMs) stickyUntil = performance.now() + stickMs;
+  }
+
+  /* ---------------------------------------------------- config from the UI */
+  function readConfig(){
+    function val(id, dflt){ var e = $(id); return e ? e.value : dflt; }
+    function chk(id, dflt){ var e = $(id); return e ? !!e.checked : dflt; }
+    return {
+      stereo_res: val('rsStereoRes', '640x480'),
+      stereo_fps: Number(val('rsStereoFps', 30)),
+      depth_en:   chk('rsDepthStreamChk', true),
+      ir1_en:     chk('rsIr1Chk', false),
+      ir2_en:     chk('rsIr2Chk', false),
+      emitter:    val('rsEmitter', 'laser'),
+      depth_ae:   chk('rsDepthAeChk', true),
+      post_proc:  chk('rsDepthPpChk', true),
+      rgb_res:    val('rsRgbRes', '640x360'),
+      rgb_fps:    Number(val('rsRgbFps', 30)),
+      rgb_en:     chk('rsRgbStreamChk', true),
+      rgb_ae:     chk('rsRgbAeChk', true)
+    };
+  }
+
+  function applyConfig(){
+    var cfg = readConfig();
+    if (!cfg.depth_en && !cfg.rgb_en && !cfg.ir1_en && !cfg.ir2_en){
+      setBadge('NO STREAMS', '#d29922', 3000);
+      return;
+    }
+    if (send({type:'camera_config', config: cfg})){
+      setBadge('APPLYING…', '#d29922', 3000);
+    }
+  }
+
+  var applyBtn = $('applyRsConfigBtn');
+  if (applyBtn) applyBtn.addEventListener('click', applyConfig);
+
+  /* ------------------------------------------------------- view toggles */
+  // Each toggle does two things: shows or hides the pane, and turns the
+  // corresponding stream on or off at the camera. Hiding a pane while the
+  // camera still encodes and sends it wastes the whole socket budget on
+  // frames nobody looks at, which is what starves the IMU stream.
+  var TOGGLES = [
+    ['toggleRgbViewBtn',   'rgbContainer',   'rgb_en',   'rsRgbStreamChk',   'RGB'],
+    ['toggleDepthViewBtn', 'depthContainer', 'depth_en', 'rsDepthStreamChk', 'Depth'],
+    ['toggleIr1ViewBtn',   'ir1Container',   'ir1_en',   'rsIr1Chk',         'IR1'],
+    ['toggleIr2ViewBtn',   'ir2Container',   'ir2_en',   'rsIr2Chk',         'IR2']
+  ];
+
+  TOGGLES.forEach(function(t){
+    var btn = $(t[0]);
+    if (!btn) return;
+    btn.addEventListener('click', function(){
+      var on = btn.textContent.indexOf('ON') >= 0;   // currently on -> turn off
+      var next = !on;
+      btn.textContent = t[4] + (next ? ' ON' : ' OFF');
+      btn.classList.toggle('success', next);
+      var pane = $(t[1]);
+      if (pane) pane.style.display = next ? '' : 'none';
+      var chk = $(t[3]);
+      if (chk) chk.checked = next;
+      applyConfig();
+    });
+  });
+
+  /* ------------------------------------------------------------- inbound */
+  function onBridgeMessage(d){
+    if (d.type === 'camera_config_ack'){
+      acked = d.config || {};
+      // Reflect what the CAMERA actually accepted, not what we asked for.
+      // The device silently substitutes an unsupported resolution or rate,
+      // and a panel showing the request rather than the result is a panel
+      // that lies about what the data was captured at.
+      function set(id, v){ var e = $(id); if (e && v !== undefined) e.value = String(v); }
+      function tick(id, v){ var e = $(id); if (e && v !== undefined) e.checked = !!v; }
+      set('rsStereoRes', acked.stereo_res); set('rsStereoFps', acked.stereo_fps);
+      set('rsRgbRes', acked.rgb_res);       set('rsRgbFps', acked.rgb_fps);
+      set('rsEmitter', acked.emitter);
+      tick('rsDepthStreamChk', acked.depth_en); tick('rsRgbStreamChk', acked.rgb_en);
+      tick('rsIr1Chk', acked.ir1_en);           tick('rsIr2Chk', acked.ir2_en);
+      tick('rsDepthAeChk', acked.depth_ae);     tick('rsDepthPpChk', acked.post_proc);
+      tick('rsRgbAeChk', acked.rgb_ae);
+      setBadge('CONFIG OK', '#3fb950', 2500);
+      return;
+    }
+    if (d.type === 'camera_frame'){
+      lastFrame = performance.now();
+      var dot = $('rsStereoStatus'), rdot = $('rsRgbStatus');
+      if (dot)  dot.style.color = d.depth ? '#3fb950' : '#484f58';
+      if (rdot) rdot.style.color = d.rgb   ? '#3fb950' : '#484f58';
+    }
+  }
+
+  // Listen on the event the console already broadcasts, so this works no
+  // matter which socket the frame arrived on.
+  window.addEventListener('sonair-telemetry', function(e){
+    try { onBridgeMessage(e.detail); } catch(err){}
+  });
+
+  /* A frame is 30 fps; if none has landed for a second the link is not live.
+     Say so, rather than leaving the last still frame on screen looking live. */
+  setInterval(function(){
+    if (performance.now() < stickyUntil) return;
+    if (!bridge()){ setBadge('NO BRIDGE', '#f85149'); return; }
+    var age = performance.now() - lastFrame;
+    if (!lastFrame)      setBadge('WAITING', '#d29922');
+    else if (age > 2000) setBadge('STALLED ' + (age/1000).toFixed(0) + 's', '#f85149');
+    else                 setBadge('LIVE', '#3fb950');
+  }, 500);
+
+  /* Ask the agent what the camera is actually set to, once a link appears. */
+  var asked = false;
+  setInterval(function(){
+    if (!asked && bridge()){
+      asked = true;
+      send({type:'get_camera_config'});
+    } else if (!bridge()){
+      asked = false;
+    }
+  }, 1000);
 })();
 </script>
 </body>
