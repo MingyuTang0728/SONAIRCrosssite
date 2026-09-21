@@ -60,6 +60,17 @@ except ImportError:
     print("[agent] WARNING: vision deps missing (cv2/numpy/pyrealsense2). "
           "Camera streaming disabled.")
 
+# Benchmark acquisition — inertial ingestion, the time master, run recording.
+# Kept in its own module so the bridge stays responsible only for the robot.
+try:
+    import bench_agent
+    _HAS_BENCH = True
+except Exception as _e:          # noqa: BLE001 - never block the robot on this
+    _HAS_BENCH = False
+    bench_agent = None
+    print(f"[agent] WARNING: bench_agent unavailable ({_e}); "
+          "benchmark recording disabled.")
+
 
 # ============================================================
 # Configuration
@@ -85,6 +96,12 @@ ENVELOPE = {
     "y_min": -0.6, "y_max": 0.6,
     "z_min":  0.05, "z_max": 0.7,
 }
+
+# Benchmark acquisition
+BENCH_RUN_DIR      = os.environ.get("BENCH_RUN_DIR", "./bench_runs")
+BENCH_FUSIONHUB_PORT = int(os.environ.get("BENCH_FUSIONHUB_PORT", 5005))
+BENCH_ENABLE_D435I_IMU = os.environ.get("BENCH_D435I_IMU", "1") != "0"
+BENCH_ENABLE_FUSIONHUB = os.environ.get("BENCH_FUSIONHUB", "1") != "0"
 
 # Audit log
 AUDIT_DIR = Path(os.environ.get("AGENT_AUDIT_DIR", "./agent_audit"))
@@ -718,6 +735,16 @@ async def local_handler(websocket):
                     await websocket.send(json.dumps({"type": "state", "q": q}))
                 if tcp:
                     await websocket.send(json.dumps({"type": "tcp_pose", "q": tcp}))
+                if _HAS_BENCH:
+                    # One message carrying every inertial unit at once. The
+                    # browser renders it; acquisition does not depend on it,
+                    # so a slow or absent browser cannot back-pressure a run.
+                    units = bench_agent.HUB.latest()
+                    if units:
+                        await websocket.send(json.dumps({
+                            "type": "imu", "units": units,
+                            "rec": bench_agent.RECORDER.status()["recording"],
+                        }))
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
                 break
@@ -751,6 +778,11 @@ async def local_handler(websocket):
                 continue
             if mtype == "estop":
                 estop_ur()
+                continue
+            if _HAS_BENCH and str(mtype or "").startswith("bench_"):
+                reply = await asyncio.to_thread(bench_agent.handle_message, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
                 continue
             if mtype in ("jog", "movel", "run_script",
                           "speedl", "speedl_stop", "speedj", "speedj_stop",
@@ -956,6 +988,25 @@ async def main():
     threading.Thread(target=ur_control_thread, daemon=True).start()
     if _HAS_VISION:
         threading.Thread(target=camera_thread, daemon=True).start()
+
+    if _HAS_BENCH:
+        # The recorder reads robot state through this hook rather than
+        # importing the globals, so the two modules stay decoupled.
+        bench_agent.RECORDER.out_dir = Path(BENCH_RUN_DIR)
+        bench_agent.RECORDER.out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _robot_state():
+            with data_lock:
+                return list(global_actual_q), list(global_tcp_pose)
+
+        bench_agent.RECORDER.state_fn = _robot_state
+        started = bench_agent.start_sources(
+            d435i=BENCH_ENABLE_D435I_IMU and _HAS_VISION,
+            fusionhub=BENCH_ENABLE_FUSIONHUB,
+            fusionhub_port=BENCH_FUSIONHUB_PORT,
+        )
+        log.info(" Benchmark:    runs -> %s  sources=%s",
+                 bench_agent.RECORDER.out_dir.resolve(), started)
 
     log.info("=" * 64)
     log.info(" SONAIR UR Host Agent")

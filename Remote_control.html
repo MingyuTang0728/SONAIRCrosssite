@@ -1726,6 +1726,78 @@
 </div>
 <button class="btn primary full" id="captureDefectBtn" style="padding:6px; margin-top:6px;">🎯 Run AI Defect Detection</button>
 </div>
+
+<!-- ============ SONAIR benchmark acquisition (Phase 0-3) ============ -->
+<div class="group" id="benchAcqGroup" style="border-color:#8957e5; margin-top:8px;">
+<div class="group-hd" style="background:rgba(137,87,229,0.12); font-size:12px;">
+<span>SONAIR Benchmark Acquisition</span>
+<span class="rs-status-dot" id="benchAgentDot" style="color:#8b949e;">•</span>
+</div>
+<div class="group-bd" style="padding-top:6px;">
+
+<div class="muted-text" style="margin-bottom:3px;">Inertial channels (master clock)</div>
+<div id="benchImuList" style="font-family:var(--font-mono); font-size:9px; line-height:1.5;
+     background:#010409; border:1px solid #30363d; border-radius:3px; padding:5px; min-height:44px;">
+  <span class="muted-text">No inertial data. Start the host agent with FusionHub streaming
+  to UDP 5005, or plug in the D435i.</span>
+</div>
+
+<div class="status-kv" style="grid-template-columns:repeat(3,1fr); font-size:10px; margin-top:5px;">
+  <div><span class="field-label">Clock</span><br/><b id="benchClockVal">—</b></div>
+  <div><span class="field-label">Tap spread</span><br/><b id="benchTapVal">—</b></div>
+  <div><span class="field-label">Samples</span><br/><b id="benchNVal">0</b></div>
+</div>
+
+<button class="btn full" id="benchTapBtn" style="margin-top:5px; font-size:10px;">
+  Verify tap alignment
+</button>
+<div class="muted-text" style="font-size:9px; margin-top:2px;">
+  Tap the carrier once, firmly, then press. The spread across channels is the
+  temporal row of the error budget.
+</div>
+
+<div class="muted-text" style="margin-top:8px; margin-bottom:3px;">Run manifest — the condition cell</div>
+<div class="field-row"><span class="rs-sub-label">Elbow v</span>
+  <input id="benchVel" type="number" step="0.1" value="0.4" style="width:56px;"/>
+  <span class="muted-text" style="font-size:9px;">rad/s</span></div>
+<div class="field-row"><span class="rs-sub-label">Repeat</span>
+  <input id="benchRepeat" type="number" step="1" value="0" style="width:56px;"/>
+  <span class="muted-text" style="font-size:9px;">index</span></div>
+<div class="field-row"><span class="rs-sub-label">Config</span>
+  <select id="benchConfig" style="flex:1;">
+    <option value="mid_workspace">mid_workspace</option>
+    <option value="near_singular">near_singular</option>
+    <option value="extended">extended</option>
+  </select></div>
+<div class="field-row"><span class="rs-sub-label">Traj</span>
+  <select id="benchTraj" style="flex:1;">
+    <option value="contour">contour</option>
+    <option value="point_to_point">point_to_point</option>
+    <option value="stop_start">stop_start</option>
+  </select></div>
+<div class="field-row"><span class="rs-sub-label">Calib</span>
+  <input id="benchCalib" type="text" value="calib-0" style="flex:1;"/></div>
+<div class="muted-text" style="font-size:9px; margin-top:2px;">
+  The calibration version is written into every run. Runs recorded either side of a
+  recalibration cannot be pooled, and without this field there is no way to tell which
+  side a run fell on.
+</div>
+
+<div style="display:flex; gap:4px; margin-top:6px;">
+  <button class="btn success" id="benchStartBtn" style="flex:1;">● Record run</button>
+  <button class="btn warning" id="benchStopBtn" style="flex:1;" disabled="">■ Stop</button>
+</div>
+<div id="benchRunStatus" class="muted-text" style="font-size:9px; margin-top:4px;">Idle.</div>
+<button class="btn full" id="benchExportSimBtn" style="margin-top:5px; font-size:10px;">
+  Export scan path for Isaac
+</button>
+<div class="muted-text" style="font-size:9px; margin-top:2px;">
+  Writes the Zig-Zag waypoints as a Phase&nbsp;4 command file, so the simulated
+  run replays exactly what the arm executed.
+</div>
+</div>
+</div>
+
 </div>
 </div>
 </div>
@@ -4178,11 +4250,16 @@
       }
       const wsUrl = ($('localWsIp').value || 'ws://127.0.0.1:8765').trim();
       $('localWsStatus').textContent = 'CONNECTING'; $('localWsStatus').className = 'badge warn';
-      try { localWs = new WebSocket(wsUrl); } catch (e) {
+      try { localWs = new WebSocket(wsUrl); window.localWs = localWs; } catch (e) {
         $('localWsStatus').textContent = 'CONNECT FAILED'; $('localWsStatus').className = 'badge err';
         setHint('Local bridge address invalid. Use ws://127.0.0.1:8765');
         return;
       }
+
+      window.localWs = localWs;
+      localWs.addEventListener('close', () => {
+        if (window.localWs === localWs) window.localWs = null;
+      });
 
       localWs.onopen = () => {
         isLocalConnected = true;
@@ -4998,6 +5075,10 @@
             setHint(`Dashboard: ${data.res}`);
         }
 
+        if (data.type === "imu" || (data.type || "").startsWith("bench_")) {
+            if (window.__sonairBench) window.__sonairBench.onMessage(data);
+        }
+
         if (data.type === "defect_scan_result") {
             const rgbImg = $('rsRgbImg');
             if(rgbImg) { rgbImg.src = "data:image/jpeg;base64," + data.image; }
@@ -5405,6 +5486,7 @@
                         </div>`;
             }).join('');
         }
+        window.simulatedWaypoints = simulatedWaypoints;
         renderZScanTrajectory3D(simulatedWaypoints);
         playZScanTrajectory3D(simulatedWaypoints, 120);
         setHint(`Preview Generated: ${simulatedWaypoints.length} waypoints calculated. 3D trajectory overlay is aligned to the current visual TCP on the stage.`);
@@ -5413,6 +5495,7 @@
 
     $('clearSimPathBtn')?.addEventListener('click', () => {
         simulatedWaypoints = [];
+        window.simulatedWaypoints = simulatedWaypoints;
         clearZScanTrajectory3D();
         if ($('pathPtsCount')) $('pathPtsCount').textContent = `0 PTS`;
         if ($('simPathPreviewList')) $('simPathPreviewList').innerHTML = `<span class="muted-text">Preview cleared.</span>`;
@@ -5564,5 +5647,216 @@
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wireLoadUrButton);
   else wireLoadUrButton();
 })();
-</script></body>
+</script>
+
+<!-- =====================================================================
+     SONAIR benchmark acquisition module.
+
+     Kept as its own IIFE at the end of the document rather than folded into
+     the main console script: acquisition must never be able to break jogging.
+     It talks to bench_agent.py on the host through the existing local socket
+     and owns nothing else on the page.
+     ===================================================================== -->
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var lastStatus = null;
+  var recording = false;
+
+  function send(msg){
+    var ws = window.localWs;
+    if (!ws || ws.readyState !== WebSocket.OPEN){
+      setStatusLine("Host agent not connected — connect the local socket first.");
+      return false;
+    }
+    ws.send(JSON.stringify(msg));
+    return true;
+  }
+
+  function setStatusLine(txt){
+    var el = $('benchRunStatus');
+    if (el) el.textContent = txt;
+  }
+
+  function fmt(v, dp){
+    return (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toFixed(dp);
+  }
+
+  /* ---------- live inertial readout ---------- */
+  function renderUnits(units){
+    var host = $('benchImuList');
+    if (!host) return;
+    var names = Object.keys(units || {});
+    if (!names.length) return;
+    host.innerHTML = names.map(function(u){
+      var d = units[u];
+      var g = d.gyro || [0,0,0];
+      var a = d.accel || [0,0,0];
+      var mag = Math.sqrt(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+      return '<div style="border-bottom:1px solid #21262d; padding:2px 0;">' +
+        '<b style="color:#a371f7">' + u + '</b> ' +
+        '<span style="color:#8b949e">t=' + fmt(d.t, 2) + 's</span><br/>' +
+        '<span style="color:#3fb950">ω ' + g.map(function(v){return fmt(v,3);}).join(' ') + '</span> ' +
+        '<span style="color:#58a6ff">|a| ' + fmt(mag, 2) + '</span></div>';
+    }).join('');
+  }
+
+  /* ---------- status blob ---------- */
+  function renderStatus(st){
+    lastStatus = st;
+    var dot = $('benchAgentDot');
+    if (dot){
+      var live = st.bench_available && Object.keys(st.units || {}).length > 0;
+      dot.style.color = live ? '#3fb950' : (st.bench_available ? '#d29922' : '#8b949e');
+    }
+    if (st.clock && $('benchClockVal')){
+      $('benchClockVal').textContent = fmt(st.clock.t, 1) + 's';
+    }
+    var rec = st.recorder || {};
+    recording = !!rec.recording;
+    if ($('benchNVal')){
+      $('benchNVal').textContent = (rec.current && rec.current.n) ||
+                                   (rec.last && rec.last.n) || 0;
+    }
+    if ($('benchStartBtn')) $('benchStartBtn').disabled = recording;
+    if ($('benchStopBtn'))  $('benchStopBtn').disabled  = !recording;
+    if (!st.bench_available){
+      setStatusLine("Host agent has no sonair_benchmark package on its path — " +
+                    "recording is disabled there.");
+    }
+  }
+
+  /* ---------- inbound ---------- */
+  function onMessage(data){
+    if (data.type === "imu"){
+      renderUnits(data.units);
+      return;
+    }
+    if (data.type === "bench_status"){
+      renderStatus(data);
+      return;
+    }
+    if (data.type === "bench_start_res"){
+      if (data.ok){
+        recording = true;
+        setStatusLine("Recording " + data.run_id + " → " + data.path);
+        if ($('benchStartBtn')) $('benchStartBtn').disabled = true;
+        if ($('benchStopBtn'))  $('benchStopBtn').disabled  = false;
+      } else {
+        setStatusLine("Could not start: " + data.error);
+      }
+      return;
+    }
+    if (data.type === "bench_stop_res"){
+      recording = false;
+      if ($('benchStartBtn')) $('benchStartBtn').disabled = false;
+      if ($('benchStopBtn'))  $('benchStopBtn').disabled  = true;
+      setStatusLine(data.ok
+        ? ("Run " + data.run_id + " written: " + data.n + " samples.")
+        : ("Stop failed: " + data.error));
+      return;
+    }
+    if (data.type === "bench_tap_res"){
+      var el = $('benchTapVal');
+      if (data.ok || data.spread_ms !== undefined){
+        if (el) el.textContent = fmt(data.spread_ms, 2) + ' ms';
+        setStatusLine(data.advice || "");
+      } else {
+        if (el) el.textContent = "—";
+        setStatusLine(data.error || "Tap not detected.");
+      }
+      return;
+    }
+  }
+
+  /* ---------- controls ---------- */
+  function wire(){
+    var startBtn = $('benchStartBtn');
+    if (!startBtn || startBtn.dataset.bound) return;
+    startBtn.dataset.bound = '1';
+
+    startBtn.addEventListener('click', function(){
+      var vel = Number($('benchVel').value);
+      if (!isFinite(vel) || vel <= 0){
+        setStatusLine("Elbow velocity must be a positive number.");
+        return;
+      }
+      var cfg   = $('benchConfig').value;
+      var traj  = $('benchTraj').value;
+      var rep   = parseInt($('benchRepeat').value, 10) || 0;
+      var calib = ($('benchCalib').value || '').trim();
+      if (!calib){
+        setStatusLine("Calibration version is mandatory — a run without it " +
+                      "cannot be pooled with anything later.");
+        return;
+      }
+      // The run id encodes the cell, so a file name alone locates a run in the
+      // sweep. Dots are replaced because they read as extensions on some tools.
+      var runId = ('v' + vel.toFixed(2) + '_' + cfg + '_' + traj +
+                   '_r' + String(rep).padStart(2, '0')).replace(/\./g, 'p');
+      send({ type: "bench_start", run_id: runId, joint_vel: vel,
+             arm_config: cfg, traj_type: traj, repeat_idx: rep,
+             calib_version: calib, rate_hz: 125.0 });
+      setStatusLine("Starting " + runId + "…");
+    });
+
+    $('benchStopBtn').addEventListener('click', function(){
+      send({ type: "bench_stop" });
+    });
+
+    $('benchTapBtn').addEventListener('click', function(){
+      setStatusLine("Listening for a tap over the last 5 s…");
+      send({ type: "bench_tap", window_s: 5.0 });
+    });
+
+    $('benchExportSimBtn').addEventListener('click', function(){
+      // Phase 4 point 1: Isaac must replay the SAME commands the arm executed.
+      // Exporting the planner's own waypoint list is what makes that true by
+      // construction rather than by remembering to keep the two in step.
+      var wps = window.simulatedWaypoints;
+      if (!wps || !wps.length){
+        setStatusLine("No scan path yet — generate the Zig-Zag preview first.");
+        return;
+      }
+      var vel = Number($('benchVel').value) || 0.4;
+      var cfg = $('benchConfig').value, traj = $('benchTraj').value;
+      var rep = parseInt($('benchRepeat').value, 10) || 0;
+      var runId = ('v' + vel.toFixed(2) + '_' + cfg + '_' + traj +
+                   '_r' + String(rep).padStart(2, '0')).replace(/\./g, 'p');
+      var doc = {
+        run_id: runId,
+        cell: { joint_vel: vel, arm_config: cfg, traj_type: traj },
+        repeat_idx: rep,
+        calib_version: ($('benchCalib').value || 'calib-0').trim(),
+        command_rate_hz: 125.0,
+        waypoints: wps.map(function(w){
+          return { type: w.type, coords: w.coords.map(Number) };
+        })
+      };
+      var blob = new Blob([JSON.stringify(doc, null, 2)], {type:'application/json'});
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = runId + '.commands.json';
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+      setStatusLine("Exported " + wps.length + " waypoints for Isaac replay.");
+    });
+
+    // Poll the agent for the status blob. 2 s is slow enough to cost nothing
+    // and fast enough that a dead FusionHub link is noticed within one run.
+    setInterval(function(){
+      var ws = window.localWs;
+      if (ws && ws.readyState === WebSocket.OPEN) send({ type: "bench_status" });
+    }, 2000);
+  }
+
+  window.__sonairBench = { onMessage: onMessage };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', wire, { once: true });
+  } else { wire(); }
+})();
+</script>
+</body>
 </html>

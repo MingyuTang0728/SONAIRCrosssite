@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SONAIR Benchmark</title>
+<style>
+:root{
+  --bg:#f7f9fc; --panel:#ffffff; --line:#dde3ec; --line-soft:#eef2f7;
+  --ink:#131b26; --muted:#5b6878; --muted-2:#8a95a4;
+  --accent:#0a58ca; --accent-soft:#e8f0fd;
+  --good:#157347; --good-soft:#e6f4ec;
+  --warn:#9a6700; --warn-soft:#fdf5e2;
+  --bad:#b42318; --bad-soft:#fdeceb;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+:root:not([data-theme="light"]){ }
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0c1016; --panel:#141a22; --line:#263040; --line-soft:#1d2530;
+    --ink:#e8edf4; --muted:#9aa7b8; --muted-2:#6d7a8b;
+    --accent:#5a9bff; --accent-soft:#16233a;
+    --good:#4bb573; --good-soft:#12251a;
+    --warn:#d9a441; --warn-soft:#2a2213;
+    --bad:#f0766a; --bad-soft:#2c1614;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0c1016; --panel:#141a22; --line:#263040; --line-soft:#1d2530;
+  --ink:#e8edf4; --muted:#9aa7b8; --muted-2:#6d7a8b;
+  --accent:#5a9bff; --accent-soft:#16233a;
+  --good:#4bb573; --good-soft:#12251a;
+  --warn:#d9a441; --warn-soft:#2a2213;
+  --bad:#f0766a; --bad-soft:#2c1614;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+     line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px 80px}
+header.top{border-bottom:1px solid var(--line);background:var(--panel);
+           padding:28px 0 22px;margin-bottom:28px}
+header.top .wrap{padding-bottom:0}
+.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+         color:var(--muted-2);font-weight:600;margin:0 0 6px}
+h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em;font-weight:700}
+.sub{color:var(--muted);margin:0;font-size:15px;max-width:62ch}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;
+      border-radius:999px;border:1px solid var(--line);color:var(--muted);
+      background:var(--bg);vertical-align:middle;margin-left:8px}
+nav.tabs{display:flex;gap:2px;flex-wrap:wrap;margin-top:20px;border-bottom:1px solid var(--line)}
+nav.tabs button{background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--muted);font:inherit;font-size:14px;font-weight:500;
+  padding:9px 14px;cursor:pointer;margin-bottom:-1px}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+section[hidden]{display:none}
+h2{font-size:20px;margin:34px 0 4px;letter-spacing:-.01em;font-weight:650}
+h2:first-child{margin-top:4px}
+h3{font-size:14px;margin:24px 0 6px;font-weight:650;letter-spacing:.01em}
+p{margin:8px 0 14px;color:var(--ink)}
+p.note{color:var(--muted);font-size:13.5px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+      padding:18px 20px;margin:14px 0}
+.grid{display:grid;gap:12px}
+.grid.c3{grid-template-columns:repeat(3,1fr)}
+.grid.c2{grid-template-columns:repeat(2,1fr)}
+@media (max-width:760px){.grid.c3,.grid.c2{grid-template-columns:1fr}}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+         color:var(--muted-2);font-weight:600;margin-bottom:5px}
+.stat .v{font-size:26px;font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat .u{font-size:13px;font-weight:500;color:var(--muted);margin-left:3px}
+.stat .d{font-size:12px;color:var(--muted);margin-top:3px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line-soft)}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);
+   font-weight:600;border-bottom:1px solid var(--line)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px}
+tbody tr:hover{background:var(--line-soft)}
+.badge{display:inline-block;font-size:11px;font-weight:650;padding:2px 8px;border-radius:5px}
+.badge.pass{background:var(--good-soft);color:var(--good)}
+.badge.marginal{background:var(--warn-soft);color:var(--warn)}
+.badge.fail{background:var(--bad-soft);color:var(--bad)}
+.badge.base{background:var(--line-soft);color:var(--muted)}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
+    line-height:1.6;margin:10px 0}
+code{font-family:var(--mono);font-size:.92em;background:var(--line-soft);
+     padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0}
+ol,ul{padding-left:22px;margin:8px 0 14px}
+li{margin:5px 0}
+.bar{display:inline-block;vertical-align:middle;width:56px;height:7px;border-radius:4px;
+     background:var(--line-soft);overflow:hidden;margin-right:6px}
+.bar>i{display:block;height:100%;border-radius:4px;background:var(--accent)}
+.bar.neg>i{background:var(--bad)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:6px 0 12px}
+.legend span{display:flex;align-items:center;gap:5px}
+.swatch{width:11px;height:11px;border-radius:3px;display:inline-block}
+.gatebox{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:8px;
+         border:1px solid var(--line);margin:8px 0}
+.gatebox.pass{background:var(--good-soft);border-color:color-mix(in srgb,var(--good) 25%,transparent)}
+.gatebox.marginal{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
+.gatebox.fail{background:var(--bad-soft);border-color:color-mix(in srgb,var(--bad) 25%,transparent)}
+.gatebox b{display:block;font-size:13px;margin-bottom:2px}
+.gatebox p{margin:0;font-size:13px;color:var(--muted)}
+.loadrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+         font-size:13px;color:var(--muted);margin:12px 0}
+button.act{font:inherit;font-size:13px;font-weight:550;padding:6px 13px;border-radius:7px;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.act:hover{border-color:var(--accent);color:var(--accent)}
+button.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.act.primary:hover{filter:brightness(1.08);color:#fff}
+.hm{overflow-x:auto;margin:12px 0}
+.hm table{font-size:12px;min-width:520px}
+.hm td.cell{text-align:center;font-family:var(--mono);font-weight:600;
+            border-radius:4px;color:#fff;min-width:64px}
+footer{border-top:1px solid var(--line);margin-top:56px;padding-top:20px;
+       color:var(--muted-2);font-size:12.5px}
+footer a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
+a{color:var(--accent)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;margin:8px 0}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;font-family:var(--mono);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <p class="eyebrow">UK Open Multimodal AI Benchmark &middot; UoN &times; UCL</p>
+    <h1>SONAIR<span class="pill" id="statusPill">awaiting results</span></h1>
+    <p class="sub">Sim2real Operational be<b>N</b>chmark for <b>AI</b> <b>R</b>obotics.
+       Submit a model that turns a simulated robot sequence into the real one.
+       We score how much of the gap it actually closes &mdash; including in the tails,
+       where it matters.</p>
+    <nav class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="leaderboard">Leaderboard</button>
+      <button role="tab" aria-selected="false" data-tab="task">The task</button>
+      <button role="tab" aria-selected="false" data-tab="gap">Gap map</button>
+      <button role="tab" aria-selected="false" data-tab="floor">Measurement floor</button>
+      <button role="tab" aria-selected="false" data-tab="submit">Submit</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- ================= LEADERBOARD ================= -->
+<section id="tab-leaderboard">
+  <div class="loadrow">
+    <button class="act primary" id="btnLoadDefault">Load leaderboard.json</button>
+    <button class="act" id="btnPickFile">Open a local results file…</button>
+    <input type="file" id="fileInput" accept=".json" hidden/>
+    <span id="loadStatus">No results loaded yet.</span>
+  </div>
+
+  <div class="grid c3" id="headlineStats"></div>
+
+  <h2>Scores</h2>
+  <p class="note">Ranked by <b>GCR&nbsp;p95</b> &mdash; Gap Closure Ratio at the 95th percentile of
+     per-sample error. <code>1.0</code> reproduces the real side exactly; <code>0.0</code> is no better
+     than handing back the simulation unchanged; negative is worse than doing nothing.
+     A model that matches the middle of the distribution but not its tails shows up here as
+     a high median and a low p95 &mdash; that split is the point of the benchmark.</p>
+  <div class="legend">
+    <span><i class="swatch" style="background:var(--accent)"></i> closes the gap</span>
+    <span><i class="swatch" style="background:var(--bad)"></i> worse than the simulation</span>
+    <span><span class="badge base">baseline</span> the floor the board starts from</span>
+  </div>
+  <table id="lbTable">
+    <thead><tr>
+      <th>Model</th>
+      <th class="num">GCR p95</th>
+      <th class="num">GCR median</th>
+      <th class="num">Orientation</th>
+      <th class="num">Worst cell</th>
+      <th class="num">Runs</th>
+    </tr></thead>
+    <tbody><tr><td colspan="6" style="color:var(--muted)">Load a results file to populate.</td></tr></tbody>
+  </table>
+  <p class="note" id="lbNotes"></p>
+</section>
+
+<!-- ================= TASK ================= -->
+<section id="tab-task" hidden>
+  <h2>What you are asked to do</h2>
+  <p>A UR5e traces the same commanded trajectory twice: once in Isaac Sim, once on real hardware
+     carrying an instrumented sensor mount. The two do not agree. Your model is given the
+     <b>simulated</b> sequence and must predict the <b>real</b> one.</p>
+
+  <h3>Input, per run</h3>
+  <pre><code>{
+  "run_id":      "v0p70_extended_stop_start_r02",
+  "cell":        { "joint_vel": 0.70, "arm_config": "extended",
+                   "traj_type": "stop_start" },
+  "commanded":   [ {"type":"SCAN_L0_START","coords":[x,y,z,rx,ry,rz]}, ... ],
+  "sim_sequence": {
+     "t":       [0.000, 0.008, 0.016, ...],          // seconds, master clock
+     "tcp_pos": [[x,y,z], ...],                      // metres, robot base frame
+     "tcp_rot": [[rx,ry,rz], ...],                   // rotation vector, radians
+     "imu":     { "ind0": { "quat": [[w,x,y,z],...],
+                            "gyro": [[x,y,z],...],   // rad/s
+                            "accel":[[x,y,z],...] }} // m/s^2
+  }
+}</code></pre>
+
+  <h3>Output, per run</h3>
+  <pre><code>{"run_id": "...", "mode": "absolute",
+ "t": [...], "tcp_pos": [[x,y,z], ...], "tcp_rot": [[rx,ry,rz], ...]}</code></pre>
+  <p class="note">One JSON object per line. <code>mode</code> is <code>"absolute"</code> (you predict the real
+     sequence) or <code>"correction"</code> (you predict the delta and we add it to the simulation).
+     Either is fine; the harness states which you used. Timestamps must match the simulated
+     sequence you were given.</p>
+
+  <h3>How it is scored</h3>
+  <pre><code>GCR = 1 - err(your prediction, real) / err(simulation, real)</code></pre>
+  <p>Reported at the median and at the 95th percentile, per condition cell and overall.
+     The <b>p95</b> figure is the headline. Also reported: geodesic orientation error on SO(3),
+     and a Wasserstein distance between the predicted and real error <i>distributions</i>, which
+     is what separates matching the mean from matching the behaviour.</p>
+
+  <h3>The held-out set</h3>
+  <p>Whole condition cells are held back, not random samples. Interpolating inside a condition
+     you have seen is easy; the unsolved problem is generalising <b>across</b> conditions &mdash;
+     to an elbow velocity or an arm configuration you were never shown. The published example
+     set spans the range; the scoring set contains cells you have not seen.</p>
+
+  <h3>Why these modalities</h3>
+  <p>Orientation, angular rate, acceleration and position. Nothing exotic. They are the
+     quantities that are cheap to ground-truth on real hardware <i>and</i> faithful to
+     generate in simulation, which is the only combination that produces a gap you can
+     trust rather than a gap that is really a modelling artefact. An eddy-current or
+     ultrasonic response would be a richer signal and an unfalsifiable one: nobody can
+     simulate it accurately enough for the difference to mean anything.</p>
+</section>
+
+<!-- ================= GAP MAP ================= -->
+<section id="tab-gap" hidden>
+  <h2>The gap is not a number</h2>
+  <p>It is a function of the operating condition. Below is how the measured sim-to-real
+     position error varies across the sweep &mdash; commanded elbow velocity against arm
+     configuration and trajectory type. The structure in this map is what a submitted
+     model has to reproduce.</p>
+  <div id="gateC"></div>
+  <div class="hm" id="gapHeatmap"><p class="note">Load a results file to render the map.</p></div>
+  <h3>Per-cell detail</h3>
+  <table id="cellTable">
+    <thead><tr>
+      <th>Condition cell</th>
+      <th class="num">Median</th><th class="num">p95</th>
+      <th class="num">Tail ratio</th><th class="num">Repeat spread</th><th class="num">Runs</th>
+    </tr></thead>
+    <tbody><tr><td colspan="6" style="color:var(--muted)">&mdash;</td></tr></tbody>
+  </table>
+  <p class="note">Tail ratio is p95 divided by median. A cell with a high tail ratio contains
+     the rare, badly behaved samples &mdash; the long-tail cases that a model trained on
+     means will miss and that a safety-critical application cannot afford to.</p>
+</section>
+
+<!-- ================= FLOOR ================= -->
+<section id="tab-floor" hidden>
+  <h2>What this rig can and cannot resolve</h2>
+  <p>Every number on this site is reported against the measurement floor of the apparatus
+     that produced it. A benchmark that does not publish its own floor will be challenged
+     on exactly that point, so the answer is here rather than in a reviewer's email.</p>
+  <div id="gateB"></div>
+  <table id="budgetTable">
+    <thead><tr>
+      <th>Contribution</th><th class="num">Position</th><th class="num">Orientation</th>
+      <th class="num">Timing</th><th>Measured from</th>
+    </tr></thead>
+    <tbody><tr><td colspan="5" style="color:var(--muted)">Load a results file.</td></tr></tbody>
+  </table>
+  <p class="note">Rows combine in root-sum-square, not arithmetic sum: they are independent
+     measurements, and summing them would overstate the floor and let a real gap be
+     dismissed as noise.</p>
+
+  <h3>If the gap falls below the floor</h3>
+  <p>Then the honest result is that the gap is below what this rig can resolve, and that is
+     itself a publishable finding &mdash; provided it is stated rather than disguised. Cells
+     in that position are flagged in the leaderboard rather than silently scored.</p>
+</section>
+
+<!-- ================= SUBMIT ================= -->
+<section id="tab-submit" hidden>
+  <h2>Running the harness</h2>
+  <p>The scoring code is the same code that produced this page. You can run it against the
+     published example set before you submit, so there are no surprises in the interface.</p>
+  <pre><code># see the whole pipeline on synthetic data with a known injected gap
+python -m sonair_benchmark demo --out demo/
+
+# score your own predictions against the example set
+python -m sonair_benchmark score \
+    --real data/real --sim data/sim \
+    --budget calib/budget.json --plan campaign/plan.json \
+    --submission my_model.jsonl --name "My model" \
+    --out site/leaderboard.json</code></pre>
+
+  <h3>The two baselines your model has to beat</h3>
+  <ol>
+    <li><b>Identity</b> &mdash; hand back the simulation unchanged. Scores 0 by construction.
+        This is the denominator of every GCR.</li>
+    <li><b>Constant offset</b> &mdash; fit one global XYZ offset on the example set and apply it
+        everywhere. It is the dumbest thing that could possibly work. A model that does not
+        beat it has not demonstrated anything, and the board will say so.</li>
+  </ol>
+  <p class="note">Both are computed through the same code path as every submission. A benchmark
+     whose baseline is computed separately will eventually disagree with itself.</p>
+
+  <h3>Submitting</h3>
+  <p>Send the JSONL prediction file and a one-paragraph description of the method. Scoring is
+     run against held-out cells that are not published. We report your per-cell scores back to
+     you in full, including the cells you did worst on &mdash; a score without its failure modes
+     is not useful to anyone.</p>
+</section>
+
+<footer>
+  <div class="wrap" style="padding:0">
+    SONAIR &middot; University of Nottingham &amp; University College London &middot;
+    UK Open Multimodal AI Benchmark programme.
+    <a href="index.html">Operations portal</a> &middot;
+    <a href="Remote_control.html">Robot console</a>
+  </div>
+</footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var DOC = null;
+
+  /* ---------------- tabs ---------------- */
+  var tabs = document.querySelectorAll('nav.tabs button');
+  tabs.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      tabs.forEach(function(b){ b.setAttribute('aria-selected','false'); });
+      btn.setAttribute('aria-selected','true');
+      ['leaderboard','task','gap','floor','submit'].forEach(function(name){
+        var s = $('tab-'+name);
+        if (s) s.hidden = (name !== btn.dataset.tab);
+      });
+      try { localStorage.setItem('sonair.tab', btn.dataset.tab); } catch(e){}
+    });
+  });
+  try {
+    var saved = localStorage.getItem('sonair.tab');
+    if (saved) {
+      var b = document.querySelector('nav.tabs button[data-tab="'+saved+'"]');
+      if (b) b.click();
+    }
+  } catch(e){}
+
+  /* ---------------- formatting ---------------- */
+  function fmt(v, dp){ 
+    if (v === null || v === undefined || isNaN(v)) return '—';
+    return Number(v).toFixed(dp === undefined ? 3 : dp);
+  }
+  function verdictClass(v){
+    v = String(v||'').toLowerCase();
+    if (v === 'pass') return 'pass';
+    if (v === 'marginal') return 'marginal';
+    return 'fail';
+  }
+  function bar(value){
+    // GCR in [-1, 1] -> a bar that reads at a glance
+    var v = Math.max(-1, Math.min(1, Number(value)||0));
+    var pct = Math.abs(v) * 100;
+    return '<span class="bar'+(v<0?' neg':'')+'"><i style="width:'+pct.toFixed(0)+'%"></i></span>';
+  }
+
+  /* ---------------- render ---------------- */
+  function renderHeadline(doc){
+    var box = $('headlineStats');
+    var top = (doc.entries||[]).filter(function(e){
+      return String(e.name||'').indexOf('baseline') !== 0;
+    })[0];
+    var floor = doc.measurement_floor && doc.measurement_floor.floor;
+    var gc = doc.gate_c || {};
+    var cards = [
+      {k:'Best GCR p95', v: top ? fmt(top.gcr_p95) : '—',
+       d: top ? top.name : 'no non-baseline submission yet'},
+      {k:'Measurement floor', v: floor ? fmt(floor.position_mm,2) : '—', u:'mm',
+       d:'position, root-sum-square of five measured rows'},
+      {k:'Gap structure', v: gc.verdict || '—',
+       d: gc.structure_ratio !== undefined
+          ? 'across/within cell ratio ' + fmt(gc.structure_ratio,1)
+          : 'Gate C not evaluated'}
+    ];
+    box.innerHTML = cards.map(function(c){
+      return '<div class="stat"><div class="k">'+c.k+'</div><div class="v">'+
+             c.v + (c.u ? '<span class="u">'+c.u+'</span>' : '') +
+             '</div><div class="d">'+c.d+'</div></div>';
+    }).join('');
+  }
+
+  function renderLeaderboard(doc){
+    var tb = $('lbTable').querySelector('tbody');
+    var rows = doc.entries || [];
+    if (!rows.length){
+      tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No entries.</td></tr>';
+      return;
+    }
+    tb.innerHTML = rows.map(function(e){
+      var isBase = String(e.name||'').indexOf('baseline') === 0;
+      return '<tr>'+
+        '<td>'+escapeHtml(e.name)+(isBase?' <span class="badge base">baseline</span>':'')+'</td>'+
+        '<td class="num">'+bar(e.gcr_p95)+' '+fmt(e.gcr_p95)+'</td>'+
+        '<td class="num">'+fmt(e.gcr_median)+'</td>'+
+        '<td class="num">'+fmt(e.gcr_orientation)+'</td>'+
+        '<td class="num">'+fmt(e.worst_cell_gcr)+'</td>'+
+        '<td class="num">'+(e.n_runs||0)+'</td></tr>';
+    }).join('');
+    var notes = [];
+    rows.forEach(function(e){
+      if (e.notes && notes.indexOf(e.notes) < 0) notes.push(e.notes);
+    });
+    $('lbNotes').textContent = notes.join('  ·  ');
+  }
+
+  function renderGates(doc){
+    var gb = doc.measurement_floor && doc.gate_b ? doc.gate_b : doc.gate_b;
+    var gbBox = $('gateB');
+    if (gb){
+      gbBox.innerHTML = '<div class="gatebox '+verdictClass(gb.verdict)+'">'+
+        '<div><b>Gate B — '+gb.verdict+'</b><p>Measured gap is '+
+        fmt(gb.worst_ratio,2)+'× the floor ('+fmt(gb.floor_position_mm,2)+
+        ' mm). '+(gb.verdict==='PASS'
+          ? 'The benchmark is measuring the gap, not its own calibration.'
+          : gb.verdict==='MARGINAL'
+            ? 'Publishable only as an upper bound on the gap, and stated as such.'
+            : 'The gap is at or below the measurement floor of this rig.')+
+        '</p></div></div>';
+    } else { gbBox.innerHTML = ''; }
+
+    var gc = doc.gate_c;
+    var gcBox = $('gateC');
+    if (gc){
+      gcBox.innerHTML = '<div class="gatebox '+verdictClass(gc.verdict)+'">'+
+        '<div><b>Gate C — '+gc.verdict+'</b><p>'+escapeHtml(gc.note||'')+
+        ' (across-cell '+fmt(gc.across_cell_sd_mm,3)+' mm vs within-cell '+
+        fmt(gc.within_cell_sd_mm,3)+' mm)</p></div></div>';
+    } else { gcBox.innerHTML = ''; }
+  }
+
+  function renderBudget(doc){
+    var tb = $('budgetTable').querySelector('tbody');
+    var mf = doc.measurement_floor;
+    if (!mf || !mf.rows){
+      tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">No budget in this file.</td></tr>';
+      return;
+    }
+    var body = mf.rows.map(function(r){
+      return '<tr><td>'+escapeHtml(r.name.replace(/_/g,' '))+
+        (r.measured ? '' : ' <span class="badge fail">unmeasured</span>')+'</td>'+
+        '<td class="num">'+fmt(r.position_mm,3)+' mm</td>'+
+        '<td class="num">'+fmt(r.orientation_deg,3)+'°</td>'+
+        '<td class="num">'+fmt(r.temporal_ms,3)+' ms</td>'+
+        '<td style="color:var(--muted);font-size:12.5px">'+escapeHtml(r.source||'')+'</td></tr>';
+    }).join('');
+    var f = mf.floor || {};
+    body += '<tr style="font-weight:650;border-top:2px solid var(--line)">'+
+      '<td>Floor (RSS)</td><td class="num">'+fmt(f.position_mm,3)+' mm</td>'+
+      '<td class="num">'+fmt(f.orientation_deg,3)+'°</td>'+
+      '<td class="num">'+fmt(f.temporal_ms,3)+' ms</td><td></td></tr>';
+    tb.innerHTML = body;
+  }
+
+  function parseCell(key){
+    var p = String(key).split('|');
+    return { vel: parseFloat(p[0]), config: p[1]||'', traj: p[2]||'' };
+  }
+
+  function renderGapMap(doc){
+    var cm = doc.cell_map;
+    var host = $('gapHeatmap');
+    var tb = $('cellTable').querySelector('tbody');
+    if (!cm || !Object.keys(cm).length){
+      host.innerHTML = '<p class="note">This file carries no gap map. '+
+        'Run <code>python -m sonair_benchmark gap</code> and load its output here.</p>';
+      tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">—</td></tr>';
+      return;
+    }
+    var keys = Object.keys(cm);
+    var vels = [], cols = [];
+    keys.forEach(function(k){
+      var c = parseCell(k);
+      if (vels.indexOf(c.vel) < 0) vels.push(c.vel);
+      var col = c.config + ' / ' + c.traj;
+      if (cols.indexOf(col) < 0) cols.push(col);
+    });
+    vels.sort(function(a,b){ return a-b; });
+    cols.sort();
+    var vals = keys.map(function(k){ return cm[k].pos_median_mm; });
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+    var span = (hi - lo) || 1;
+
+    function colour(v){
+      // Sequential low -> high, blue through purple to crimson. It deliberately
+      // skips green: a blue-green-red ramp peaks in lightness in the middle, so
+      // mid-range cells read as the brightest and the scale stops being ordered.
+      // Here lightness falls monotonically, so the map survives greyscale
+      // printing and colour-vision deficiency, and white text stays legible.
+      var t = span > 0 ? (v - lo) / span : 0;
+      var h = 215 + 135 * t;          // 215 blue -> 350 crimson
+      var l = 56 - 22 * t;            // monotonically darker
+      return 'hsl(' + h.toFixed(0) + ' 58% ' + l.toFixed(0) + '%)';
+    }
+
+    var html = '<table><thead><tr><th>Elbow vel</th>' +
+      cols.map(function(c){ return '<th class="num">'+escapeHtml(c)+'</th>'; }).join('') +
+      '</tr></thead><tbody>';
+    vels.forEach(function(v){
+      html += '<tr><td class="num">'+v.toFixed(2)+' rad/s</td>';
+      cols.forEach(function(col){
+        var parts = col.split(' / ');
+        var key = v.toFixed(3) + '|' + parts[0] + '|' + parts[1];
+        var cell = cm[key];
+        if (!cell){ html += '<td class="num" style="color:var(--muted-2)">—</td>'; return; }
+        html += '<td class="cell" style="background:'+colour(cell.pos_median_mm)+
+                '" title="'+escapeHtml(key)+'">'+fmt(cell.pos_median_mm,2)+'</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    host.innerHTML = html +
+      '<p class="note" style="margin-top:8px">Median position gap in mm. '+
+      'Blue is a small gap, red a large one. '+
+      'The divergence above roughly 0.6&nbsp;rad/s at the elbow is the structure '+
+      'the benchmark is built around.</p>';
+
+    tb.innerHTML = keys.sort().map(function(k){
+      var c = cm[k];
+      return '<tr><td style="font-family:var(--mono);font-size:12px">'+escapeHtml(k)+'</td>'+
+        '<td class="num">'+fmt(c.pos_median_mm,3)+'</td>'+
+        '<td class="num">'+fmt(c.pos_p95_mm,3)+'</td>'+
+        '<td class="num">'+fmt(c.tail_ratio,2)+'</td>'+
+        '<td class="num">±'+fmt(c.pos_median_spread_mm,3)+'</td>'+
+        '<td class="num">'+(c.n_runs||0)+'</td></tr>';
+    }).join('');
+  }
+
+  function escapeHtml(s){
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  function render(doc){
+    DOC = doc;
+    renderHeadline(doc);
+    renderLeaderboard(doc);
+    renderGates(doc);
+    renderBudget(doc);
+    renderGapMap(doc);
+    var n = (doc.entries||[]).length;
+    $('statusPill').textContent = n ? n + ' entries' : 'awaiting results';
+  }
+
+  /* ---------------- loading ---------------- */
+  function setStatus(msg){ $('loadStatus').textContent = msg; }
+
+  function mergeDocs(a, b){
+    // leaderboard.json and gap.json carry different halves of the picture;
+    // loading either enriches what is already on screen rather than replacing it.
+    var out = {};
+    [a||{}, b||{}].forEach(function(src){
+      Object.keys(src).forEach(function(k){
+        if (src[k] !== null && src[k] !== undefined) out[k] = src[k];
+      });
+    });
+    return out;
+  }
+
+  function tryFetch(path){
+    // A missing file is the normal case before the first campaign, so a failed
+    // fetch resolves to null rather than rejecting and taking the batch with it.
+    return fetch(path)
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .catch(function(){ return null; });
+  }
+
+  $('btnLoadDefault').addEventListener('click', function(){
+    setStatus('Loading…');
+    var paths = ['site/leaderboard.json','leaderboard.json',
+                 'results/gap.json','gap.json'];
+    Promise.all(paths.map(tryFetch)).then(function(docs){
+      var got = null;
+      docs.forEach(function(d){ if (d) got = mergeDocs(got, d); });
+      if (!got){
+        setStatus('No results files found next to this page — '+
+                  'run the harness, or open a local file.');
+        return;
+      }
+      render(got);
+      setStatus('Loaded ' + docs.filter(Boolean).length + ' file(s).');
+    });
+  });
+
+  $('btnPickFile').addEventListener('click', function(){ $('fileInput').click(); });
+  $('fileInput').addEventListener('change', function(ev){
+    var f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function(){
+      try {
+        var j = JSON.parse(rd.result);
+        render(mergeDocs(DOC, j));
+        setStatus('Loaded ' + f.name + '.');
+      } catch(e){
+        setStatus('Could not parse ' + f.name + ': ' + e.message);
+      }
+    };
+    rd.readAsText(f);
+  });
+
+  // Try the default location once on load, quietly.
+  $('btnLoadDefault').click();
+})();
+</script>
+</body>
+</html>
