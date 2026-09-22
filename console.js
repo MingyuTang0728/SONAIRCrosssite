@@ -122,6 +122,20 @@
       case "inspect_plan_res": onPlan(d); break;
       case "inspect_detect_res": onDetect(d); break;
 
+      case "jog_status_res": {
+        var t = $("jogHealth"); if (!t) break;
+        t.textContent = d.running
+          ? (d.moving ? "moving · " + Math.round(d.rate_hz) + " Hz from the host"
+                      : "ready · host keeps the timing")
+          : "robot link not started";
+        break;
+      }
+      case "jog_res":
+        if (!d.ok && d.msg) say("jogMsg", d.msg, "warn");
+        break;
+      case "jog_step_res":
+        if (!d.ok) say("jogMsg", plainCmdError({ msg: d.error || d.msg }), "bad");
+        break;
       case "bench_status": onBenchStatus(d); break;
       case "bench_start_res":
         say("rcMsg", d.ok ? ("Recording " + d.run_id) : ("Could not start: " + d.error),
@@ -265,114 +279,261 @@
 
   $("btnEstop").addEventListener("click", function () {
     if (!requireLink()) { alert("Not connected to the host agent."); return; }
+    jog.keys = {}; jog.pad.xy = [0, 0]; jog.pad.zr = [0, 0];
+    send({ type: "jog_halt" });
     send({ type: "ur_estop" });
   });
 
-  /* -------------------------------------------------- jog ---------------- */
+  /* -------------------------------------------------- jog ----------------
+     The browser sends INTENT ONLY. It never sets the cadence of robot motion.
+
+     Measured on this page under its real load — camera frames decoding and a
+     3D view rendering — setInterval(100) fires at a median of 248 ms with
+     nearly half the ticks past 250 ms. Any scheme where a late tick lets a
+     speedl expire produces exactly the stutter this replaces. The host now
+     re-issues at a steady 20 Hz from its own clock, ramps direction changes,
+     and stops by watchdog if this page goes quiet, so a browser stall changes
+     nothing at the arm.
+     ---------------------------------------------------------------------- */
+  var jog = {
+    mode: "cont", frame: "base", step: 1,
+    pad: { xy: [0, 0], zr: [0, 0] },
+    keys: {}, keysOn: false, gamepad: null, slow: false,
+    lastSent: [0, 0, 0, 0, 0, 0], sentAt: 0
+  };
+
   $("jogSpeed").addEventListener("input", function () {
     state.jogSpeed = Number(this.value);
     $("jogSpeedV").textContent = state.jogSpeed + " mm/s";
   });
 
-  function bindPad(id, axes) {
+  function seg(id, attr, onPick) {
+    var host = $(id); if (!host) return;
+    host.addEventListener("click", function (ev) {
+      var b = ev.target.closest(".segb"); if (!b) return;
+      host.querySelectorAll(".segb").forEach(function (o) { o.classList.toggle("on", o === b); });
+      onPick(b.dataset[attr]);
+    });
+  }
+  seg("jogModeSeg", "mode", function (m) {
+    jog.mode = m;
+    $("jogCont").hidden = (m !== "cont");
+    $("jogStep").hidden = (m !== "step");
+    if (m !== "cont") sendVel([0, 0, 0, 0, 0, 0]);
+  });
+  seg("jogFrameSeg", "frame", function (f) { jog.frame = f; });
+  seg("stepSeg", "step", function (v) { jog.step = Number(v); });
+
+  /* ---- the single place a velocity leaves this page ---- */
+  function sendVel(v) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Skip identical repeats while still refreshing often enough that the
+    // host's watchdog never trips mid-move. The watchdog is 400 ms.
+    var same = v.every(function (c, i) { return Math.abs(c - jog.lastSent[i]) < 1e-6; });
+    var now = performance.now();
+    if (same && now - jog.sentAt < 150) return;
+    jog.lastSent = v.slice(); jog.sentAt = now;
+    ws.send(JSON.stringify({ type: "jog_vel", xd: v, ttl_ms: 400 }));
+  }
+
+  function currentVelocity() {
+    if (jog.mode !== "cont") return [0, 0, 0, 0, 0, 0];
+    var v = state.jogSpeed / 1000 * (jog.slow ? 0.25 : 1);
+    var x = 0, y = 0, z = 0, rz = 0;
+
+    x += jog.pad.xy[0]; y += -jog.pad.xy[1];
+    z += -jog.pad.zr[1]; rz += jog.pad.zr[0];
+
+    if (jog.keysOn) {
+      if (jog.keys.ArrowRight) x += 1;
+      if (jog.keys.ArrowLeft) x -= 1;
+      if (jog.keys.ArrowUp) y += 1;
+      if (jog.keys.ArrowDown) y -= 1;
+      if (jog.keys.KeyE) z += 1;
+      if (jog.keys.KeyQ) z -= 1;
+      if (jog.keys.KeyD) rz += 1;
+      if (jog.keys.KeyA) rz -= 1;
+    }
+    if (jog.gamepad) {
+      var g = jog.gamepad;
+      x += dz(g.axes[0]); y += -dz(g.axes[1]);
+      z += -dz(g.axes[3]); rz += dz(g.axes[2]);
+    }
+    x = clamp1(x); y = clamp1(y); z = clamp1(z); rz = clamp1(rz);
+    return [x * v, y * v, z * v, 0, 0, rz * (v * 12)];
+  }
+  function dz(a) { a = a || 0; return Math.abs(a) < 0.12 ? 0 : a; }
+  function clamp1(a) { return Math.max(-1, Math.min(1, a)); }
+
+  /* Driven by requestAnimationFrame, not setInterval: rAF is aligned to the
+     compositor and is not throttled the way a timer is when the main thread is
+     busy. Even so, nothing depends on it arriving on time. */
+  function jogTick() {
+    requestAnimationFrame(jogTick);
+    pollGamepad();
+    sendVel(currentVelocity());
+  }
+  requestAnimationFrame(jogTick);
+
+  /* ---- on-screen pads: they set a vector, nothing more ---- */
+  function bindPad(id, key) {
     var disc = $(id); if (!disc) return;
     var knob = disc.querySelector(".knob");
-    var active = false, timer = null, vec = [0, 0];
+    var active = false;
 
     function at(ev) {
       var r = disc.getBoundingClientRect();
-      var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
       var t = ev.touches ? ev.touches[0] : ev;
-      var dx = (t.clientX - cx) / (r.width / 2);
-      var dy = (t.clientY - cy) / (r.height / 2);
+      var dx = (t.clientX - (r.left + r.width / 2)) / (r.width / 2);
+      var dy = (t.clientY - (r.top + r.height / 2)) / (r.height / 2);
       var m = Math.hypot(dx, dy);
       if (m > 1) { dx /= m; dy /= m; }
-      vec = [dx, dy];
+      jog.pad[key] = [dx, dy];
       knob.style.left = (50 + dx * 33) + "%";
       knob.style.top = (50 + dy * 33) + "%";
     }
-    function stop() {
+    function release() {
       active = false;
-      if (timer) { clearInterval(timer); timer = null; }
+      jog.pad[key] = [0, 0];
       knob.style.left = "50%"; knob.style.top = "50%";
-      vec = [0, 0];
-      send({ type: "ur_speedl", xd: [0, 0, 0, 0, 0, 0], a: 1.2, t: 0.2 });
     }
-    function start(ev) {
-      ev.preventDefault();
+    disc.addEventListener("pointerdown", function (ev) {
       if (!requireLink("jogMsg")) return;
-      active = true; at(ev);
-      if (timer) clearInterval(timer);
-      // Re-send while held. A speedl decays after `t`, so a held joystick with
-      // no repeat produces one twitch and then stops, which reads as a fault.
-      timer = setInterval(function () {
-        if (!active) return;
-        var v = state.jogSpeed / 1000;
-        var xd = [0, 0, 0, 0, 0, 0];
-        xd[axes[0]] += vec[0] * v * (axes[2] || 1);
-        xd[axes[1]] += -vec[1] * v * (axes[3] || 1);
-        send({ type: "ur_speedl", xd: xd, a: 1.0, t: 0.25 });
-      }, 100);
-    }
-    disc.addEventListener("mousedown", start);
-    disc.addEventListener("touchstart", start, { passive: false });
-    disc.addEventListener("mousemove", function (e) { if (active) at(e); });
-    disc.addEventListener("touchmove", function (e) { if (active) { e.preventDefault(); at(e); } },
-      { passive: false });
-    ["mouseup", "mouseleave", "touchend", "touchcancel"].forEach(function (e) {
-      disc.addEventListener(e, stop);
+      active = true; disc.setPointerCapture(ev.pointerId); at(ev);
     });
-    window.addEventListener("mouseup", function () { if (active) stop(); });
+    disc.addEventListener("pointermove", function (ev) { if (active) at(ev); });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(function (e) {
+      disc.addEventListener(e, release);
+    });
+    // A pointer released outside the disc must still stop the arm.
+    window.addEventListener("blur", release);
   }
-  bindPad("padXY", [0, 1]);
-  bindPad("padZR", [2, 5, 1, 12]);   // Z in m/s; rotation scaled to rad/s
+  bindPad("padXY", "xy");
+  bindPad("padZR", "zr");
 
-  $("jointCards").innerHTML = JOINT_NAMES.map(function (n, i) {
-    return '<div class="jcard"><span class="jn">J' + (i + 1) + '</span>'
-      + '<button data-j="' + i + '" data-d="-1">&minus;</button>'
-      + '<button data-j="' + i + '" data-d="1">+</button>'
-      + '<span class="jval" id="jv' + i + '">' + n + "</span></div>";
-  }).join("");
+  /* ---- keyboard ---- */
+  $("jogKeys").addEventListener("change", function () {
+    jog.keysOn = this.checked;
+    // Drop focus, so the arrow keys reach the window handler rather than
+    // being spent scrolling the page from a focused control.
+    this.blur();
+    if (!this.checked) jog.keys = {};
+    say("jogMsg", this.checked
+      ? "Keyboard control is on. Click on the page first, then use the keys shown."
+      : "Keyboard control is off.", "info");
+  });
+  var JOG_KEYS = ["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","KeyQ","KeyE","KeyA","KeyD"];
+  window.addEventListener("keydown", function (ev) {
+    if (!jog.keysOn || jog.mode !== "cont") return;
+    // Ignore keys only while TYPING. Treating every INPUT as a text field meant
+    // the checkbox that turns this on kept focus and swallowed every arrow key
+    // afterwards — the control appeared enabled and did nothing.
+    var tag = (ev.target.tagName || "").toUpperCase();
+    var kind = String(ev.target.type || "").toLowerCase();
+    var typing = tag === "TEXTAREA" || tag === "SELECT"
+      || (tag === "INPUT" && !/^(checkbox|radio|button|submit|range)$/.test(kind));
+    if (typing) return;
+    if (ev.code === "Space") { ev.preventDefault(); jog.keys = {}; sendVel([0,0,0,0,0,0]); return; }
+    jog.slow = ev.shiftKey;
+    if (JOG_KEYS.indexOf(ev.code) < 0) return;
+    ev.preventDefault();
+    jog.keys[ev.code] = true;
+  });
+  window.addEventListener("keyup", function (ev) {
+    jog.slow = ev.shiftKey;
+    if (jog.keys[ev.code]) delete jog.keys[ev.code];
+  });
+  // Releasing a key while the window is not focused never arrives, so a lost
+  // focus has to clear every held key or the arm keeps moving.
+  window.addEventListener("blur", function () { jog.keys = {}; jog.slow = false; });
 
-  (function bindJoints() {
-    var host = $("jointCards"), timer = null;
-    function go(j, dir) {
-      if (!requireLink("jogMsg")) return;
-      var qd = [0, 0, 0, 0, 0, 0];
-      qd[j] = dir * (state.jogSpeed / 400);
-      send({ type: "ur_speedj", qd: qd, a: 1.2, t: 0.25 });
+  /* ---- gamepad ---- */
+  function pollGamepad() {
+    if (!navigator.getGamepads) return;
+    var pads = navigator.getGamepads();
+    var g = null;
+    for (var i = 0; i < pads.length; i++) if (pads[i] && pads[i].connected) { g = pads[i]; break; }
+    jog.gamepad = (g && jog.mode === "cont") ? g : null;
+    var box = $("gpBox"); if (!box) return;
+    if (g) {
+      box.className = "gp on";
+      box.textContent = "Gamepad: " + g.id.slice(0, 44)
+        + " — left stick moves across the table, right stick lifts and turns.";
+    } else if (box.className !== "gp") {
+      box.className = "gp";
+      box.textContent = "No gamepad. Plug one in and press a button.";
     }
-    host.addEventListener("mousedown", function (ev) {
-      var b = ev.target.closest("button[data-j]"); if (!b) return;
-      var j = Number(b.dataset.j), d = Number(b.dataset.d);
-      go(j, d);
-      timer = setInterval(function () { go(j, d); }, 120);
-    });
-    ["mouseup", "mouseleave"].forEach(function (e) {
-      host.addEventListener(e, function () {
-        if (timer) { clearInterval(timer); timer = null; }
-        send({ type: "ur_speedj", qd: [0, 0, 0, 0, 0, 0], a: 1.5, t: 0.2 });
-      });
-    });
-    window.addEventListener("mouseup", function () {
-      if (timer) { clearInterval(timer); timer = null; }
-    });
-  })();
+  }
+
+  /* ---- precise steps ---- */
+  var STEP_AXES = [["x","X"],["y","Y"],["z","Z"],["rx","Rx"],["ry","Ry"],["rz","Rz"]];
+  $("stepGrid").innerHTML = STEP_AXES.map(function (a) {
+    return '<div class="stepax"><div class="sa">' + a[1] + '</div><div class="sbtns">'
+      + '<button data-ax="' + a[0] + '" data-dir="-1">&minus;</button>'
+      + '<button data-ax="' + a[0] + '" data-dir="1">+</button></div></div>';
+  }).join("");
+  $("stepGrid").addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-ax]"); if (!b) return;
+    if (!requireLink("jogMsg")) return;
+    var ax = b.dataset.ax, dir = Number(b.dataset.dir);
+    // Rotation steps are in degrees and capped host-side; a rotation vector is
+    // not three independent angles, so only small increments are meaningful.
+    var dist = (ax[0] === "r" ? Math.min(jog.step, 5) : jog.step) * dir;
+    send({ type: "jog_step", axis: ax, distance_mm: dist, frame: jog.frame,
+      speed: state.jogSpeed / 1000 });
+    say("jogMsg", "Moving " + ax.toUpperCase() + " by " + dist
+      + (ax[0] === "r" ? "°" : " mm") + " in "
+      + (jog.frame === "tool" ? "tool" : "table") + " axes.", "info");
+  });
 
   /* -------------------------------------------------- camera ------------- */
+  var _decoding = { color: false, depth: false };
+
   function onFrame(d) {
     state.camAge = performance.now();
-    if (d.rgb) loadFrame("color", d.rgb);
-    if (d.depth) loadFrame("depth", d.depth);
+    // Decode only what is on screen. Decoding both streams was costing the
+    // main thread roughly twice what it needed to, and that thread is the one
+    // the rest of the page's responsiveness comes out of.
+    var want = (document.getElementById("page-inspect").hidden) ? null : state.view;
+    if (d.rgb && (want === "color" || !state.frames.color)) loadFrame("color", d.rgb);
+    if (d.depth && (want === "depth" || !state.frames.depth)) loadFrame("depth", d.depth);
     var e = $("inspEmpty"); if (e) e.style.display = "none";
   }
+
   function loadFrame(kind, b64) {
+    // Drop a frame rather than queue it. At 30 fps a backlog only grows, and a
+    // late frame is worth less than the main-thread time spent decoding it.
+    if (_decoding[kind]) return;
+    _decoding[kind] = true;
+
+    var bin = atob(b64);
+    var buf = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    var blob = new Blob([buf], { type: "image/jpeg" });
+
+    if (window.createImageBitmap) {
+      // createImageBitmap decodes OFF the main thread. new Image() with a data
+      // URL does not, and with two streams at 30 fps that decode was what
+      // starved the page's timers — the root cause of the jerky jog.
+      createImageBitmap(blob).then(function (bmp) {
+        if (state.frames[kind] && state.frames[kind].close) state.frames[kind].close();
+        state.frames[kind] = bmp;
+        _decoding[kind] = false;
+        if (kind === state.view) drawInspect();
+      }).catch(function () { _decoding[kind] = false; });
+      return;
+    }
+
+    var url = URL.createObjectURL(blob);
     var img = new Image();
     img.onload = function () {
       state.frames[kind] = img;
+      _decoding[kind] = false;
+      URL.revokeObjectURL(url);
       if (kind === state.view) drawInspect();
     };
-    img.src = "data:image/jpeg;base64," + b64;
+    img.onerror = function () { _decoding[kind] = false; URL.revokeObjectURL(url); };
+    img.src = url;
   }
 
   function onCamAck(d) {
@@ -648,7 +809,10 @@
     var img = state.frames[state.view] || state.frames.color;
     var ctx = cv.getContext("2d");
 
-    if (img) { cv.width = img.naturalWidth; cv.height = img.naturalHeight; }
+    if (img) {
+      cv.width = img.naturalWidth || img.width;
+      cv.height = img.naturalHeight || img.height;
+    }
     ctx.clearRect(0, 0, cv.width, cv.height);
     if (img) ctx.drawImage(img, 0, 0, cv.width, cv.height);
     else { ctx.fillStyle = "#0a0e13"; ctx.fillRect(0, 0, cv.width, cv.height); }
@@ -859,6 +1023,9 @@
 
     (function loop() {
       requestAnimationFrame(loop);
+      // Rendering a hidden page spends GPU and main-thread time on pixels
+      // nobody sees, and that time comes out of the same budget the jog needs.
+      if (document.getElementById("page-robot").hidden) return;
       ctrl.update(); rend.render(scene, cam);
     })();
   }
@@ -899,7 +1066,11 @@
     else if (now - state.imuAge < 2000) { /* set by onImu */ }
     else { lamp("lampImu", "lampImuV", "warn", "No data"); }
 
-    if (live) { send({ type: "bench_status" }); send({ type: "ur_service_status" }); }
+    if (live) {
+      send({ type: "bench_status" });
+      send({ type: "ur_service_status" });
+      send({ type: "jog_status" });
+    }
   }, 1000);
 
   if (document.readyState === "loading")

@@ -197,6 +197,31 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .jval{grid-column:1/-1;font-family:var(--mono);font-size:11px;color:var(--text-3);
   text-align:center;font-variant-numeric:tabular-nums}
 
+.seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:7px;overflow:hidden}
+.segb{padding:7px 14px;background:var(--raised);border:none;color:var(--text-2);
+  font-size:12.5px;font-weight:600;border-right:1px solid var(--line-strong)}
+.segb:last-child{border-right:none}
+.segb.on{background:var(--accent);color:#fff}
+.segb:hover:not(.on){background:var(--surface-2);color:var(--text)}
+.kbd-help{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 14px;margin-top:13px;
+  font-size:11.5px;color:var(--text-3)}
+.kbd-row{display:flex;gap:8px;align-items:center}
+.kbd-row span{display:flex;gap:2px}
+kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-align:center;
+  background:var(--raised);border:1px solid var(--line-strong);border-bottom-width:2px;
+  font:600 10.5px var(--mono);color:var(--text-2)}
+.chk{display:flex;align-items:center;gap:7px;margin-top:11px;font-size:12.5px;color:var(--text-2)}
+.gp{margin-top:9px;padding:8px 11px;border-radius:6px;background:var(--surface-2);
+  font-size:11.5px;color:var(--text-3)}
+.gp.on{color:var(--ok);background:var(--ok-bg)}
+.stepgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:7px}
+@media(max-width:900px){.stepgrid{grid-template-columns:repeat(3,1fr)}}
+.stepax{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px}
+.stepax .sa{font:700 11px var(--mono);color:var(--text-2);text-align:center;margin-bottom:6px}
+.stepax .sbtns{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.stepax button{padding:11px 0;border-radius:6px;border:1px solid var(--line-strong);
+  background:var(--raised);color:var(--text);font-size:16px;font-weight:700;line-height:1}
+.stepax button:hover{border-color:var(--accent);background:var(--accent);color:#fff}
 .speedrow{display:flex;align-items:center;gap:11px;margin-top:12px}
 .speedrow input[type=range]{flex:1;accent-color:var(--accent)}
 .speedrow .sv{font-family:var(--mono);font-size:13px;min-width:74px;text-align:right}
@@ -349,28 +374,72 @@ table.data tbody tr:hover{background:var(--surface-2)}
   </div>
 
   <section class="block">
-    <h3>Jog <span class="tag">hold to move &middot; release to stop</span></h3>
-    <div class="jogwrap">
-      <div class="pads">
-        <div class="pad"><div class="pname">Across the table</div>
-          <div class="disc" id="padXY"><div class="knob"></div></div>
-          <div class="ax">left / right &middot; forward / back</div></div>
-        <div class="pad"><div class="pname">Up &amp; rotate</div>
-          <div class="disc" id="padZR"><div class="knob"></div></div>
-          <div class="ax">up / down &middot; turn</div></div>
+    <h3>Move the robot
+      <span class="tag" id="jogHealth">idle</span></h3>
+
+    <div class="row" style="margin-bottom:13px">
+      <div class="seg" id="jogModeSeg">
+        <button class="segb on" data-mode="cont">Smooth</button>
+        <button class="segb" data-mode="step">Precise steps</button>
       </div>
-      <div>
-        <div class="joints" id="jointCards"></div>
-        <div class="speedrow">
-          <span style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">Speed</span>
-          <input type="range" id="jogSpeed" min="5" max="120" value="40"/>
-          <span class="sv" id="jogSpeedV">40 mm/s</span>
-        </div>
-        <div class="note warn" id="jogMsg">Put the teach pendant in Remote Control
-        before jogging from here. In Local mode the robot ignores the command and
-        the console can only report a timeout.</div>
+      <div class="seg" id="jogFrameSeg" style="margin-left:auto">
+        <button class="segb on" data-frame="base">Table axes</button>
+        <button class="segb" data-frame="tool">Tool axes</button>
       </div>
     </div>
+
+    <!-- ---------------- smooth ---------------- -->
+    <div id="jogCont">
+      <div class="jogwrap">
+        <div class="pads">
+          <div class="pad"><div class="pname">Across the table</div>
+            <div class="disc" id="padXY"><div class="knob"></div></div>
+            <div class="ax">left / right &middot; forward / back</div></div>
+          <div class="pad"><div class="pname">Up &amp; rotate</div>
+            <div class="disc" id="padZR"><div class="knob"></div></div>
+            <div class="ax">up / down &middot; turn</div></div>
+        </div>
+        <div>
+          <div class="speedrow">
+            <span style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">Speed</span>
+            <input type="range" id="jogSpeed" min="5" max="150" value="40"/>
+            <span class="sv" id="jogSpeedV">40 mm/s</span>
+          </div>
+          <div class="kbd-help">
+            <div class="kbd-row"><span><kbd>&larr;</kbd><kbd>&rarr;</kbd></span> left / right</div>
+            <div class="kbd-row"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd></span> forward / back</div>
+            <div class="kbd-row"><span><kbd>Q</kbd><kbd>E</kbd></span> down / up</div>
+            <div class="kbd-row"><span><kbd>A</kbd><kbd>D</kbd></span> rotate the tool</div>
+            <div class="kbd-row"><span><kbd>Shift</kbd></span> hold for slow</div>
+            <div class="kbd-row"><span><kbd>Space</kbd></span> stop</div>
+          </div>
+          <label class="chk"><input type="checkbox" id="jogKeys"/> Keyboard control on</label>
+          <div class="gp" id="gpBox">No gamepad. Plug one in and press a button.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------------- steps ---------------- -->
+    <div id="jogStep" hidden>
+      <div class="row" style="margin-bottom:11px">
+        <span style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">Step size</span>
+        <div class="seg" id="stepSeg">
+          <button class="segb" data-step="0.1">0.1 mm</button>
+          <button class="segb on" data-step="1">1 mm</button>
+          <button class="segb" data-step="5">5 mm</button>
+          <button class="segb" data-step="10">10 mm</button>
+          <button class="segb" data-step="50">50 mm</button>
+        </div>
+      </div>
+      <div class="stepgrid" id="stepGrid"></div>
+      <div class="hint">Each press moves exactly that far and stops. Use this to
+      set a position you need to repeat &mdash; the smooth pads are for getting
+      roughly there quickly.</div>
+    </div>
+
+    <div class="note warn" id="jogMsg">Put the teach pendant in Remote Control
+    before moving the robot from here. In Local mode the robot ignores the
+    command and the console can only report a timeout.</div>
   </section>
 
   <section class="block">

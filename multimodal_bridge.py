@@ -992,6 +992,16 @@ async def local_handler(websocket):
             if mtype == "estop":
                 estop_ur()
                 continue
+            # Jog messages run INLINE. They are a lock and six floats, and the
+            # whole point of moving the cadence to the host was to stop robot
+            # motion waiting on anything that can stall. A thread-pool hop per
+            # jog message reintroduces exactly that.
+            if _HAS_EXT and str(mtype or "").startswith("jog_"):
+                reply = ur_bridge_ext.handle_message(data)
+                if reply is not None and not reply.pop("quiet", False):
+                    await websocket.send(json.dumps(reply))
+                continue
+
             if _HAS_EXT:
                 reply = await asyncio.to_thread(ur_bridge_ext.handle_message, data)
                 if reply is not None:

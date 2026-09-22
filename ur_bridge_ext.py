@@ -38,6 +38,7 @@ except ImportError:
 try:
     from ur_telemetry import URTelemetry
     from ur_control import URController, Envelope, RTDEInputChannel, handle_command as ur_handle
+    from ur_jog import JogController, step as jog_step
     _HAS_UR = True
 except Exception as e:      # noqa: BLE001
     _HAS_UR = False
@@ -202,6 +203,7 @@ class URService:
     def __init__(self):
         self.telemetry = None
         self.controller = None
+        self.jog = None
         self.host = ""
         self.enabled = False
 
@@ -229,6 +231,10 @@ class URService:
             self.controller.attach_rtde_inputs(RTDEInputChannel(host))
         self.telemetry = URTelemetry(host, frequency=frequency)
         self.telemetry.start()
+        # The jog controller owns the cadence of continuous motion. The browser
+        # only ever tells it what velocity is wanted; it decides when to send.
+        self.jog = JogController(self.controller)
+        self.jog.start()
         self.enabled = True
         return {"ok": True, "host": host, "envelope": env.as_dict()}
 
@@ -250,6 +256,12 @@ class URService:
         return st
 
     def stop(self) -> None:
+        if self.jog:
+            try:
+                self.jog.shutdown()
+            except Exception:
+                pass
+            self.jog = None
         if self.telemetry:
             try:
                 self.telemetry.stop()
@@ -282,6 +294,38 @@ def handle_message(data: dict) -> dict | None:
     t = data.get("type")
     if not isinstance(t, str):
         return None
+
+    # Jog first, and deliberately cheap: a lock and six floats. Anything that
+    # makes this path slower — a thread hop, a status query, an audit write —
+    # spends the latency budget the jog exists to protect.
+    if t == "jog_vel":
+        if UR.jog is None:
+            return {"type": "jog_res", "ok": False,
+                    "msg": "robot link not started"}
+        r = UR.jog.set_velocity(data.get("xd", []),
+                                float(data.get("ttl_ms", 400)) / 1000.0)
+        return {"type": "jog_res", "ok": r["ok"], "quiet": True}
+    if t == "jog_stop":
+        if UR.jog is None:
+            return {"type": "jog_res", "ok": False, "msg": "robot link not started"}
+        return {"type": "jog_res", **UR.jog.stop(), "quiet": True}
+    if t == "jog_halt":
+        if UR.jog is None:
+            return {"type": "jog_res", "ok": False, "msg": "robot link not started"}
+        return {"type": "jog_res", **UR.jog.halt()}
+    if t == "jog_status":
+        return {"type": "jog_status_res",
+                **(UR.jog.status() if UR.jog else {"running": False})}
+    if t == "jog_step":
+        if UR.controller is None:
+            return {"type": "jog_step_res", "ok": False,
+                    "error": "robot link not started"}
+        pose = (UR.state() or {}).get("actual_TCP_pose")
+        return {"type": "jog_step_res",
+                **jog_step(UR.controller, pose, data.get("axis", "x"),
+                           float(data.get("distance_mm", 1.0)),
+                           data.get("frame", "base"),
+                           float(data.get("speed", 0.05)))}
 
     if t == "ur_service_status":
         return {"type": "ur_service_status", **UR.status()}
