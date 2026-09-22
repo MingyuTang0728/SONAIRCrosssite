@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SONAIR Inspection Console</title>
+<style>
+/* ===========================================================================
+   Operator console. Built for someone on a shop floor, not for a developer:
+   plain words, large targets, every number carries its unit, and nothing on
+   screen is raw JSON or a stack trace. Diagnostics live in the agent's log
+   window where an engineer can read them.
+   =========================================================================== */
+:root{
+  --bg:#0d1117; --surface:#161b22; --surface-2:#1c232d; --raised:#222b36;
+  --line:#2b3441; --line-strong:#3d4956;
+  --text:#e6edf3; --text-2:#9fb0c0; --text-3:#6e7f90;
+  --accent:#2f81f7; --accent-dim:#1f5fb8;
+  --ok:#3fb950; --ok-bg:rgba(63,185,80,.12);
+  --warn:#d29922; --warn-bg:rgba(210,153,34,.12);
+  --bad:#f85149; --bad-bg:rgba(248,81,73,.12);
+  --idle:#6e7f90;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:"Segoe UI",Inter,-apple-system,system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+     font-size:14px;line-height:1.5;overflow:hidden}
+button{font:inherit;cursor:pointer}
+input,select{font:inherit}
+
+/* ---------- shell ---------- */
+.shell{display:flex;flex-direction:column;height:100vh}
+
+header.top{display:flex;align-items:center;gap:20px;padding:10px 18px;
+  background:var(--surface);border-bottom:1px solid var(--line);flex:none}
+header.top .brand{display:flex;align-items:baseline;gap:10px}
+header.top h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.01em}
+header.top .sub{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em}
+.lamps{display:flex;gap:8px;margin-left:auto}
+.lamp{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:7px;
+  background:var(--surface-2);border:1px solid var(--line);min-width:150px}
+.lamp i{width:10px;height:10px;border-radius:50%;background:var(--idle);flex:none;
+  box-shadow:0 0 0 3px rgba(110,127,144,.15)}
+.lamp.ok i{background:var(--ok);box-shadow:0 0 0 3px var(--ok-bg)}
+.lamp.warn i{background:var(--warn);box-shadow:0 0 0 3px var(--warn-bg)}
+.lamp.bad i{background:var(--bad);box-shadow:0 0 0 3px var(--bad-bg)}
+.lamp .lt{font-size:10px;color:var(--text-3);text-transform:uppercase;letter-spacing:.08em}
+.lamp .lv{font-size:12.5px;font-weight:600}
+
+.body{display:flex;flex:1;min-height:0}
+
+/* ---------- step rail ---------- */
+nav.rail{width:196px;flex:none;background:var(--surface);
+  border-right:1px solid var(--line);padding:12px 10px;overflow-y:auto}
+nav.rail .step{display:flex;gap:11px;align-items:flex-start;width:100%;
+  background:none;border:none;color:var(--text-2);text-align:left;
+  padding:11px 10px;border-radius:8px;margin-bottom:3px}
+nav.rail .step:hover{background:var(--surface-2);color:var(--text)}
+nav.rail .step[aria-current="true"]{background:var(--accent);color:#fff}
+nav.rail .step[aria-current="true"] .n{background:rgba(255,255,255,.22);color:#fff}
+nav.rail .step[aria-current="true"] small{color:rgba(255,255,255,.8)}
+nav.rail .n{width:22px;height:22px;border-radius:50%;background:var(--raised);
+  color:var(--text-2);font-size:12px;font-weight:700;display:flex;
+  align-items:center;justify-content:center;flex:none;margin-top:1px}
+nav.rail .lbl{display:block;font-size:13.5px;font-weight:600;line-height:1.3}
+nav.rail small{display:block;font-size:10.5px;color:var(--text-3);margin-top:2px;line-height:1.35}
+nav.rail .estop{width:100%;margin-top:14px;padding:13px;border-radius:8px;
+  background:var(--bad);border:none;color:#fff;font-weight:700;font-size:13px;
+  letter-spacing:.04em}
+nav.rail .estop:hover{filter:brightness(1.12)}
+
+/* ---------- pages ---------- */
+main.page{flex:1;min-width:0;overflow-y:auto;padding:20px 24px}
+main.page[hidden]{display:none}
+.page h2{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:-.01em}
+.page .lead{color:var(--text-2);margin:0 0 20px;max-width:70ch;font-size:13.5px}
+section.block{background:var(--surface);border:1px solid var(--line);
+  border-radius:10px;padding:16px 18px;margin-bottom:14px}
+section.block > h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;
+  letter-spacing:.09em;color:var(--text-3);font-weight:650;
+  display:flex;align-items:center;gap:8px}
+section.block > h3 .tag{margin-left:auto;font-size:10px;padding:2px 8px;
+  border-radius:20px;background:var(--raised);color:var(--text-2);
+  text-transform:none;letter-spacing:0;font-weight:600}
+.grid{display:grid;gap:12px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:1100px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+
+/* ---------- readouts ---------- */
+.tile{background:var(--surface-2);border:1px solid var(--line);
+  border-radius:8px;padding:11px 13px}
+.tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--text-3);font-weight:600;margin-bottom:4px}
+.tile .v{font-size:21px;font-weight:650;font-variant-numeric:tabular-nums;
+  font-family:var(--mono);letter-spacing:-.02em}
+.tile .u{font-size:12px;color:var(--text-2);font-weight:500;margin-left:3px;font-family:var(--sans)}
+.tile .d{font-size:11px;color:var(--text-3);margin-top:3px}
+.tile.ok .v{color:var(--ok)} .tile.warn .v{color:var(--warn)} .tile.bad .v{color:var(--bad)}
+
+table.data{width:100%;border-collapse:collapse;font-size:13px}
+table.data th{font-size:10px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--text-3);font-weight:650;text-align:left;padding:6px 9px;
+  border-bottom:1px solid var(--line-strong)}
+table.data td{padding:7px 9px;border-bottom:1px solid var(--line)}
+table.data td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+table.data tbody tr:last-child td{border-bottom:none}
+table.data tbody tr:hover{background:var(--surface-2)}
+
+/* ---------- controls ---------- */
+.btn{padding:9px 15px;border-radius:7px;border:1px solid var(--line-strong);
+  background:var(--raised);color:var(--text);font-size:13px;font-weight:550}
+.btn:hover:not(:disabled){border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover:not(:disabled){filter:brightness(1.12)}
+.btn.go{background:var(--ok);border-color:var(--ok);color:#06210d}
+.btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.btn.big{padding:13px 22px;font-size:14.5px;font-weight:650}
+.btn.wide{width:100%}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--text-3);font-weight:600}
+.field input,.field select{padding:8px 10px;border-radius:6px;
+  border:1px solid var(--line-strong);background:var(--bg);color:var(--text);width:100%}
+.field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.hint{font-size:12px;color:var(--text-3);margin-top:8px;line-height:1.5}
+.hint.warn{color:var(--warn)}
+.note{padding:10px 13px;border-radius:7px;font-size:12.5px;line-height:1.55;margin-top:10px}
+.note.ok{background:var(--ok-bg);color:#8adf9c} 
+.note.warn{background:var(--warn-bg);color:#e8c66a}
+.note.bad{background:var(--bad-bg);color:#ff9d96}
+.note.info{background:var(--surface-2);color:var(--text-2)}
+
+/* ---------- step chips inside a page ---------- */
+.flow{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.flow .fs{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:20px;
+  background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--text-3)}
+.flow .fs b{width:17px;height:17px;border-radius:50%;background:var(--raised);
+  font-size:10px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
+.flow .fs.done{border-color:var(--ok);color:var(--ok)}
+.flow .fs.done b{background:var(--ok);color:#06210d}
+.flow .fs.active{border-color:var(--accent);color:#fff;background:var(--accent-dim)}
+.flow .fs.active b{background:#fff;color:var(--accent)}
+
+/* ---------- viewport (3D + inspection canvas) ---------- */
+.viewport{position:relative;background:#0a0e13;border:1px solid var(--line);
+  border-radius:9px;overflow:hidden}
+.viewport .vlabel{position:absolute;top:9px;left:11px;font-size:10px;
+  text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);
+  background:rgba(13,17,23,.82);padding:3px 8px;border-radius:4px;z-index:3;pointer-events:none}
+.viewport .vtools{position:absolute;top:7px;right:8px;display:flex;gap:5px;z-index:3}
+.viewport .vtools .btn{padding:5px 10px;font-size:11.5px}
+.viewport .empty{position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:8px;color:var(--text-3);
+  font-size:13px;text-align:center;padding:26px;z-index:2}
+#stage3d{width:100%;height:400px;display:block}
+#inspCanvas{display:block;width:100%;background:#0a0e13;cursor:crosshair}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--text-2);
+  padding:9px 12px;background:var(--surface-2);border-radius:7px;margin-top:9px}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:12px;height:3px;border-radius:2px;display:inline-block}
+.legend i.dot{width:9px;height:9px;border-radius:50%}
+
+/* ---------- jog ---------- */
+.jogwrap{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
+@media(max-width:980px){.jogwrap{grid-template-columns:1fr}}
+.pads{display:flex;gap:16px;flex-wrap:wrap}
+.pad{text-align:center}
+.pad .pname{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--text-3);margin-bottom:6px;font-weight:600}
+.pad .disc{width:132px;height:132px;border-radius:50%;background:radial-gradient(
+  circle at 50% 42%,#18222c 0%,#0d141b 72%);border:2px solid var(--line-strong);
+  position:relative;touch-action:none;cursor:grab}
+.pad .disc:active{cursor:grabbing}
+.pad .disc::before,.pad .disc::after{content:"";position:absolute;background:var(--line);}
+.pad .disc::before{left:50%;top:9px;bottom:9px;width:1px;transform:translateX(-.5px)}
+.pad .disc::after{top:50%;left:9px;right:9px;height:1px;transform:translateY(-.5px)}
+.pad .knob{position:absolute;width:42px;height:42px;border-radius:50%;
+  left:50%;top:50%;transform:translate(-50%,-50%);
+  background:radial-gradient(circle at 42% 34%,#4ad18a,#1d8a55);
+  border:1px solid #6fe3a6;box-shadow:0 3px 12px rgba(0,0,0,.6);pointer-events:none}
+.pad .ax{font-size:10px;color:var(--text-3);margin-top:6px;font-family:var(--mono)}
+.joints{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+@media(max-width:700px){.joints{grid-template-columns:repeat(2,1fr)}}
+.jcard{background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+  padding:8px 9px;display:grid;grid-template-columns:26px 1fr 1fr;gap:6px;align-items:center}
+.jcard .jn{font-size:11px;font-weight:700;color:var(--text-2);font-family:var(--mono)}
+.jcard button{padding:7px 0;border-radius:5px;border:1px solid var(--line-strong);
+  background:var(--raised);color:var(--text);font-size:15px;font-weight:700;line-height:1}
+.jcard button:hover{border-color:var(--accent)}
+.jval{grid-column:1/-1;font-family:var(--mono);font-size:11px;color:var(--text-3);
+  text-align:center;font-variant-numeric:tabular-nums}
+
+.speedrow{display:flex;align-items:center;gap:11px;margin-top:12px}
+.speedrow input[type=range]{flex:1;accent-color:var(--accent)}
+.speedrow .sv{font-family:var(--mono);font-size:13px;min-width:74px;text-align:right}
+
+/* ---------- misc ---------- */
+.dev{display:flex;gap:12px;align-items:flex-start;padding:13px;border-radius:8px;
+  background:var(--surface-2);border:1px solid var(--line)}
+.dev .ic{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;
+  justify-content:center;font-size:19px;flex:none;background:var(--raised)}
+.dev.ok .ic{background:var(--ok-bg)} .dev.bad .ic{background:var(--bad-bg)}
+.dev.warn .ic{background:var(--warn-bg)}
+.dev .dt{font-size:13.5px;font-weight:650;margin-bottom:2px}
+.dev .dd{font-size:12px;color:var(--text-2);line-height:1.5}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line-strong);
+  border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;
+  vertical-align:-1px;margin-right:5px}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<header class="top">
+  <div class="brand">
+    <h1>SONAIR Inspection Console</h1>
+    <span class="sub">UR5e &middot; RealSense &middot; IMU</span>
+  </div>
+  <div class="lamps">
+    <div class="lamp" id="lampRobot"><i></i><div><div class="lt">Robot</div><div class="lv" id="lampRobotV">Not connected</div></div></div>
+    <div class="lamp" id="lampCam"><i></i><div><div class="lt">Camera</div><div class="lv" id="lampCamV">Not connected</div></div></div>
+    <div class="lamp" id="lampImu"><i></i><div><div class="lt">Motion sensor</div><div class="lv" id="lampImuV">Not connected</div></div></div>
+  </div>
+</header>
+
+<div class="body">
+<nav class="rail">
+  <button class="step" data-page="connect" aria-current="true">
+    <span class="n">1</span><span><span class="lbl">Connect</span><small>Link the cell</small></span></button>
+  <button class="step" data-page="robot">
+    <span class="n">2</span><span><span class="lbl">Robot</span><small>Move &amp; monitor</small></span></button>
+  <button class="step" data-page="inspect">
+    <span class="n">3</span><span><span class="lbl">Inspect</span><small>Scan &amp; find</small></span></button>
+  <button class="step" data-page="record">
+    <span class="n">4</span><span><span class="lbl">Record</span><small>Capture a run</small></span></button>
+  <button class="estop" id="btnEstop">STOP ROBOT</button>
+  <div class="hint" style="padding:0 4px">Software stop only. The physical
+  e-stop is the safety device.</div>
+</nav>
+
+<!-- ==================== 1. CONNECT ==================== -->
+<main class="page" id="page-connect">
+  <h2>Connect the cell</h2>
+  <p class="lead">Start the host agent on this PC, then link it below. Each device
+  is independent &mdash; a camera fault does not stop the robot.</p>
+
+  <section class="block">
+    <h3>Host agent</h3>
+    <div class="row">
+      <div class="field" style="flex:1;min-width:230px">
+        <label>Agent address</label>
+        <input id="wsUrl" value="ws://127.0.0.1:8765"/>
+      </div>
+      <button class="btn primary big" id="btnConnect" style="align-self:flex-end">Connect</button>
+    </div>
+    <div class="note info" id="connMsg">Not connected.</div>
+  </section>
+
+  <section class="block">
+    <h3>Devices</h3>
+    <div class="grid g3">
+      <div class="dev" id="devRobot"><div class="ic">&#129302;</div>
+        <div><div class="dt">Robot arm</div><div class="dd" id="devRobotD">Waiting for the agent.</div></div></div>
+      <div class="dev" id="devCam"><div class="ic">&#128247;</div>
+        <div><div class="dt">Depth camera</div><div class="dd" id="devCamD">Waiting for the agent.</div></div></div>
+      <div class="dev" id="devImu"><div class="ic">&#128336;</div>
+        <div><div class="dt">Motion sensor</div><div class="dd" id="devImuD">Waiting for the agent.</div></div></div>
+    </div>
+  </section>
+
+  <section class="block" id="blkCamSetup">
+    <h3>Camera setup <span class="tag" id="camModeTag">&mdash;</span></h3>
+    <div class="grid g4">
+      <div class="field"><label>Depth resolution</label><select id="camDepthRes"><option>Connect first</option></select></div>
+      <div class="field"><label>Depth rate</label><select id="camDepthFps"></select></div>
+      <div class="field"><label>Colour resolution</label><select id="camColorRes"><option>Connect first</option></select></div>
+      <div class="field"><label>Colour rate</label><select id="camColorFps"></select></div>
+    </div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn" id="btnCamApply">Apply</button>
+      <button class="btn" id="btnCamQuality">Check depth quality</button>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2)">
+        <input type="checkbox" id="camLaser" checked/> Laser projector on</label>
+    </div>
+    <div class="grid g4" style="margin-top:12px">
+      <div class="tile"><div class="k">Usable pixels</div><div class="v" id="qFill">&mdash;</div><div class="d">across the frame</div></div>
+      <div class="tile"><div class="k">Centre coverage</div><div class="v" id="qFillRoi">&mdash;</div><div class="d">where the part sits</div></div>
+      <div class="tile"><div class="k">Distance</div><div class="v" id="qDist">&mdash;</div><div class="d">to what is in the middle</div></div>
+      <div class="tile"><div class="k">Depth noise</div><div class="v" id="qNoise">&mdash;</div><div class="d">smaller is better</div></div>
+    </div>
+    <div class="note info" id="camMsg">Only modes this camera supports are offered.
+    The laser projector is needed on machined metal &mdash; a bare metal face has
+    almost no texture for the depth sensor to work with.</div>
+  </section>
+</main>
+
+<!-- ==================== 2. ROBOT ==================== -->
+<main class="page" id="page-robot" hidden>
+  <h2>Robot</h2>
+  <p class="lead">Live position, forces and health. Jog with the pads &mdash; motion
+  stops the moment you let go.</p>
+
+  <div class="grid g2" style="align-items:start">
+    <section class="block" style="margin:0">
+      <h3>Cell view</h3>
+      <div class="viewport">
+        <div class="vlabel">Preview &mdash; not a measurement</div>
+        <div class="vtools">
+          <button class="btn" id="btn3dFit">Fit</button>
+          <button class="btn" id="btn3dPath">Show path</button>
+        </div>
+        <canvas id="stage3d"></canvas>
+        <div class="empty" id="stage3dEmpty">Loading the robot model&hellip;</div>
+      </div>
+    </section>
+
+    <section class="block" style="margin:0">
+      <h3>Tool position</h3>
+      <div class="grid g3">
+        <div class="tile"><div class="k">X</div><div class="v" id="tX">&mdash;</div><div class="d">mm</div></div>
+        <div class="tile"><div class="k">Y</div><div class="v" id="tY">&mdash;</div><div class="d">mm</div></div>
+        <div class="tile"><div class="k">Z</div><div class="v" id="tZ">&mdash;</div><div class="d">mm</div></div>
+      </div>
+      <h3 style="margin-top:16px">Force on the tool</h3>
+      <div class="grid g2">
+        <div class="tile" id="tileForce"><div class="k">Push / pull</div>
+          <div class="v" id="tForce">&mdash;<span class="u">N</span></div>
+          <div class="d">total force at the tool</div></div>
+        <div class="tile"><div class="k">Twist</div>
+          <div class="v" id="tTorque">&mdash;<span class="u">Nm</span></div>
+          <div class="d">total torque at the tool</div></div>
+      </div>
+      <h3 style="margin-top:16px">Health</h3>
+      <div class="grid g2">
+        <div class="tile"><div class="k">State</div><div class="v" id="tMode" style="font-size:15px">&mdash;</div></div>
+        <div class="tile"><div class="k">Safety</div><div class="v" id="tSafety" style="font-size:15px">&mdash;</div></div>
+        <div class="tile"><div class="k">Hottest joint</div><div class="v" id="tTemp">&mdash;<span class="u">&deg;C</span></div></div>
+        <div class="tile"><div class="k">Speed setting</div><div class="v" id="tSpeed">&mdash;<span class="u">%</span></div></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="block">
+    <h3>Jog <span class="tag">hold to move &middot; release to stop</span></h3>
+    <div class="jogwrap">
+      <div class="pads">
+        <div class="pad"><div class="pname">Across the table</div>
+          <div class="disc" id="padXY"><div class="knob"></div></div>
+          <div class="ax">left / right &middot; forward / back</div></div>
+        <div class="pad"><div class="pname">Up &amp; rotate</div>
+          <div class="disc" id="padZR"><div class="knob"></div></div>
+          <div class="ax">up / down &middot; turn</div></div>
+      </div>
+      <div>
+        <div class="joints" id="jointCards"></div>
+        <div class="speedrow">
+          <span style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">Speed</span>
+          <input type="range" id="jogSpeed" min="5" max="120" value="40"/>
+          <span class="sv" id="jogSpeedV">40 mm/s</span>
+        </div>
+        <div class="note warn" id="jogMsg">Put the teach pendant in Remote Control
+        before jogging from here. In Local mode the robot ignores the command and
+        the console can only report a timeout.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="block">
+    <h3>All joint data</h3>
+    <table class="data">
+      <thead><tr><th>Joint</th><th class="n">Angle</th><th class="n">Speed</th>
+        <th class="n">Current</th><th class="n">Torque</th><th class="n">Temperature</th></tr></thead>
+      <tbody id="jointTable"><tr><td colspan="6" style="color:var(--text-3)">No data yet.</td></tr></tbody>
+    </table>
+  </section>
+
+  <section class="block">
+    <h3>Electrical &amp; input/output</h3>
+    <div class="grid g4" id="elecTiles"></div>
+    <div style="margin-top:14px">
+      <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600;margin-bottom:6px">Inputs</div>
+      <div class="row" id="ioIn"></div>
+      <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600;margin:11px 0 6px">Outputs &mdash; click to switch</div>
+      <div class="row" id="ioOut"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ==================== 3. INSPECT ==================== -->
+<main class="page" id="page-inspect" hidden>
+  <h2>Inspect a component</h2>
+  <p class="lead">Put the part on the fixture under the camera, then work down
+  the four steps. The picture updates at every stage so you can see what the
+  system found before the robot moves.</p>
+
+  <div class="flow" id="inspFlow">
+    <div class="fs active" data-fs="1"><b>1</b>Find the part</div>
+    <div class="fs" data-fs="2"><b>2</b>Plan the scan</div>
+    <div class="fs" data-fs="3"><b>3</b>Look for problems</div>
+    <div class="fs" data-fs="4"><b>4</b>Run it</div>
+  </div>
+
+  <div class="grid g2" style="align-items:start">
+    <section class="block" style="margin:0">
+      <h3>View <span class="tag" id="inspViewTag">live</span></h3>
+      <div class="viewport">
+        <div class="vtools">
+          <button class="btn" id="btnViewColor">Colour</button>
+          <button class="btn" id="btnViewDepth">Depth</button>
+        </div>
+        <canvas id="inspCanvas" width="640" height="480"></canvas>
+        <div class="empty" id="inspEmpty">Connect the camera to see the part.</div>
+      </div>
+      <div class="legend">
+        <span><i style="background:#3fb950"></i> part outline</span>
+        <span><i style="background:#2f81f7"></i> planned path</span>
+        <span><i class="dot" style="background:#f0883e"></i> surface change</span>
+        <span><i class="dot" style="background:#f85149"></i> surface mark</span>
+      </div>
+    </section>
+
+    <div>
+      <section class="block">
+        <h3>1 &middot; Find the part</h3>
+        <div class="grid g2">
+          <div class="field"><label>Ignore anything flatter than</label>
+            <input id="ipHeight" type="number" value="5" step="1"/></div>
+          <div class="field"><label>Look no further than</label>
+            <input id="ipRange" type="number" value="1.2" step="0.1"/></div>
+        </div>
+        <div class="hint">Millimetres, and metres. The part is separated from the
+        fixture by height, not by colour &mdash; a part and its fixture are often
+        the same metal under the same light.</div>
+        <button class="btn primary wide" id="btnLocate" style="margin-top:10px">Find the part</button>
+        <div class="grid g3" style="margin-top:11px">
+          <div class="tile"><div class="k">Size</div><div class="v" id="ipSize" style="font-size:15px">&mdash;</div><div class="d">mm</div></div>
+          <div class="tile"><div class="k">Height</div><div class="v" id="ipHgt" style="font-size:15px">&mdash;</div><div class="d">mm above fixture</div></div>
+          <div class="tile"><div class="k">Measured area</div><div class="v" id="ipArea" style="font-size:15px">&mdash;</div><div class="d">mm&sup2;</div></div>
+        </div>
+        <div class="note info" id="locMsg">Not run yet.</div>
+      </section>
+
+      <section class="block">
+        <h3>2 &middot; Plan the scan</h3>
+        <div class="grid g2">
+          <div class="field"><label>Pattern</label>
+            <select id="ipMode"><option value="raster">Cover the whole face</option>
+              <option value="contour">Follow the edge</option></select></div>
+          <div class="field"><label>Sensor height above part</label>
+            <input id="ipStandoff" type="number" value="100" step="5"/></div>
+          <div class="field"><label>Line spacing</label>
+            <input id="ipSpacing" type="number" value="5" step="1"/></div>
+          <div class="field"><label>Keep away from the edge</label>
+            <input id="ipMargin" type="number" value="5" step="1"/></div>
+        </div>
+        <div class="hint">All in millimetres.</div>
+        <button class="btn primary wide" id="btnPlan" style="margin-top:10px">Plan the scan</button>
+        <div class="grid g3" style="margin-top:11px">
+          <div class="tile"><div class="k">Points</div><div class="v" id="ipPts" style="font-size:15px">&mdash;</div></div>
+          <div class="tile"><div class="k">Path length</div><div class="v" id="ipLen" style="font-size:15px">&mdash;</div><div class="d">mm</div></div>
+          <div class="tile"><div class="k">Estimated time</div><div class="v" id="ipTime" style="font-size:15px">&mdash;</div><div class="d">at the set speed</div></div>
+        </div>
+        <div class="note info" id="planMsg">Find the part first.</div>
+      </section>
+
+      <section class="block">
+        <h3>3 &middot; Look for problems</h3>
+        <div class="grid g3">
+          <div class="field"><label>Surface step over</label><input id="ipDepthTh" type="number" value="1.5" step="0.1"/></div>
+          <div class="field"><label>Mark darkness over</label><input id="ipVisTh" type="number" value="22" step="1"/></div>
+          <div class="field"><label>Ignore smaller than</label><input id="ipMinArea" type="number" value="0.5" step="0.1"/></div>
+        </div>
+        <div class="hint">Millimetres, 0&ndash;255, and mm&sup2;.</div>
+        <button class="btn primary wide" id="btnDetect" style="margin-top:10px">Look for problems</button>
+        <div class="grid g3" style="margin-top:11px">
+          <div class="tile"><div class="k">Places to check</div><div class="v" id="ipNCand">&mdash;</div></div>
+          <div class="tile"><div class="k">Surface changes</div><div class="v" id="ipNSurf">&mdash;</div></div>
+          <div class="tile"><div class="k">Surface marks</div><div class="v" id="ipNVis">&mdash;</div></div>
+        </div>
+        <table class="data" style="margin-top:11px">
+          <thead><tr><th>#</th><th>What</th><th class="n">Size</th><th class="n">Amount</th><th class="n">Priority</th></tr></thead>
+          <tbody id="candTable"><tr><td colspan="5" style="color:var(--text-3)">Not run yet.</td></tr></tbody>
+        </table>
+        <div class="note warn" id="detMsg">These are places worth checking, not
+        confirmed defects. The camera cannot see below the surface, and it cannot
+        tell a scratch from a wipe mark. Use them to decide where to look closely.</div>
+      </section>
+
+      <section class="block">
+        <h3>4 &middot; Run the scan</h3>
+        <button class="btn go wide big" id="btnRunScan" disabled>Run the planned scan</button>
+        <div class="note warn" style="margin-top:10px">The arm will move through
+        every point. Check the area is clear first.</div>
+        <div class="note info" id="runMsg">Plan a scan first.</div>
+      </section>
+    </div>
+  </div>
+</main>
+
+<!-- ==================== 4. RECORD ==================== -->
+<main class="page" id="page-record" hidden>
+  <h2>Record a run</h2>
+  <p class="lead">Captures robot position and motion-sensor data together, for
+  the sim-to-real comparison. One file per run.</p>
+
+  <section class="block">
+    <h3>What this run is</h3>
+    <div class="grid g3">
+      <div class="field"><label>Elbow speed (rad/s)</label><input id="rcVel" type="number" value="0.4" step="0.1"/></div>
+      <div class="field"><label>Arm posture</label><select id="rcConfig">
+        <option value="mid_workspace">Mid workspace</option>
+        <option value="near_singular">Near singular</option>
+        <option value="extended">Extended</option></select></div>
+      <div class="field"><label>Movement type</label><select id="rcTraj">
+        <option value="contour">Contour</option><option value="point_to_point">Point to point</option>
+        <option value="stop_start">Stop &amp; start</option></select></div>
+      <div class="field"><label>Repeat number</label><input id="rcRepeat" type="number" value="0" step="1"/></div>
+      <div class="field"><label>Calibration version</label><input id="rcCalib" value="calib-1"/></div>
+      <div class="field"><label>Samples per second</label><input id="rcRate" type="number" value="125" step="5"/></div>
+    </div>
+    <div class="row" style="margin-top:13px">
+      <button class="btn go big" id="btnRecStart">Start recording</button>
+      <button class="btn danger big" id="btnRecStop" disabled>Stop</button>
+      <button class="btn" id="btnTap">Check sensor timing</button>
+    </div>
+    <div class="grid g3" style="margin-top:13px">
+      <div class="tile"><div class="k">Recording</div><div class="v" id="rcName" style="font-size:14px">&mdash;</div></div>
+      <div class="tile"><div class="k">Samples saved</div><div class="v" id="rcN">0</div></div>
+      <div class="tile"><div class="k">Timing spread</div><div class="v" id="rcTap">&mdash;<span class="u">ms</span></div><div class="d">across sensors</div></div>
+    </div>
+    <div class="note info" id="rcMsg">Not recording.</div>
+  </section>
+</main>
+</div></div>
+
+<script src="vendor/three/three.min.js"></script>
+<script src="vendor/three/OrbitControls.js"></script>
+<script src="vendor/three/GLTFLoader.js"></script>
+<script src="console.js"></script>
+</body>
+</html>

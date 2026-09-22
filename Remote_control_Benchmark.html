@@ -1915,137 +1915,169 @@ clustering, PCA localisation and height-field path planning. numpy only.</p>
 
 <div class="right-columns">
 <div class="col-panel" id="col-sensor">
-<div class="panel-content" style="padding: 6px;">
-<div class="group" style="border-color: #30363d;">
-<div class="group-hd" style="background:#161b22; font-size: 12px;">
-<span>Intel RealSense D435I</span>
-<span style="color:#8b949e;">☍ 3.2</span>
+<div class="panel-content" style="padding:6px;">
+
+<!-- ================= 1. DEVICE ================= -->
+<div class="group" id="camDeviceGroup" style="border-color:#30363d;">
+<div class="group-hd" style="background:#161b22;font-size:12px;">
+  <span>Camera &mdash; device</span>
+  <span class="rs-status-dot" id="camDot" style="color:#484f58;">&bull;</span>
 </div>
-<div class="group-bd" style="padding-top:0;">
-<div class="rs-module-hd">
-<span>▼ Stereo Module</span>
-<span class="rs-status-dot on" id="rsStereoStatus">•</span>
-</div>
-<div class="rs-indent">
-<div class="field-row">
-<span class="rs-sub-label">Resolution:</span>
-<select id="rsStereoRes" style="flex:1;">
-<option value="848x480">848 x 480</option>
-<option selected="" value="640x480">640 x 480</option>
-<option value="424x240">424 x 240</option>
-</select>
-</div>
-<div class="field-row">
-<span class="rs-sub-label">Frame Rate (FPS):</span>
-<select id="rsStereoFps" style="flex:1;">
-<option value="90">90</option>
-<option value="60">60</option>
-<option selected="" value="30">30</option>
-<option value="15">15</option>
-</select>
-</div>
-<div class="muted-text" style="margin-top:4px;">Available Streams:</div>
-<div class="field-row">
-<label class="field-label"><input checked="" id="rsDepthStreamChk" type="checkbox"/> Depth</label>
-<select style="width:70px;"><option>Z16</option></select>
-</div>
-<div class="field-row">
-<label class="field-label"><input id="rsIr1Chk" type="checkbox"/> Infrared 1</label>
-</div>
-<div class="field-row">
-<label class="field-label"><input id="rsIr2Chk" type="checkbox"/> Infrared 2</label>
-</div>
-<div class="field-row" style="margin-top:6px;">
-<span class="rs-sub-label">Emitter Enabled:</span>
-<select id="rsEmitter" style="flex:1;">
-<option selected="" value="laser">Laser</option>
-<option value="off">Off</option>
-</select>
-</div>
-<div class="field-row" style="margin-top:4px;">
-<label class="field-label"><input checked="" id="rsDepthAeChk" type="checkbox"/> Enable Auto Exposure</label>
-</div>
-<div class="field-row" style="margin-top:4px;">
-<label class="field-label">▶ Post-Processing</label>
-<input checked="" id="rsDepthPpChk" style="accent-color: #ff7b72;" type="checkbox"/>
+<div class="group-bd" style="padding-top:6px;">
+  <div id="camDeviceBox" class="cam-box">Not probed yet.</div>
+  <button class="btn full" id="camProbeBtn" style="margin-top:5px;">Probe camera</button>
+  <div class="cam-note">Reads identity, USB generation and every stream mode the
+  device actually supports. Run it after plugging in or changing ports.</div>
 </div>
 </div>
-<div class="rs-module-hd">
-<span>▼ RGB Camera</span>
-<span class="rs-status-dot on" id="rsRgbStatus">•</span>
+
+<!-- ================= 2. STREAMS ================= -->
+<div class="group" style="border-color:#30363d;margin-top:6px;">
+<div class="group-hd" style="background:#161b22;font-size:12px;">
+  <span>Streams</span><span class="badge" id="camStreamBadge">IDLE</span>
 </div>
-<div class="rs-indent">
-<div class="field-row">
-<span class="rs-sub-label">Resolution:</span>
-<select id="rsRgbRes" style="flex:1;">
-<option value="1280x720">1280 x 720</option>
-<option value="640x480">640 x 480</option>
-<option selected="" value="640x360">640 x 360</option>
-</select>
-</div>
-<div class="field-row">
-<span class="rs-sub-label">Frame Rate (FPS):</span>
-<select id="rsRgbFps" style="flex:1;">
-<option value="60">60</option>
-<option selected="" value="30">30</option>
-</select>
-</div>
-<div class="muted-text" style="margin-top:4px;">Available Streams:</div>
-<div class="field-row">
-<label class="field-label"><input checked="" id="rsRgbStreamChk" type="checkbox"/> Color</label>
-<select style="width:70px;"><option>RGB8</option></select>
-</div>
-<div class="field-row" style="margin-top:4px;">
-<label class="field-label"><input checked="" id="rsRgbAeChk" type="checkbox"/> Enable Auto Exposure</label>
-</div>
-</div>
-<button class="btn primary full" id="applyRsConfigBtn" style="margin-top:8px;">Apply Config (Sync to Bridge)</button>
-</div>
-</div>
-<div class="group" style="border-color: #1f6feb;">
-<div class="group-hd" style="background:rgba(31,111,235,0.1);">
-                Live 2D Streams <span class="badge" id="rsStatusBadge">WAITING</span>
-</div>
-<div class="group-bd" style="padding: 6px;">
-<div style="display:flex; gap:4px; margin-bottom:4px; flex-wrap:wrap;">
-<button class="btn success" id="toggleRgbViewBtn" style="flex:1; padding:4px;">RGB ON</button>
-<button class="btn success" id="toggleDepthViewBtn" style="flex:1; padding:4px;">Depth ON</button>
-<button class="btn outline" id="toggleIr1ViewBtn" style="flex:1; padding:4px;">IR1 OFF</button>
-<button class="btn outline" id="toggleIr2ViewBtn" style="flex:1; padding:4px;">IR2 OFF</button>
-</div>
-<div id="rgbContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
-<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#52d385; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Color Stream</div>
-<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px; position:relative;">
-<img id="rsRgbImg" style="width:100%; height:100%; object-fit:contain; display:none; user-select:none; -webkit-user-drag:none;"/>
-<span id="rgbHint" style="font-size:10px; color:#8b949e;">Waiting for RGB...</span>
+<div class="group-bd" style="padding-top:6px;">
+  <table class="cam-table">
+    <thead><tr><th>Stream</th><th>Resolution</th><th>FPS</th><th>On</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Depth</td>
+        <td><select id="camDepthRes" disabled><option>probe first</option></select></td>
+        <td><select id="camDepthFps" disabled></select></td>
+        <td style="text-align:center"><input type="checkbox" id="camDepthEn" checked></td>
+      </tr>
+      <tr>
+        <td>Colour</td>
+        <td><select id="camColorRes" disabled><option>probe first</option></select></td>
+        <td><select id="camColorFps" disabled></select></td>
+        <td style="text-align:center"><input type="checkbox" id="camColorEn" checked></td>
+      </tr>
+      <tr>
+        <td>IR left</td>
+        <td colspan="2" class="cam-dim">shares the depth resolution and rate</td>
+        <td style="text-align:center"><input type="checkbox" id="camIr1En"></td>
+      </tr>
+      <tr>
+        <td>IR right</td>
+        <td colspan="2" class="cam-dim">shares the depth resolution and rate</td>
+        <td style="text-align:center"><input type="checkbox" id="camIr2En"></td>
+      </tr>
+    </tbody>
+  </table>
+  <button class="btn primary full" id="camApplyBtn" style="margin-top:6px;">Apply &amp; restart pipeline</button>
+  <div class="cam-note" id="camApplyNote">Only device-supported combinations are
+  offered. Turn IR off unless you are debugging the stereo pair &mdash; it doubles
+  the bandwidth and starves the IMU stream.</div>
 </div>
 </div>
-<div id="depthContainer" style="width:100%; margin-bottom:6px; position:relative; display:block;">
-<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#ff7b72; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Depth Stream</div>
-<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-<img id="rsDepthImg" style="width:100%; height:100%; object-fit:contain; display:none;"/>
-<span id="depthHint" style="font-size:10px; color:#8b949e;">Waiting for Depth...</span>
+
+<!-- ================= 3. DEPTH QUALITY ================= -->
+<div class="group" style="border-color:#1f6feb;margin-top:6px;">
+<div class="group-hd" style="background:rgba(31,111,235,.12);font-size:12px;">
+  <span>Depth quality</span><span class="badge" id="camFillBadge">&mdash;</span>
+</div>
+<div class="group-bd" style="padding-top:6px;">
+  <div class="status-kv" style="grid-template-columns:repeat(2,1fr);font-size:10px;">
+    <div><span class="field-label">Fill, frame</span><br/><b id="camFillAll">&mdash;</b></div>
+    <div><span class="field-label">Fill, centre</span><br/><b id="camFillRoi">&mdash;</b></div>
+    <div><span class="field-label">Median depth</span><br/><b id="camMedian">&mdash;</b></div>
+    <div><span class="field-label">Noise (&sigma;)</span><br/><b id="camNoise">&mdash;</b></div>
+  </div>
+  <button class="btn full" id="camStatsBtn" style="margin-top:5px;">Measure depth quality</button>
+  <label class="field-label" style="margin-top:4px;">
+    <input type="checkbox" id="camStatsAuto"> keep measuring every 2 s
+  </label>
+  <div class="cam-note">A stereo camera returns nothing where it cannot match,
+  and machined metal is exactly that surface. Below roughly 70% centre fill a
+  reconstruction will look right and measure wrong.</div>
 </div>
 </div>
-<div id="ir1Container" style="width:100%; margin-bottom:6px; position:relative; display:none;">
-<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 1</div>
-<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-<img id="rsIr1Img" style="width:100%; height:100%; object-fit:contain; display:none;"/>
-<span id="ir1Hint" style="font-size:10px; color:#8b949e;">Waiting for IR1...</span>
+
+<!-- ================= 4. DEPTH TUNING ================= -->
+<div class="group" style="border-color:#30363d;margin-top:6px;">
+<div class="group-hd" style="background:#161b22;font-size:12px;">Depth tuning</div>
+<div class="group-bd" style="padding-top:6px;">
+  <div class="field-row"><span class="rs-sub-label">Preset</span>
+    <select id="camPreset" style="flex:1;" disabled><option>probe first</option></select></div>
+  <div class="cam-note" style="margin:2px 0 6px;">High Accuracy discards
+  low-confidence pixels &mdash; fewer points, but the ones you get are
+  trustworthy. That is the right trade for reconstruction.</div>
+  <div class="field-row"><span class="rs-sub-label">Emitter</span>
+    <select id="camEmitter" style="flex:1;">
+      <option value="1">Laser on</option><option value="0">Off</option></select></div>
+  <div class="field-row"><span class="rs-sub-label">Laser</span>
+    <input type="range" id="camLaser" min="0" max="360" step="30" value="150" style="flex:1;" disabled>
+    <span class="field-label" id="camLaserVal" style="width:34px;">&mdash;</span></div>
+  <div class="cam-note" style="margin:2px 0 6px;">A machined face has almost no
+  natural texture; without the projected pattern there is nothing for stereo to
+  match on.</div>
+  <label class="field-label"><input type="checkbox" id="camDepthAe" checked> Depth auto-exposure</label>
+  <label class="field-label"><input type="checkbox" id="camColorAe" checked> Colour auto-exposure</label>
+  <label class="field-label"><input type="checkbox" id="camPostProc" checked> Post-processing (spatial + temporal + hole fill)</label>
 </div>
 </div>
-<div id="ir2Container" style="width:100%; position:relative; display:none;">
-<div style="position:absolute; top:2px; left:4px; font-size:9px; color:#d29922; background:rgba(0,0,0,0.6); padding:2px 4px; border-radius:2px; z-index:10;">Infrared 2</div>
-<div style="width:100%; height:120px; background:#010409; border:1px solid #30363d; display:flex; align-items:center; justify-content:center; overflow:hidden; border-radius:4px;">
-<img id="rsIr2Img" style="width:100%; height:100%; object-fit:contain; display:none;"/>
-<span id="ir2Hint" style="font-size:10px; color:#8b949e;">Waiting for IR2...</span>
+
+<!-- ================= 5. LIVE VIEW ================= -->
+<div class="group" style="border-color:#30363d;margin-top:6px;">
+<div class="group-hd" style="background:#161b22;font-size:12px;">
+  <span>Live view</span><span class="badge" id="rsStatusBadge">WAITING</span>
+</div>
+<div class="group-bd" style="padding-top:6px;">
+  <div class="cam-viewtabs">
+    <button class="btn" id="camViewColor" data-view="color">Colour</button>
+    <button class="btn" id="camViewDepth" data-view="depth">Depth</button>
+    <button class="btn" id="camViewIr1" data-view="ir1">IR L</button>
+    <button class="btn" id="camViewIr2" data-view="ir2">IR R</button>
+  </div>
+
+  <div id="rgbContainer" class="cam-pane">
+    <div class="cam-pane-label">Colour</div>
+    <img id="rsRgbImg" style="width:100%;display:none;"/>
+    <div id="rgbHint" class="cam-hint">Waiting for colour&hellip;</div>
+  </div>
+  <div id="depthContainer" class="cam-pane" style="display:none;">
+    <div class="cam-pane-label">Depth &mdash; click to read metric depth</div>
+    <img id="rsDepthImg" style="width:100%;display:none;cursor:crosshair;"/>
+    <div id="depthHint" class="cam-hint">Waiting for depth&hellip;</div>
+  </div>
+  <div id="ir1Container" class="cam-pane" style="display:none;">
+    <div class="cam-pane-label">IR left</div>
+    <img id="rsIr1Img" style="width:100%;display:none;"/>
+    <div id="ir1Hint" class="cam-hint">IR left is off.</div>
+  </div>
+  <div id="ir2Container" class="cam-pane" style="display:none;">
+    <div class="cam-pane-label">IR right</div>
+    <img id="rsIr2Img" style="width:100%;display:none;"/>
+    <div id="ir2Hint" class="cam-hint">IR right is off.</div>
+  </div>
+
+  <div id="camProbeResult" class="cam-box" style="margin-top:5px;">Click the depth
+  image to read the metric depth and 3D point at that pixel.</div>
 </div>
 </div>
-<button class="btn primary full" id="captureDefectBtn" style="padding:6px; margin-top:6px;">🎯 Run AI Defect Detection</button>
+
+<!-- ================= 6. INTRINSICS ================= -->
+<div class="group" style="border-color:#30363d;margin-top:6px;">
+<div class="group-hd" style="background:#161b22;font-size:12px;">
+  <span>Intrinsics</span><span class="badge" id="camIntrBadge">&mdash;</span>
+</div>
+<div class="group-bd" style="padding-top:6px;">
+  <div id="camIntrBox" class="cam-box">Not read yet.</div>
+  <div class="cam-note">Read from the camera, never from a datasheet &mdash; a
+  datasheet value for &ldquo;the D435i&rdquo; is wrong for any individual unit.
+  3D scanning refuses to start without these.</div>
+  <button class="btn full" id="camSnapBtn" style="margin-top:5px;">Save calibration snapshot</button>
+  <div class="cam-note">Writes the current colour frame, the intrinsics and the
+  live TCP pose to one JSON &mdash; the input a hand-eye solve needs.</div>
 </div>
 </div>
+
+<button class="btn primary full" id="captureDefectBtn" style="padding:6px;margin-top:6px;">
+  Run AI Defect Detection</button>
+
 </div>
 </div>
+
 <div class="col-panel" id="col-vision">
 <div class="panel-content">
 <div class="group" style="border-color: #a371f7;">

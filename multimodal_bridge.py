@@ -66,6 +66,27 @@ except ImportError as _ve:
 # Benchmark acquisition — inertial ingestion, the time master, run recording.
 # Kept in its own module so the bridge stays responsible only for the robot.
 try:
+    import camera_negotiate
+except Exception:                # noqa: BLE001
+    camera_negotiate = None
+
+try:
+    import vision_inspect
+    _HAS_VISINSP = True
+except Exception as _vi:         # noqa: BLE001
+    _HAS_VISINSP = False
+    vision_inspect = None
+    print(f"[agent] WARNING: vision_inspect unavailable ({_vi}).")
+
+try:
+    import camera_service
+    _HAS_CAMSVC = True
+except Exception as _ce:         # noqa: BLE001
+    _HAS_CAMSVC = False
+    camera_service = None
+    print(f"[agent] WARNING: camera_service unavailable ({_ce}).")
+
+try:
     import ur_bridge_ext
     _HAS_EXT = True
 except Exception as _e:          # noqa: BLE001
@@ -157,6 +178,8 @@ global_rgb_frame   = None
 global_depth_frame = None   # D435i aligned depth (colormap, for display)
 global_depth_raw   = None   # D435i aligned depth, RAW uint16 — metric, for scan3d
 global_depth_intr  = None   # CameraIntrinsics read FROM the camera, never guessed
+_CAMERA_NOTES      = []     # mode substitutions the negotiator had to make
+_CAMERA_LAST_ERROR = ""     # last startup failure, already explained
 global_ir1_frame   = None   # D435i left IR
 global_ir2_frame   = None   # D435i right IR
 global_actual_q    = [0.0] * 6
@@ -465,6 +488,37 @@ def camera_thread():
         if cfg_snap["rgb_en"]:
             rscfg.enable_stream(rs.stream.color, rw, rh, rs.format.bgr8, rfps)
 
+        # Ask the device what it supports BEFORE starting, and substitute the
+        # nearest workable mode. Without this, one unsupported triple fails the
+        # whole config and takes depth and colour down with it — reported only
+        # as "Couldn't resolve requests", which names neither the stream nor a
+        # way out.
+        _neg_notes = []
+        try:
+            _devs = list(rs.context().query_devices())
+            if _devs and camera_negotiate is not None:
+                cfg_snap, _neg_notes = camera_negotiate.negotiate(_devs[0], cfg_snap)
+                if _neg_notes:
+                    for _n in _neg_notes:
+                        log.warning("camera: %s", _n)
+                    sw, sh = _parse_res(cfg_snap["stereo_res"])
+                    sfps   = cfg_snap["stereo_fps"]
+                    rw, rh = _parse_res(cfg_snap["rgb_res"])
+                    rfps   = cfg_snap["rgb_fps"]
+                    rscfg = rs.config()
+                    if cfg_snap["depth_en"]:
+                        rscfg.enable_stream(rs.stream.depth, sw, sh, rs.format.z16, sfps)
+                    if cfg_snap["ir1_en"]:
+                        rscfg.enable_stream(rs.stream.infrared, 1, sw, sh, rs.format.y8, sfps)
+                    if cfg_snap["ir2_en"]:
+                        rscfg.enable_stream(rs.stream.infrared, 2, sw, sh, rs.format.y8, sfps)
+                    if cfg_snap["rgb_en"]:
+                        rscfg.enable_stream(rs.stream.color, rw, rh, rs.format.bgr8, rfps)
+        except Exception as _e:
+            log.debug("mode negotiation skipped: %s", _e)
+        global _CAMERA_NOTES
+        _CAMERA_NOTES = list(_neg_notes)
+
         align      = rs.align(rs.stream.color)
         colorizer  = rs.colorizer()
         colorizer.set_option(rs.option.color_scheme, float(cfg_snap["colormap"]))
@@ -545,7 +599,17 @@ def camera_thread():
                 log.debug("rgb sensor options: %s", e)
 
         except Exception as e:
-            log.warning("camera startup failed: %s — retrying in 3 s", e)
+            detail = str(e)
+            try:
+                _devs = list(rs.context().query_devices())
+                if _devs and camera_negotiate is not None:
+                    detail = camera_negotiate.describe_failure(_devs[0], cfg_snap, e)
+            except Exception:
+                pass
+            global _CAMERA_LAST_ERROR
+            _CAMERA_LAST_ERROR = detail
+            log.warning("camera startup failed: %s", detail)
+            log.warning("retrying in 3 s")
             time.sleep(3)
             continue
 
@@ -733,6 +797,110 @@ def execute_motion(data):
 # ============================================================
 # Local face — UoN browser on same LAN connects here directly
 # ============================================================
+# ============================================================
+# Vision inspection: locate -> plan -> detect.
+# Kept as one in-process session so the locate step's working arrays (the part
+# mask and the height field) survive into detect() without being serialised
+# and sent to a browser that has no use for a 640x480 float array.
+# ============================================================
+_INSPECT = {"located": None, "plan": None, "detect": None}
+
+
+def _handeye():
+    """The camera-to-base transform, if both halves are known."""
+    if not _HAS_EXT:
+        return None
+    T_tcp_cam = ur_bridge_ext.SCAN3D.T_tcp_cam
+    if T_tcp_cam is None:
+        return None
+    with data_lock:
+        pose = list(global_tcp_pose)
+    if not pose or len(pose) < 6 or not any(pose):
+        return None
+    try:
+        import numpy as _np
+        from scan3d import pose_to_matrix
+        return pose_to_matrix(pose) @ _np.asarray(T_tcp_cam, dtype=float)
+    except Exception:
+        return None
+
+
+def _strip(d):
+    """Drop the in-process working arrays before anything is serialised."""
+    return {k: v for k, v in d.items() if not k.startswith("_")}
+
+
+def _handle_inspect(data: dict):
+    mtype = data.get("type")
+    with camera_lock:
+        depth_raw = global_depth_raw
+        color = global_rgb_frame
+        intr = global_depth_intr
+
+    if mtype == "inspect_locate":
+        if intr is None:
+            return {"type": "inspect_locate_res", "ok": False,
+                    "error": "camera intrinsics unavailable — start the depth "
+                             "stream first. They must come from the camera."}
+        T = _handeye()
+        res = vision_inspect.locate(
+            depth_raw, intr,
+            getattr(intr, "depth_scale", 0.001),
+            T_base_cam=T,
+            min_height_mm=float(data.get("min_height_mm", 5.0)),
+            max_range_m=float(data.get("max_range_m", 1.2)))
+        _INSPECT["located"] = res if res.get("ok") else None
+        out = {"type": "inspect_locate_res", **_strip(res)}
+        if res.get("ok") and T is None:
+            out["warning"] = ("no hand-eye calibration and TCP pose, so the "
+                              "outline has image coordinates only. Set the "
+                              "hand-eye transform to plan a robot path.")
+        return out
+
+    if mtype == "inspect_plan":
+        loc = _INSPECT["located"]
+        if not loc:
+            return {"type": "inspect_plan_res", "ok": False,
+                    "error": "locate the component first"}
+        res = vision_inspect.plan(
+            loc,
+            spacing_mm=float(data.get("spacing_mm", 5.0)),
+            step_mm=float(data.get("step_mm", 5.0)),
+            standoff_mm=float(data.get("standoff_mm", 100.0)),
+            margin_mm=float(data.get("margin_mm", 5.0)),
+            mode=data.get("mode", "raster"))
+        _INSPECT["plan"] = res if res.get("ok") else None
+        return {"type": "inspect_plan_res", **res}
+
+    if mtype == "inspect_detect":
+        loc = _INSPECT["located"]
+        if not loc:
+            return {"type": "inspect_detect_res", "ok": False,
+                    "error": "locate the component first"}
+        res = vision_inspect.detect(
+            color, loc, intr,
+            getattr(intr, "depth_scale", 0.001),
+            depth_thresh_mm=float(data.get("depth_thresh_mm", 1.5)),
+            visual_thresh=int(data.get("visual_thresh", 22)),
+            min_area_mm2=float(data.get("min_area_mm2", 0.5)),
+            T_base_cam=_handeye())
+        _INSPECT["detect"] = res if res.get("ok") else None
+        return {"type": "inspect_detect_res", **res}
+
+    if mtype == "inspect_status":
+        loc = _INSPECT["located"]
+        return {"type": "inspect_status_res",
+                "available": _HAS_VISINSP,
+                "has_depth": depth_raw is not None,
+                "has_color": color is not None,
+                "has_intrinsics": intr is not None,
+                "has_handeye": _handeye() is not None,
+                "located": bool(loc),
+                "planned": bool(_INSPECT["plan"]),
+                "n_candidates": (_INSPECT["detect"] or {}).get("n_total", 0)}
+    return None
+
+
 async def local_handler(websocket):
     log.info("local browser connected")
 
@@ -878,6 +1046,45 @@ async def local_handler(websocket):
                                 "agent (%s) — the config will take effect only once "
                                 "the vision dependencies are installed", _VISION_ERR)
                 continue
+            if _HAS_VISINSP and str(mtype or "").startswith("inspect_"):
+                reply = await asyncio.to_thread(_handle_inspect, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
+                continue
+
+            if _HAS_CAMSVC and mtype in ("camera_probe", "camera_stats",
+                                         "camera_point", "camera_option"):
+                with camera_lock:
+                    depth_raw = global_depth_raw
+                    intr = global_depth_intr
+                scale = (getattr(intr, "depth_scale", None)
+                         or _rs_config.get("depth_units", 0.001))
+
+                if mtype == "camera_probe":
+                    res = await asyncio.to_thread(camera_service.probe)
+                    res["intrinsics"] = camera_service.live_intrinsics(intr, scale)
+                    res["streaming"] = depth_raw is not None
+                    res["vision_available"] = _HAS_VISION
+                    res["vision_error"] = "" if _HAS_VISION else _VISION_ERR
+                    await websocket.send(json.dumps({"type": "camera_probe_res", **res}))
+                elif mtype == "camera_stats":
+                    res = camera_service.stats(depth_raw, scale,
+                                               float(data.get("roi_frac", 0.25)))
+                    await websocket.send(json.dumps({"type": "camera_stats_res", **res}))
+                elif mtype == "camera_point":
+                    res = camera_service.point(depth_raw, data.get("x", 0),
+                                               data.get("y", 0), intr, scale,
+                                               int(data.get("window", 5)))
+                    await websocket.send(json.dumps({"type": "camera_point_res", **res}))
+                else:
+                    res = await asyncio.to_thread(
+                        camera_service.set_option,
+                        data.get("sensor", "depth"),
+                        data.get("option", ""),
+                        data.get("value", 0))
+                    await websocket.send(json.dumps({"type": "camera_option_res", **res}))
+                continue
+
             if mtype == "get_camera_config":
                 # Frontend requesting current live config (e.g. on reconnect)
                 with _rs_config_lock:
