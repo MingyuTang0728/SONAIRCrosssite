@@ -85,7 +85,12 @@ than guessed at.
 
 Other transports are there because FusionHub's available outputs depend on
 version and licence: this PC connecting out over TCP, FusionHub connecting in,
-an HTTP endpoint, a COM port, or **following a file FusionHub is writing**.
+its **WebSocket Sink**, an HTTP endpoint, a COM port, or **following a file
+FusionHub is writing**.
+
+In FusionHub 0.1.x the relevant graph nodes are **TCP Output** (under
+CONNECTORS) and **WebSocket Sink**. Both accept `Any` data type, so either
+will carry the LPMS source's `Imu` output without a converter in between.
 That last one always works and produces exactly the same records, so a live
 integration is never on the critical path.
 

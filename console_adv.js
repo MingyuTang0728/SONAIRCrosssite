@@ -296,6 +296,8 @@
     "tcp-client": [["host", "FusionHub address", "text", "127.0.0.1"],
                    ["port", "Port", "number", 5005]],
     "tcp-listen": [["port", "Port to listen on", "number", 5005]],
+    "websocket-client": [["url", "WebSocket address",
+                          "text", "ws://127.0.0.1:8080"]],
     "http-poll": [["url", "Web address", "text", "http://127.0.0.1:8080/api/imu"],
                   ["rate_hz", "Readings per second", "number", 50]],
     "serial": [["port", "COM port", "text", "COM3"],

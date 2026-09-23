@@ -76,6 +76,15 @@ try:
 except Exception:                                   # pragma: no cover
     _HAS_HTTP = False
 
+try:
+    import websockets
+    _HAS_WS = True
+    _WS_ERR = ""
+except Exception as e:                              # noqa: BLE001
+    websockets = None
+    _HAS_WS = False
+    _WS_ERR = str(e)
+
 
 # Ports FusionHub and its neighbours are seen on in the field. Discovery binds
 # all of them; the cost of one extra UDP socket is nothing next to an afternoon
@@ -881,8 +890,128 @@ class FileTail(_Base):
             self._emit(line.encode(), t, rec, fmt)
 
 
+class WebSocketClient(_Base):
+    """
+    Connect to a WebSocket that FusionHub is serving.
+
+    FusionHub's WebSocket Sink accepts any data type, which makes it the one
+    output that needs no thought about what the graph is carrying — so it is
+    often the easiest to get working, and worth supporting even though TCP
+    would do the same job.
+
+    Runs its own asyncio loop on its own thread. The bridge's loop is never
+    touched: a blocking read here would stall the jog cadence, and the whole
+    point of moving that cadence to the host was to stop robot motion waiting
+    on anything that can stall.
+    """
+    kind = "websocket-client"
+
+    def __init__(self, url: str = "ws://127.0.0.1:8080", **kw):
+        super().__init__(**kw)
+        self.url = url
+        self._loop = None
+        self._ws = None
+
+    def _open(self):
+        if not _HAS_WS:
+            raise RuntimeError(f"the websockets package is not installed "
+                               f"({_WS_ERR}) — run: pip install websockets")
+
+    def _close(self):
+        """
+        Ask the reader to finish, from the caller's thread.
+
+        Deliberately NOT loop.stop(): stopping a loop out from under a running
+        coroutine leaves its tasks pending, and closing the loop then raises
+        out of them at interpreter level — a pile of tracebacks on a clean
+        disconnect, which trains the operator to ignore tracebacks. Closing the
+        socket instead lets the reader unwind normally.
+        """
+        loop, ws = self._loop, self._ws
+        if loop is None or loop.is_closed():
+            return
+        if ws is not None:
+            try:
+                import asyncio
+                asyncio.run_coroutine_threadsafe(ws.close(), loop)
+            except Exception:
+                pass
+
+    def _run(self):
+        import asyncio
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._reader())
+        except Exception as e:                      # noqa: BLE001
+            self.error = str(e)
+        finally:
+            # Let everything still in flight cancel and unwind before the loop
+            # is closed, rather than closing under it.
+            try:
+                pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._loop = None
+            self._ws = None
+
+    async def _reader(self):
+        import asyncio
+        csvp = CsvParser("raw")
+        while not self._stop.is_set():
+            try:
+                async with websockets.connect(self.url, open_timeout=4.0,
+                                              max_size=8 * 1024 * 1024) as ws:
+                    self._ws = ws
+                    self.error = ""
+                    log.info("websocket connected: %s", self.url)
+                    while not self._stop.is_set():
+                        try:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            continue
+                        t, rec, fmt = parse_payload(msg, "raw")
+                        if not rec:
+                            text = msg.decode("utf-8", "ignore") \
+                                if isinstance(msg, (bytes, bytearray)) else str(msg)
+                            for line in text.splitlines():
+                                t2, rec2 = csvp.feed(line)
+                                if rec2:
+                                    t, rec, fmt = t2, rec2, "csv"
+                                    break
+                        self._emit(msg, t, rec, fmt)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:                  # noqa: BLE001
+                # A dropped socket is reconnected, not reported as fatal: over
+                # a four-week campaign the link will drop, and the run in
+                # progress is still worth having.
+                self._ws = None
+                if self._stop.is_set():
+                    break
+                self.error = str(e)
+                try:
+                    await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    break
+            finally:
+                self._ws = None
+
+
 TRANSPORTS = {
     "udp-listen": UdpListen,
+    "websocket-client": WebSocketClient,
     "tcp-client": TcpClient,
     "tcp-listen": TcpListen,
     "http-poll": HttpPoll,
