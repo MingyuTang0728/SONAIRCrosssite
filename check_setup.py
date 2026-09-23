@@ -146,6 +146,8 @@ PACKAGES = [
     ("cv2",           "opencv-python",   False, "camera image encoding, hand-eye calibration and "
                                                 "the inspection pipeline"),
     ("pyrealsense2",  "pyrealsense2",    False, "the RealSense camera and its built-in IMU"),
+    ("zmq",           "pyzmq",           False, "FusionHub's External Output node, which is a ZeroMQ "
+                                                "publisher (tcp://*:port)"),
     ("serial",        "pyserial",        False, "an IMU connected straight to a COM port; not needed "
                                                 "for FusionHub over the network"),
 ]

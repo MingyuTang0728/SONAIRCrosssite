@@ -796,6 +796,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
         </select></div>
       <div class="field"><label>How it sends data</label>
         <select id="imuKind">
+          <option value="zmq-sub">FusionHub's External Output (tcp://*:port)</option>
           <option value="udp-listen">FusionHub sends to this PC (UDP)</option>
           <option value="tcp-client">This PC connects to FusionHub (TCP)</option>
           <option value="tcp-listen">FusionHub connects to this PC (TCP)</option>

@@ -12,7 +12,7 @@ is started.
 In the **same interpreter** the agent runs in:
 
 ```
-pip install numpy opencv-python pyrealsense2 websockets
+pip install numpy opencv-python pyrealsense2 websockets pyzmq
 pip install pyserial          # only if an IMU is on a COM port
 ```
 
@@ -88,9 +88,22 @@ version and licence: this PC connecting out over TCP, FusionHub connecting in,
 its **WebSocket Sink**, an HTTP endpoint, a COM port, or **following a file
 FusionHub is writing**.
 
-In FusionHub 0.1.x the relevant graph nodes are **TCP Output** (under
-CONNECTORS) and **WebSocket Sink**. Both accept `Any` data type, so either
-will carry the LPMS source's `Imu` output without a converter in between.
+In FusionHub 0.1.x the relevant graph nodes are **External Output**, **TCP
+Output** (under CONNECTORS) and **WebSocket Sink**. All accept `Any` data
+type, so any of them will carry the LPMS source's `Imu` output without a
+converter in between.
+
+**External Output is a ZeroMQ publisher, not a raw socket.** Its properties
+show one field, `TCP ENDPOINT`, reading something like `tcp://*:8901` — that
+is ZeroMQ's address syntax: `*` means "bind every interface", the port is the
+number after the colon, and FusionHub is the server. Choose the transport
+**FusionHub's External Output** and paste that endpoint in verbatim; the
+wildcard is rewritten to localhost for you.
+
+Pointing a plain TCP transport at it is the trap: the TCP handshake succeeds,
+the link reports connected, and what arrives is ZeroMQ's own protocol rather
+than your data. **Show what is arriving** names that case — it reports the
+format as `zmtp` and says which transport to switch to.
 That last one always works and produces exactly the same records, so a live
 integration is never on the critical path.
 

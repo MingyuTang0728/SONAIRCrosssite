@@ -81,7 +81,7 @@ if (-not (Test-Path $vpy)) { Write-Host "venv creation failed." -ForegroundColor
 # --- dependencies -------------------------------------------------------------
 Write-Host "`nInstalling dependencies ..."
 & $vpy -m pip install --upgrade pip --quiet
-& $vpy -m pip install websockets numpy opencv-python
+& $vpy -m pip install websockets numpy opencv-python pyzmq
 
 # pyrealsense2 last and on its own: it is the one most likely to have no wheel
 # for the installed Python, and a failure here must not stop the rest.

@@ -85,6 +85,15 @@ except Exception as e:                              # noqa: BLE001
     _HAS_WS = False
     _WS_ERR = str(e)
 
+try:
+    import zmq
+    _HAS_ZMQ = True
+    _ZMQ_ERR = ""
+except Exception as e:                              # noqa: BLE001
+    zmq = None
+    _HAS_ZMQ = False
+    _ZMQ_ERR = str(e)
+
 
 # Ports FusionHub and its neighbours are seen on in the field. Discovery binds
 # all of them; the cost of one extra UDP socket is nothing next to an afternoon
@@ -227,6 +236,45 @@ def _flatten(obj, prefix: str = "", out: dict | None = None) -> dict:
             if not isinstance(v, (dict, list)):
                 out[f"{base}_{names[i]}"] = v
     return out
+
+
+def _name_binary(raw: bytes) -> str:
+    """
+    Name the binary format rather than calling everything "binary".
+
+    Each of these has a different fix, and "binary" has none: ZMTP means the
+    transport is wrong (a raw socket pointed at a ZeroMQ endpoint), while
+    MessagePack or CBOR mean the transport is right and the output profile is
+    wrong.
+    """
+    if raw[:1] == b"\xff" and len(raw) >= 10 and raw[9:10] == b"\x7f":
+        return "zmtp"                     # ZeroMQ greeting
+    if raw[:4] == b"\xff\x00\x00\x00" or raw[:1] == b"\x04":
+        return "zmtp"                     # ZMTP frame headers
+    if raw[:1] in (b"\x80", b"\x81", b"\xde", b"\xdf"):
+        return "msgpack"
+    if raw[:1] in (b"\xa0", b"\xbf") or raw[:1] == b"\xd9":
+        return "cbor"
+    if raw[:2] == b"\x1f\x8b":
+        return "gzip"
+    return "binary"
+
+
+def _binary_advice(fmt: str) -> str:
+    if fmt == "zmtp":
+        return ("This is ZeroMQ's own protocol, not your data. FusionHub's "
+                "External Output is a ZeroMQ publisher, so it needs the "
+                "\"External Output\" transport rather than a plain TCP one — "
+                "a raw socket connects successfully and then receives this.")
+    if fmt in ("msgpack", "cbor"):
+        return (f"The transport is working — this is {fmt.upper()}-encoded "
+                "data, not text. Change FusionHub's output format to JSON, "
+                "which is what is parsed here.")
+    if fmt == "gzip":
+        return ("The data is compressed. Turn compression off on the output "
+                "node, or set the format to plain JSON.")
+    return ("This is not text. Set FusionHub's output format to JSON or CSV — "
+            "binary sensor protocols are not parsed here.")
 
 
 def parse_payload(payload, gyro_units: str = "auto") -> tuple[float | None, dict, str]:
@@ -476,10 +524,8 @@ def sniff(payload) -> dict:
     out = {"bytes": len(raw), "text": is_text,
            "preview": text if is_text else " ".join(f"{b:02x}" for b in preview[:48])}
     if not is_text:
-        out["format"] = "binary"
-        out["advice"] = ("This is not text. Set FusionHub's output profile to "
-                         "JSON or CSV over UDP — the binary XDA protocol is not "
-                         "parsed here.")
+        out["format"] = _name_binary(raw)
+        out["advice"] = _binary_advice(out["format"])
         return out
 
     t, rec, fmt = parse_payload(raw)
@@ -1009,8 +1055,171 @@ class WebSocketClient(_Base):
                 self._ws = None
 
 
+class ZmqSub(_Base):
+    """
+    Subscribe to a ZeroMQ publisher — FusionHub's "External Output" node.
+
+    That node's endpoint reads `tcp://*:8901`, which is ZeroMQ's address
+    syntax, not a raw socket: `*` means bind every interface, and the node is
+    therefore the SERVER. A plain TCP client connecting to it completes the
+    TCP handshake and then receives ZMTP protocol frames — a greeting, a
+    handshake, then length-prefixed frames — so the connection LOOKS fine and
+    delivers nothing parseable. That failure mode is why this transport exists
+    rather than reusing tcp-client: the two are indistinguishable at the
+    socket layer and completely different on the wire.
+
+    `topic` is the subscription filter. ZeroMQ PUB sockets deliver nothing at
+    all until a SUB socket subscribes, so the empty-string default — subscribe
+    to everything — is the one that cannot silently deliver zero messages.
+    Multipart messages are handled: publishers commonly send [topic, payload],
+    and taking the first frame would give you the topic name forever.
+    """
+    kind = "zmq-sub"
+
+    def __init__(self, endpoint: str = "tcp://127.0.0.1:8901",
+                 topic: str = "", **kw):
+        super().__init__(**kw)
+        self.endpoint = _zmq_connect_endpoint(endpoint)
+        self.topic = topic or ""
+        self._ctx = None
+        self._sock = None
+
+    def _open(self):
+        """
+        Validate only. The socket itself is created on the reader thread.
+
+        ZeroMQ sockets are NOT thread-safe, and closing one from a second
+        thread while the first is blocked in recv aborts the process outright
+        — a C-level assertion, not a Python exception, so nothing upstream can
+        catch it and the whole agent dies on a Disconnect button. So the
+        socket is created, used and destroyed on one thread and never touched
+        from anywhere else.
+
+        Nothing is lost by validating here: a ZeroMQ tcp:// connect is
+        asynchronous and succeeds against a dead peer anyway, so an early
+        connect could not have reported a wrong port either.
+        """
+        if not _HAS_ZMQ:
+            raise RuntimeError(f"the pyzmq package is not installed "
+                               f"({_ZMQ_ERR}) — run: pip install pyzmq")
+        if not self.endpoint.startswith(("tcp://", "ipc://", "inproc://")):
+            raise ValueError(f"{self.endpoint!r} is not a ZeroMQ endpoint — "
+                             "it should look like tcp://127.0.0.1:8901")
+        if self.endpoint.startswith("tcp://"):
+            host_port = self.endpoint[len("tcp://"):]
+            port = host_port.rpartition(":")[2]
+            if not port.isdigit():
+                # ZeroMQ accepts the connect and then fails asynchronously, so
+                # without this the link reports "connected" and delivers
+                # nothing — the one outcome that gives the operator no clue.
+                raise ValueError(
+                    f"{self.endpoint!r} has no port. Copy the whole endpoint "
+                    "from FusionHub's External Output node, including the "
+                    "number after the colon — for example tcp://*:8901.")
+
+    def _close(self):
+        # Deliberately empty: the reader thread owns the socket and shuts it
+        # down itself once _stop is set, within one receive timeout.
+        return
+
+    def _run(self):
+        ctx = sock = None
+        try:
+            # A private context, not Context.instance(): a shared context is
+            # terminated by whichever link tears down first, which would stop
+            # every other link with it.
+            ctx = zmq.Context()
+            sock = ctx.socket(zmq.SUB)
+            # Never queue an unbounded backlog. A late inertial sample is
+            # worthless, and a backlog turns a momentary stall into minutes of
+            # stale data arriving as though it were live.
+            sock.setsockopt(zmq.RCVHWM, 1000)
+            sock.setsockopt(zmq.LINGER, 0)
+            sock.setsockopt(zmq.RCVTIMEO, 250)
+            sock.setsockopt_string(zmq.SUBSCRIBE, self.topic)
+            sock.connect(self.endpoint)
+            log.info("zmq SUB connected: %s (topic %r)", self.endpoint, self.topic)
+            self._loop_recv(sock)
+        except Exception as e:                      # noqa: BLE001
+            self.error = str(e)
+            log.warning("zmq subscriber failed: %s", e)
+        finally:
+            try:
+                if sock is not None:
+                    sock.close(linger=0)
+            except Exception:
+                pass
+            try:
+                if ctx is not None:
+                    ctx.term()
+            except Exception:
+                pass
+
+    def _loop_recv(self, sock):
+        csvp = CsvParser("raw")
+        while not self._stop.is_set():
+            try:
+                parts = sock.recv_multipart()
+            except zmq.Again:
+                continue                            # receive timeout, normal
+            except Exception as e:                  # noqa: BLE001
+                if self._stop.is_set():
+                    break
+                self.error = str(e)
+                time.sleep(0.2)
+                continue
+            if not parts:
+                continue
+            # [topic, payload] is the common shape; [payload] alone is also
+            # common. Try the LAST frame first — a topic frame never parses,
+            # and reporting "nothing recognised" because we read the topic
+            # would send the operator hunting in FusionHub for a fault in here.
+            data = parts[-1]
+            t, rec, fmt = parse_payload(data, "raw")
+            if not rec and len(parts) > 1:
+                data = parts[0]
+                t, rec, fmt = parse_payload(data, "raw")
+            if not rec:
+                for line in data.decode("utf-8", "ignore").splitlines():
+                    t2, rec2 = csvp.feed(line)
+                    if rec2:
+                        t, rec, fmt = t2, rec2, "csv"
+                        break
+            self._emit(data, t, rec, fmt)
+
+    def health(self) -> dict:
+        h = super().health()
+        h["endpoint"] = self.endpoint
+        h["topic"] = self.topic or "(everything)"
+        return h
+
+
+def _zmq_connect_endpoint(endpoint: str) -> str:
+    """
+    Turn a BIND address into a CONNECT address.
+
+    FusionHub shows `tcp://*:8901` because that is what it binds. A subscriber
+    cannot connect to `*` — it has to name a host — so the wildcard is
+    rewritten to localhost. Copying the endpoint out of FusionHub verbatim is
+    the obvious thing to do, and without this it fails with an error about the
+    address rather than about the wildcard.
+    """
+    ep = str(endpoint or "").strip()
+    if not ep:
+        return "tcp://127.0.0.1:8901"
+    if "://" not in ep:
+        ep = "tcp://" + ep
+    scheme, _, rest = ep.partition("://")
+    if rest.startswith("*:"):
+        rest = "127.0.0.1:" + rest[2:]
+    elif rest.startswith("0.0.0.0:"):
+        rest = "127.0.0.1:" + rest[len("0.0.0.0:"):]
+    return f"{scheme}://{rest}"
+
+
 TRANSPORTS = {
     "udp-listen": UdpListen,
+    "zmq-sub": ZmqSub,
     "websocket-client": WebSocketClient,
     "tcp-client": TcpClient,
     "tcp-listen": TcpListen,
