@@ -2,22 +2,19 @@
 #
 #       .\serve_console.ps1
 #
-# The console MUST be served over HTTP. Opening the .html file directly
-# (file://) blocks the browser from fetching vendor/three/, so the 3D stage
-# never initialises and importing a GLB silently does nothing.
+# The console MUST be served over HTTP. Opened as a file (file://) the browser
+# refuses the cross-origin request for ur5e.glb, so the cell view sits on
+# "Loading the robot model" for ever. Measured, not assumed: the request is
+# blocked with ERR_FAILED and the model loads in 68 ms over HTTP.
 
 param([int]$Port = 8000)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
-$vpy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $vpy)) {
-    Write-Host "No .venv found — run .\setup_windows.ps1 first." -ForegroundColor Red
-    exit 1
-}
+. "$PSScriptRoot\_pick_python.ps1"
 
-$url = "http://localhost:$Port/Remote_control_Benchmark.html"
+$url = "http://localhost:$Port/SONAIR_Console.html"
 Write-Host "Serving $PSScriptRoot on port $Port" -ForegroundColor Cyan
 Write-Host "  Console: $url"
 Write-Host "  Keep this window open. Ctrl+C stops the server." -ForegroundColor DarkGray

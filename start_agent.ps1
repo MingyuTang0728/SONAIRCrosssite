@@ -15,11 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
-$vpy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $vpy)) {
-    Write-Host "No .venv found — run .\setup_windows.ps1 first." -ForegroundColor Red
-    exit 1
-}
+. "$PSScriptRoot\_pick_python.ps1"
 
 $env:UR_IP = $UrIp
 $env:BENCH_FUSIONHUB_PORT = "$FusionHubPort"
@@ -31,6 +27,10 @@ Write-Host "  FusionHub UDP : $FusionHubPort"
 Write-Host "  Runs saved to : $(if ($RunDir) { $RunDir } else { Join-Path $PSScriptRoot 'bench_runs' })"
 Write-Host ""
 Write-Host "  Keep this window open. Ctrl+C stops the agent." -ForegroundColor DarkGray
+Write-Host ""
+Write-Host "  This is the ONLY python file to run — it loads the camera," -ForegroundColor DarkGray
+Write-Host "  robot, inertial and benchmark modules itself." -ForegroundColor DarkGray
+Write-Host "  In a SECOND window run .\serve_console.ps1 to open the page." -ForegroundColor DarkGray
 Write-Host ""
 
 & $vpy multimodal_bridge.py

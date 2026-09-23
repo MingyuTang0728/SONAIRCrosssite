@@ -1074,7 +1074,9 @@
         var c = box.getCenter(new THREE.Vector3());
         root.position.sub(new THREE.Vector3(c.x, box.min.y, c.z));
         scene.add(root);
-        $("stage3dEmpty").style.display = "none";
+        // `hidden`, like every other overlay on this page. Two ways to hide
+        // one thing means a fix to one of them silently misses the other.
+        $("stage3dEmpty").hidden = true;
         three.target = root;
         three.fit(root);
         root.traverse(function (o) {
