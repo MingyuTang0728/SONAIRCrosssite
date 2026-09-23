@@ -447,6 +447,17 @@
     var unit = ($("imuUnit") || {}).value || "ind0";
     var l = (d.links || {})[unit];
     if (!l || !l.running) return;
+
+    // The failure this page used to show as nothing at all: packets arriving
+    // and every one of them discarded. "Connected" plus an empty display is
+    // indistinguishable from "not connected", so say which it is.
+    if (!l.samples && l.bad > 20) {
+      say("imuMsg", l.bad + " packets have arrived and none could be read. "
+        + "The link is fine — the data is in a shape this agent does not "
+        + "recognise. Press “Show what is arriving” and send me what it "
+        + "prints.", "bad");
+      return;
+    }
     if ($("imuKindTag")) {
       $("imuKindTag").textContent = l.kind + " · " + fmt(l.rate_hz, 0) + " Hz";
     }
@@ -469,7 +480,9 @@
         + att.pb.join(", ") + ". Times come from " + (l.protobuf_time_field
           ? "field " + l.protobuf_time_field + " in "
             + (l.protobuf_time_unit || "?") : "arrival time")
-        + ". If the orientation does not follow the sensor, tell me and the "
+        + "."
+        + (l.protobuf_partial ? " " + l.protobuf_partial : "")
+        + " If the orientation does not follow the sensor, tell me and the "
         + "mapping can be pinned.", "ok");
     } else if (m === "working it out") {
       say("imuMsg", "Connected. Working out which field is which — give it a "

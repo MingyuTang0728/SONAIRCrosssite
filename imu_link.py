@@ -341,65 +341,66 @@ def protobuf_walk(buf, path="", depth=0, out=None, lenient=False):
         return out
     i = 0
     while i < len(buf):
+        # One guard around the WHOLE field, not just the key. A truncated
+        # value varint escaped the old key-only guard, so lenient mode still
+        # raised on exactly the packets it existed to tolerate — and the
+        # caller discarded a message whose readings it had already decoded.
         try:
-            key, i = _pb_varint(buf, i)
+            i = _pb_field(buf, i, path, depth, out, lenient)
         except Exception:
             if lenient:
                 return out
             raise
-        field, wt = key >> 3, key & 7
-        if field == 0:
-            if lenient:
-                return out
-            raise ValueError("field number 0 is not valid protobuf")
-        p = f"{path}.{field}" if path else str(field)
-        if wt == 0:
-            v, i = _pb_varint(buf, i)
-            out.append((p, "varint", v))
-        elif wt == 1:
-            if i + 8 > len(buf):
-                if lenient:
-                    return out
-                raise ValueError("truncated 64-bit field")
-            out.append((p, "double", struct.unpack_from("<d", buf, i)[0]))
-            i += 8
-        elif wt == 2:
-            n, i = _pb_varint(buf, i)
-            if i + n > len(buf):
-                if not lenient:
-                    raise ValueError("truncated length-delimited field")
-                # A preview is a truncated message by definition. Descend into
-                # the part that IS there rather than stopping: the whole point
-                # of the preview is to show what the packet contains, and the
-                # readable prefix usually contains the first vectors.
-                try:
-                    out.extend(protobuf_walk(buf[i:], p, depth + 1, [], True))
-                except Exception:
-                    pass
-                return out
-            sub = buf[i:i + n]
-            i += n
-            try:
-                nested = protobuf_walk(sub, p, depth + 1, [], lenient)
-            except Exception:
-                out.append((p, "bytes", sub))
-                continue
-            if nested:
-                out.extend(nested)
-            else:
-                out.append((p, "bytes", sub))
-        elif wt == 5:
-            if i + 4 > len(buf):
-                if lenient:
-                    return out
-                raise ValueError("truncated 32-bit field")
-            out.append((p, "float", struct.unpack_from("<f", buf, i)[0]))
-            i += 4
-        else:
-            if lenient:
-                return out
-            raise ValueError(f"wire type {wt} is not valid protobuf")
     return out
+
+
+def _pb_field(buf, i, path, depth, out, lenient):
+    """Read one field, append what it holds, and return the new offset."""
+    key, i = _pb_varint(buf, i)
+    field, wt = key >> 3, key & 7
+    if field == 0:
+        raise ValueError("field number 0 is not valid protobuf")
+    p = f"{path}.{field}" if path else str(field)
+    if wt == 0:
+        v, i = _pb_varint(buf, i)
+        out.append((p, "varint", v))
+    elif wt == 1:
+        if i + 8 > len(buf):
+            raise ValueError("truncated 64-bit field")
+        out.append((p, "double", struct.unpack_from("<d", buf, i)[0]))
+        i += 8
+    elif wt == 2:
+        n, i = _pb_varint(buf, i)
+        if i + n > len(buf):
+            if not lenient:
+                raise ValueError("truncated length-delimited field")
+            # A preview is a truncated message by definition. Descend into the
+            # part that IS there: that prefix is where the vectors are, and
+            # showing nothing would defeat the point of a preview.
+            try:
+                out.extend(protobuf_walk(buf[i:], p, depth + 1, [], True))
+            except Exception:
+                pass
+            return len(buf)
+        sub = buf[i:i + n]
+        i += n
+        try:
+            nested = protobuf_walk(sub, p, depth + 1, [], lenient)
+        except Exception:
+            out.append((p, "bytes", sub))
+            return i
+        if nested:
+            out.extend(nested)
+        else:
+            out.append((p, "bytes", sub))
+    elif wt == 5:
+        if i + 4 > len(buf):
+            raise ValueError("truncated 32-bit field")
+        out.append((p, "float", struct.unpack_from("<f", buf, i)[0]))
+        i += 4
+    else:
+        raise ValueError(f"wire type {wt} is not valid protobuf")
+    return i
 
 
 def _pb_vectors(entries):
@@ -457,6 +458,9 @@ class ProtobufImu:
         self.time_path: str | None = None
         self.time_scale = 1.0
         self.n = 0
+        self.n_decoded = 0
+        self.partial = False
+        self.partial_reason = ""
         self._norm_sum: dict[str, float] = {}
         self._norm_n: dict[str, int] = {}
         self._len: dict[str, int] = {}
@@ -464,16 +468,34 @@ class ProtobufImu:
 
     # -- decoding ----------------------------------------------------------
     def feed(self, raw):
+        # Lenient, deliberately. A real packet carries more than the inertial
+        # message — a device name, a serial number, trailing fields this
+        # decoder has never seen — and one field it cannot walk must not throw
+        # away the accelerometer, gyroscope and orientation that were already
+        # read out of the same packet. Strict parsing here meant every packet
+        # arrived and every packet was discarded, which on screen is
+        # indistinguishable from no packets arriving at all.
+        #
+        # The quality bar replaces the strictness: several entries AND at
+        # least one 3- or 4-vector. Random bytes do not clear that.
         try:
-            entries = protobuf_walk(raw)
+            entries = protobuf_walk(raw, lenient=True)
         except Exception as e:                      # noqa: BLE001
             self.error = str(e)
             return None, {}
-        if not entries:
-            return None, {}
         vectors = _pb_vectors(entries)
-        if not vectors:
+        if len(entries) < 3 or not vectors:
             return None, {}
+        self.n_decoded += 1
+        try:
+            protobuf_walk(raw)
+            self.partial = False
+        except Exception as e:                      # noqa: BLE001
+            # Worth knowing, not worth failing on: it says this decoder does
+            # not understand the whole message, which is the thing to report
+            # if a channel ever turns out to be missing.
+            self.partial = True
+            self.partial_reason = str(e)
 
         if self.mapping is None:
             self._observe(entries, vectors)
@@ -530,16 +552,20 @@ class ProtobufImu:
                                    1e-3 if v > 1e11 else 1.0)
 
     def _decide(self, vectors):
+        # Classify every path seen SO FAR, not just the ones in the packet
+        # that happened to trip the counter. A stream can interleave message
+        # shapes, and a mapping built from one packet would then silently drop
+        # whatever that packet lacked.
         mean = {p: self._norm_sum[p] / max(1, self._norm_n[p])
                 for p in self._norm_sum}
         mapping: dict[str, str] = {}
 
         # Orientation first: a unit-length 4-vector is unambiguous.
-        for path, values in vectors:
-            if self._len.get(path) == 4 and abs(mean.get(path, 0) - 1.0) < 0.05:
+        for path in mean:
+            if self._len.get(path) == 4 and abs(mean[path] - 1.0) < 0.05:
                 mapping[path] = "quat"
 
-        threes = [p for p, v in vectors
+        threes = [p for p in mean
                   if self._len.get(p) == 3 and p not in mapping]
 
         # Gravity, in whichever unit it arrived in. Closest to the expected
@@ -566,13 +592,22 @@ class ProtobufImu:
     def status(self) -> dict:
         if self.mapping is None:
             return {"protobuf_mapping": "working it out",
-                    "protobuf_samples": self.n}
+                    "protobuf_samples": self.n,
+                    "protobuf_decoded": self.n_decoded}
         names = {"quat": "orientation", "accel": "acceleration (m/s^2)",
                  "accel_g": "acceleration (g)", "gyro": "turn rate",
                  "mag": "magnetic field"}
+        out_extra = {}
+        if self.partial:
+            out_extra["protobuf_partial"] = (
+                "Part of each packet could not be read: " + self.partial_reason
+                + ". The channels listed were still decoded; if one you expect "
+                  "is missing, that is where it went.")
         return {
             "protobuf_mapping": {f"field {p}": names.get(r, r)
                                  for p, r in sorted(self.mapping.items())},
+            "protobuf_decoded": self.n_decoded,
+            **out_extra,
             "protobuf_time_field": self.time_path,
             "protobuf_time_unit": {1e-9: "nanoseconds", 1e-6: "microseconds",
                                    1e-3: "milliseconds",
@@ -978,7 +1013,11 @@ class _Base:
     def _emit(self, raw, t_src, rec, fmt):
         self.last_raw = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
         if not rec:
-            self.n_bad += 1
+            # Packets consumed while the protobuf decoder is still working out
+            # which field is which are not bad packets. Counting them as bad
+            # makes a healthy binary link open with a burst of failures.
+            if not (self.pb.n_decoded and self.pb.mapping is None):
+                self.n_bad += 1
             return
         self.last_fmt = fmt
         if t_src is None:
