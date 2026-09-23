@@ -45,10 +45,28 @@ try:
     from sonair_benchmark.imu import FusionHubUdpSource, make_record, quat_normalise
     from sonair_benchmark.clock import detect_tap, fit_offset, tap_alignment
     from sonair_benchmark.schema import RunManifest, RunWriter, Sample
+    from sonair_benchmark.attitude import AttitudeTracker
     _HAS_BENCH = True
 except ImportError:  # pragma: no cover - the package travels with this file
     _HAS_BENCH = False
+    AttitudeTracker = None
     log.warning("sonair_benchmark package not importable — recording disabled")
+
+try:
+    import sensor_hub
+    _HAS_SENSORS = True
+except Exception:       # noqa: BLE001
+    sensor_hub = None
+    _HAS_SENSORS = False
+
+try:
+    import imu_link
+    _HAS_LINK = True
+    _LINK_ERR = ""
+except Exception as e:      # noqa: BLE001
+    imu_link = None
+    _HAS_LINK = False
+    _LINK_ERR = str(e)
 
 
 # ============================================================
@@ -126,8 +144,48 @@ class ImuHub:
         self._counts: dict[str, int] = {}
         self._rates: dict[str, float] = {}
         self._last_rate_calc: dict[str, tuple[float, int]] = {}
+        self._trackers: dict = {}
+        self._tlock = threading.Lock()
+
+    def tracker(self, unit: str):
+        """
+        One attitude tracker per unit, created on first sight of that unit.
+
+        Kept in the hub rather than in each source so that a unit which
+        changes transport mid-campaign — FusionHub over UDP on Monday, the
+        same unit over serial on Tuesday — keeps one continuous orientation
+        estimate and one gyro-bias history instead of silently restarting.
+        """
+        if AttitudeTracker is None:
+            return None
+        with self._tlock:
+            tr = self._trackers.get(unit)
+            if tr is None:
+                tr = self._trackers[unit] = AttitudeTracker(unit)
+            return tr
+
+    def reset_tracker(self, unit: str) -> bool:
+        if AttitudeTracker is None:
+            return False
+        with self._tlock:
+            self._trackers[unit] = AttitudeTracker(unit)
+        return True
+
+    def tracker_status(self) -> dict:
+        with self._tlock:
+            return {u: t.status() for u, t in self._trackers.items()}
 
     def push(self, unit: str, t_master: float, rec: dict) -> None:
+        # Derive orientation BEFORE storing, so the recorded sample and the
+        # sample the browser renders are the same object. Deriving it in the
+        # display path only would mean the run file silently lacks the very
+        # modality the benchmark is scored on.
+        tr = self.tracker(unit)
+        if tr is not None:
+            try:
+                rec = {**rec, **tr.update(t_master, rec)}
+            except Exception as e:      # noqa: BLE001
+                log.debug("attitude update failed for %s: %s", unit, e)
         with self._lock:
             self._latest[unit] = (t_master, rec)
             ring = self._rings.get(unit)
@@ -272,46 +330,124 @@ class D435iImuSource:
 
 class FusionHubBridge:
     """
-    Wraps sonair_benchmark.imu.FusionHubUdpSource and pushes into the hub.
+    One managed inertial link, of any transport imu_link supports.
 
-    FusionHub is configured to stream JSON over UDP to this port. That is the
-    only integration point — the benchmark never asks FusionHub for anything,
-    it only listens. If the live stream is not available yet, record in
-    FusionHub and use the replay path instead; the schema is identical, so
-    nothing downstream changes when you switch over.
+    The name is historical — it began as a UDP-only FusionHub listener — but a
+    "FusionHub bridge" that can only do UDP JSON is the thing that failed in
+    practice, so what it actually holds now is a transport plus its config, and
+    the transport is chosen at run time from the console.
+
+    Restart semantics matter: `start()` stops any existing link first. Two
+    listeners bound to one port is not an error either of them reports, and the
+    symptom — half the packets, silently — looks exactly like a flaky sensor.
     """
 
     def __init__(self, port: int = 5005, unit: str = "ind0"):
-        self.port = port
         self.unit = unit
-        self.src = None
-        self.error = "" if _HAS_BENCH else "sonair_benchmark not importable"
+        self.kind = "udp-listen"
+        self.config = {"port": int(port)}
+        self.gyro_units = "auto"
+        self.link = None
+        self.error = "" if _HAS_LINK else _LINK_ERR
 
-    def start(self) -> bool:
-        if not _HAS_BENCH:
+    # `port` stays a property so existing callers (start_sources, the CLI
+    # flag) keep working against the new config dict.
+    @property
+    def port(self) -> int:
+        return int(self.config.get("port", 5005))
+
+    @port.setter
+    def port(self, value) -> None:
+        self.config["port"] = int(value)
+
+    def start(self, kind: str | None = None, config: dict | None = None,
+              gyro_units: str | None = None) -> bool:
+        if not _HAS_LINK:
+            self.error = _LINK_ERR or "imu_link not importable"
             return False
+        self.stop()
+        if kind:
+            self.kind = kind
+        if config:
+            self.config = dict(config)
+        if gyro_units:
+            self.gyro_units = gyro_units
         try:
-            self.src = FusionHubUdpSource(
-                port=self.port, unit_id=self.unit,
+            self.link = imu_link.make_link(
+                self.kind, self.unit, gyro_units=self.gyro_units,
                 on_sample=lambda t_src, rec: HUB.push(
-                    self.unit, MASTER.to_master(self.unit, t_src), rec))
-            self.src.start()
-            log.info("FusionHub listener on UDP %d as unit %s", self.port, self.unit)
-            return True
-        except Exception as e:
+                    self.unit, MASTER.to_master(self.unit, t_src), rec),
+                **self.config)
+        except Exception as e:      # noqa: BLE001
             self.error = str(e)
-            log.warning("FusionHub listener failed: %s", e)
+            log.warning("inertial link %s could not be built: %s", self.kind, e)
             return False
+        res = self.link.start()
+        self.error = res.get("error", "")
+        if res.get("ok"):
+            log.info("inertial link up: unit=%s transport=%s %s",
+                     self.unit, self.kind, self.config)
+        else:
+            log.warning("inertial link failed: %s", self.error)
+        return bool(res.get("ok"))
 
     def stop(self) -> None:
-        if self.src:
-            self.src.stop()
+        if self.link:
+            try:
+                self.link.stop()
+            except Exception:
+                pass
+            self.link = None
 
     def status(self) -> dict:
-        base = {"unit": self.unit, "port": self.port, "error": self.error}
-        if self.src:
-            base.update(self.src.health())
+        base = {"unit": self.unit, "kind": self.kind, "config": dict(self.config),
+                "gyro_units": self.gyro_units, "error": self.error,
+                "port": self.port, "transport_available": _HAS_LINK}
+        if self.link:
+            base.update(self.link.health())
+        else:
+            base.update({"running": False, "samples": 0, "rate_hz": 0.0})
         return base
+
+
+class LinkRegistry:
+    """
+    Every inertial link the console has configured, keyed by unit id.
+
+    A registry rather than one hardcoded FusionHub slot, because the benchmark
+    explicitly wants three tiers at once — the industrial unit, an accessible
+    consumer module, and the camera's own part — and because the next sensor
+    to arrive should need a config entry, not a code change.
+    """
+
+    def __init__(self):
+        self.links: dict[str, FusionHubBridge] = {}
+
+    def get(self, unit: str) -> FusionHubBridge:
+        link = self.links.get(unit)
+        if link is None:
+            link = self.links[unit] = FusionHubBridge(unit=unit)
+        return link
+
+    def start(self, unit: str, kind: str, config: dict,
+              gyro_units: str = "auto") -> dict:
+        link = self.get(unit)
+        ok = link.start(kind, config, gyro_units)
+        return {"ok": ok, "unit": unit, **link.status()}
+
+    def stop(self, unit: str) -> dict:
+        link = self.links.get(unit)
+        if link is None:
+            return {"ok": False, "error": f"no link configured for {unit!r}"}
+        link.stop()
+        return {"ok": True, "unit": unit, **link.status()}
+
+    def stop_all(self) -> None:
+        for link in self.links.values():
+            link.stop()
+
+    def status(self) -> dict:
+        return {u: l.status() for u, l in self.links.items()}
 
 
 # ============================================================
@@ -447,12 +583,22 @@ class BenchRecorder:
                     q, tcp = self.state_fn()
                 except Exception:
                     pass
+            # Every registered modality goes into the same row. A sensor that
+            # arrives next month is recorded from the day it is attached with
+            # no change here — which is the point of the registry.
+            extra = {}
+            if _HAS_SENSORS:
+                try:
+                    extra = sensor_hub.HUB.snapshot()
+                except Exception:
+                    extra = {}
             sample = Sample(
                 t=now,
                 q=list(q) if q else None,
                 tcp_pos=list(tcp[:3]) if tcp else None,
                 tcp_rot=list(tcp[3:6]) if tcp and len(tcp) >= 6 else None,
                 imu=HUB.snapshot(),
+                sensors=extra,
             )
             with self._lock:
                 if self._writer:
@@ -494,7 +640,8 @@ class BenchRecorder:
 
 RECORDER = BenchRecorder()
 D435I = D435iImuSource()
-FUSIONHUB = FusionHubBridge()
+LINKS = LinkRegistry()
+FUSIONHUB = LINKS.get("ind0")
 
 
 def start_sources(*, d435i: bool = True, fusionhub: bool = True,
@@ -515,8 +662,12 @@ def status() -> dict:
         "clock": MASTER.status(),
         "units": HUB.status(),
         "sources": {"d435i": D435I.status(), "fusionhub": FUSIONHUB.status()},
+        "links": LINKS.status(),
+        "attitude": HUB.tracker_status(),
         "recorder": RECORDER.status(),
         "bench_available": _HAS_BENCH,
+        "transports": sorted(imu_link.TRANSPORTS) if _HAS_LINK else [],
+        "transport_error": "" if _HAS_LINK else _LINK_ERR,
     }
 
 
@@ -546,8 +697,79 @@ def handle_message(data: dict) -> dict | None:
         return {"type": "bench_start_res", **res}
     if mtype == "bench_stop":
         return {"type": "bench_stop_res", **RECORDER.stop()}
+    if mtype == "sensors_report":
+        if not _HAS_SENSORS:
+            return {"type": "sensors_report_res", "ok": False,
+                    "error": "sensor_hub not importable"}
+        return {"type": "sensors_report_res", "ok": True,
+                **sensor_hub.HUB.report()}
+
     if mtype == "bench_tap":
         return {"type": "bench_tap_res", **verify_tap(data.get("window_s", 5.0))}
+    # ---- inertial link management -------------------------------------
+    if mtype == "imu_transports":
+        return {"type": "imu_transports_res",
+                "available": _HAS_LINK, "error": "" if _HAS_LINK else _LINK_ERR,
+                "transports": sorted(imu_link.TRANSPORTS) if _HAS_LINK else [],
+                "serial": imu_link.list_serial_ports() if _HAS_LINK
+                else {"available": False, "ports": []},
+                "links": LINKS.status()}
+    if mtype == "imu_discover":
+        if not _HAS_LINK:
+            return {"type": "imu_discover_res", "ok": False, "error": _LINK_ERR}
+        res = imu_link.discover_udp(data.get("ports"),
+                                    float(data.get("seconds", 6.0)))
+        return {"type": "imu_discover_res", "ok": True, **res}
+    if mtype == "imu_tcp_probe":
+        if not _HAS_LINK:
+            return {"type": "imu_tcp_probe_res", "ok": False, "error": _LINK_ERR}
+        return {"type": "imu_tcp_probe_res", "ok": True,
+                **imu_link.probe_tcp(data.get("host", "127.0.0.1"),
+                                     data.get("ports"))}
+    if mtype == "imu_link_start":
+        if not _HAS_LINK:
+            return {"type": "imu_link_res", "ok": False, "error": _LINK_ERR}
+        return {"type": "imu_link_res", "cmd": "start",
+                **LINKS.start(data.get("unit", "ind0"),
+                              data.get("kind", "udp-listen"),
+                              data.get("config") or {},
+                              data.get("gyro_units", "auto"))}
+    if mtype == "imu_link_stop":
+        return {"type": "imu_link_res", "cmd": "stop",
+                **LINKS.stop(data.get("unit", "ind0"))}
+    if mtype == "imu_sniff":
+        # The raw bytes of the most recent packet on a link, classified. This
+        # is what turns "no data" from a guess into a reading.
+        unit = data.get("unit", "ind0")
+        link = LINKS.links.get(unit)
+        if link is None or link.link is None:
+            return {"type": "imu_sniff_res", "ok": False,
+                    "error": f"no link running for {unit!r}"}
+        raw = link.link.last_raw
+        if not raw:
+            return {"type": "imu_sniff_res", "ok": False,
+                    "error": "the link is up but nothing has arrived on it yet"}
+        return {"type": "imu_sniff_res", "ok": True, "unit": unit,
+                **imu_link.sniff(raw)}
+    if mtype == "imu_zero":
+        # Re-seed one unit's attitude estimate and clear its learned gyro bias.
+        # Done with the unit held still; the console says so.
+        unit = data.get("unit", "ind0")
+        ok = HUB.reset_tracker(unit)
+        return {"type": "imu_zero_res", "ok": ok, "unit": unit,
+                "note": "hold the unit still for two seconds while the bias "
+                        "re-learns" if ok else "attitude tracking unavailable"}
+    if mtype == "imu_d435i":
+        want = bool(data.get("on", True))
+        if want:
+            D435I.accel_hz = int(data.get("accel_hz", D435I.accel_hz))
+            D435I.gyro_hz = int(data.get("gyro_hz", D435I.gyro_hz))
+            ok = D435I.start()
+        else:
+            D435I.stop()
+            ok = True
+        return {"type": "imu_d435i_res", "ok": ok, **D435I.status()}
+
     if mtype == "bench_offset":
         MASTER.set_offset(data.get("channel", ""), data.get("offset_s", 0.0),
                           data.get("residual_s", 0.0))

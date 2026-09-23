@@ -143,9 +143,45 @@ PACKAGES = [
     ("websockets",    "websockets",      True,  "the bridge cannot start at all"),
     ("numpy",         "numpy",           False, "3D scanning; the panel refuses to start rather than "
                                                 "producing wrong geometry"),
-    ("cv2",           "opencv-python",   False, "camera image encoding — no video in the browser"),
+    ("cv2",           "opencv-python",   False, "camera image encoding, hand-eye calibration and "
+                                                "the inspection pipeline"),
     ("pyrealsense2",  "pyrealsense2",    False, "the RealSense camera and its built-in IMU"),
+    ("serial",        "pyserial",        False, "an IMU connected straight to a COM port; not needed "
+                                                "for FusionHub over the network"),
 ]
+
+
+# Modules that travel with this file. A missing one is a broken checkout, not
+# a missing dependency, so it is reported differently — "pip install" is not
+# the fix and saying so wastes an afternoon.
+LOCAL_MODULES = [
+    ("imu_link",   "reading FusionHub over UDP/TCP/serial/file, and finding it"),
+    ("handeye",    "measuring where the camera sits on the tool"),
+    ("multiview",  "multi-view 3D scanning and path planning on the model"),
+    ("rs_features", "the full camera feature set: infrared, projector modes, "
+                    "filters, self-calibration"),
+    ("sensor_hub", "the modality registry every recorded run is built from"),
+    ("scan3d",     "3D reconstruction primitives"),
+]
+
+
+def check_local_modules():
+    section("3b. This project's own modules")
+    import importlib
+    missing = []
+    for mod, what in LOCAL_MODULES:
+        try:
+            importlib.import_module(mod)
+            ok(f"{mod} — {what}")
+        except ImportError as e:
+            missing.append(mod)
+            fail(f"{mod} will not import ({e})", f"{mod}.py is part of this project. "
+                f"Run this from the folder that contains it, and check the "
+                f"download is complete — pip cannot fix this one.")
+        except Exception as e:      # noqa: BLE001
+            fail(f"{mod} raised on import: {e}",
+                "This is a fault in the file itself, not a missing package.")
+    return missing
 
 def check_packages():
     section("3. Packages")
@@ -425,6 +461,7 @@ def main():
     check_python()
     check_location()
     check_packages()
+    check_local_modules()
     check_files()
     check_ur(a.ur)
     check_camera()

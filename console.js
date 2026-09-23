@@ -50,7 +50,7 @@
   }
 
   /* -------------------------------------------------- navigation --------- */
-  var PAGES = ["connect", "robot", "inspect", "record"];
+  var PAGES = ["connect", "robot", "camera", "sensors", "calib", "inspect", "record"];
   document.querySelectorAll("nav.rail .step").forEach(function (b) {
     b.addEventListener("click", function () {
       document.querySelectorAll("nav.rail .step").forEach(function (o) {
@@ -61,6 +61,7 @@
       });
       if (b.dataset.page === "robot") resize3D();
       if (b.dataset.page === "inspect") drawInspect();
+      if (API.onPage[b.dataset.page]) API.onPage[b.dataset.page]();
     });
   });
 
@@ -80,6 +81,12 @@
       send({ type: "camera_probe" });
       send({ type: "inspect_status" });
       send({ type: "bench_status" });
+      send({ type: "handeye_status" });
+      send({ type: "mv_status" });
+      send({ type: "rs_enumerate" });
+      send({ type: "imu_transports" });
+      send({ type: "sensors_report" });
+      API.fire("open", {});
     };
     ws.onclose = function () {
       say("connMsg", "Disconnected from the host agent.", "bad");
@@ -87,6 +94,7 @@
       lamp("lampCam", "lampCamV", "", "Not connected");
       lamp("lampImu", "lampImuV", "", "Not connected");
       ws = null;
+      API.fire("close", {});
     };
     ws.onerror = function () {
       say("connMsg", "Could not reach the host agent. Is multimodal_bridge.py "
@@ -155,8 +163,51 @@
             d.spread_ms < 5 ? "ok" : "warn");
         } else { say("rcMsg", d.error || "No tap detected.", "warn"); }
         break;
+      default:
+        break;
     }
+    // Everything also goes to the extension modules. Forwarding ALL messages
+    // rather than only the unhandled ones means a module can react to the
+    // camera frames and the robot state as well as to its own replies — and
+    // it keeps one socket, one parse, one place where the wire format lives.
+    API.fire(d.type, d);
   }
+
+  /* -------------------------------------------------- module API ---------
+     The console grew past one file. Rather than a second socket or a second
+     copy of the formatting helpers, extension modules get this: the same
+     send, the same helpers, and a message registry. One connection, one set
+     of conventions, one place that knows the wire format.                  */
+  var API = {
+    handlers: {},
+    onPage: {},
+    send: send,
+    require: requireLink,
+    say: say,
+    lamp: lamp,
+    fmt: fmt,
+    esc: esc,
+    $: $,
+    state: state,
+    on: function (type, fn) {
+      (this.handlers[type] || (this.handlers[type] = [])).push(fn);
+      return this;
+    },
+    page: function (name, fn) { this.onPage[name] = fn; return this; },
+    fire: function (type, d) {
+      var list = this.handlers[type];
+      if (!list) return;
+      for (var i = 0; i < list.length; i++) {
+        try { list[i](d); } catch (e) {
+          // One module's exception must never stop the others from seeing the
+          // message — a broken panel should not take the console down.
+          if (window.console) console.error("[console] handler for " + type, e);
+        }
+      }
+    },
+    connected: function () { return !!(ws && ws.readyState === WebSocket.OPEN); }
+  };
+  window.SONAIR = API;
 
   function plainCmdError(d) {
     var m = String(d.msg || "");
@@ -894,10 +945,17 @@
         ctx.restore();
       });
     }
+
+    // Extension modules draw last, on top of whatever this function drew, so
+    // the 3D-scan overlays share one canvas and one frame rather than fighting
+    // over two stacked ones.
+    API.fire("inspect_draw", { ctx: ctx, canvas: cv, w: cv.width, h: cv.height });
   }
+  API.drawInspect = drawInspect;
 
   $("inspCanvas").addEventListener("click", function (ev) {
     if (!requireLink()) return;
+    if (API.swallowInspectClick) return;
     var r = this.getBoundingClientRect();
     var x = Math.round((ev.clientX - r.left) * this.width / r.width);
     var y = Math.round((ev.clientY - r.top) * this.height / r.height);

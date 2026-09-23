@@ -96,6 +96,38 @@ except Exception as _e:          # noqa: BLE001
           "full UR telemetry, control and 3D scanning disabled.")
 
 try:
+    import handeye
+    _HAS_HANDEYE = True
+except Exception as _he:         # noqa: BLE001
+    _HAS_HANDEYE = False
+    handeye = None
+    print(f"[agent] WARNING: handeye unavailable ({_he}).")
+
+try:
+    import multiview
+    _HAS_MV = True
+except Exception as _mv:         # noqa: BLE001
+    _HAS_MV = False
+    multiview = None
+    print(f"[agent] WARNING: multiview unavailable ({_mv}).")
+
+try:
+    import rs_features
+    _HAS_RSF = True
+except Exception as _rf:         # noqa: BLE001
+    _HAS_RSF = False
+    rs_features = None
+    print(f"[agent] WARNING: rs_features unavailable ({_rf}).")
+
+try:
+    import sensor_hub
+    _HAS_SENSORS = True
+except Exception as _sh:         # noqa: BLE001
+    _HAS_SENSORS = False
+    sensor_hub = None
+    print(f"[agent] WARNING: sensor_hub unavailable ({_sh}).")
+
+try:
     import bench_agent
     _HAS_BENCH = True
 except Exception as _e:          # noqa: BLE001 - never block the robot on this
@@ -182,6 +214,9 @@ _CAMERA_NOTES      = []     # mode substitutions the negotiator had to make
 _CAMERA_LAST_ERROR = ""     # last startup failure, already explained
 global_ir1_frame   = None   # D435i left IR
 global_ir2_frame   = None   # D435i right IR
+global_frame_meta  = {}     # per-frame timestamps and the clock domain
+global_rs_profile  = None   # live pipeline profile, for extrinsics
+_FILTERS           = None   # rs_features.FilterChain, built on pipeline start
 global_actual_q    = [0.0] * 6
 global_tcp_pose    = [0.0] * 6
 camera_lock        = threading.Lock()
@@ -197,8 +232,10 @@ _rs_config       = {
     "stereo_res":   "640x480",
     "stereo_fps":   30,
     "depth_en":     True,
-    "ir1_en":       False,
-    "ir2_en":       False,
+    # The infrared pair is what depth is COMPUTED from, and it is the only
+    # way to see why depth is missing. It ships on.
+    "ir1_en":       True,
+    "ir2_en":       True,
     "emitter":      "laser",
     "depth_ae":     True,
     "depth_exp":    8500,
@@ -219,8 +256,11 @@ _rs_config       = {
     "rgb_wb_auto":  True,
     "show_rgb":     True,
     "show_depth":   True,
-    "show_ir1":     False,
-    "show_ir2":     False,
+    "show_ir1":     True,
+    "show_ir2":     True,
+    # Post-processing is now a named chain with real parameters (rs_features).
+    # "post_proc" above stays as the master switch so old clients still work.
+    "filters":      {},
 }
 _rs_restart_evt  = threading.Event()  # set -> camera_thread restarts pipeline
 
@@ -462,7 +502,7 @@ def camera_thread():
     if not _HAS_VISION:
         return
     global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame
-    global global_depth_raw, global_depth_intr
+    global global_depth_raw, global_depth_intr, global_frame_meta
 
     while True:  # outer loop: restart pipeline on config change
         _rs_restart_evt.clear()
@@ -523,13 +563,25 @@ def camera_thread():
         colorizer  = rs.colorizer()
         colorizer.set_option(rs.option.color_scheme, float(cfg_snap["colormap"]))
 
-        # Spatial + temporal filters for post-processing
-        spatial  = rs.spatial_filter()
-        temporal = rs.temporal_filter()
-        hole_fill = rs.hole_filling_filter()
+        # Post-processing is Intel's full chain with its real parameters, in
+        # Intel's order and through disparity space — see rs_features. The old
+        # three hardcoded filters silently ran in depth space, which changes
+        # what they do to the far field.
+        global _FILTERS
+        if _HAS_RSF:
+            fcfg = dict(cfg_snap.get("filters") or {})
+            fcfg.setdefault("enabled", bool(cfg_snap.get("post_proc", True)))
+            _FILTERS = rs_features.FilterChain(fcfg)
+        else:
+            _FILTERS = None
+            spatial  = rs.spatial_filter()
+            temporal = rs.temporal_filter()
+            hole_fill = rs.hole_filling_filter()
 
         try:
             profile = pipeline.start(rscfg)
+            global global_rs_profile
+            global_rs_profile = profile
             dev     = profile.get_device()
             serial  = dev.get_info(rs.camera_info.serial_number)
 
@@ -625,10 +677,24 @@ def camera_thread():
                 ir2_f   = frames.get_infrared_frame(2) if cfg_snap["ir2_en"] else None
 
                 # Post-processing on depth
-                if depth_f and cfg_snap["post_proc"]:
-                    depth_f = spatial.process(depth_f)
-                    depth_f = temporal.process(depth_f)
-                    depth_f = hole_fill.process(depth_f)
+                if depth_f is not None:
+                    if _FILTERS is not None:
+                        depth_f = _FILTERS.process(depth_f)
+                    elif cfg_snap["post_proc"]:
+                        depth_f = spatial.process(depth_f)
+                        depth_f = temporal.process(depth_f)
+                        depth_f = hole_fill.process(depth_f)
+
+                # Frame timing, and which clock it is in. Recorded every frame
+                # because a run whose frames turn out to be stamped on the host
+                # clock has an extra jitter term in its timing budget, and that
+                # has to be knowable afterwards rather than guessed.
+                if _HAS_RSF:
+                    try:
+                        src = depth_f if depth_f is not None else color_f
+                        global_frame_meta = rs_features.frame_metadata(src)
+                    except Exception:
+                        pass
 
                 rgb_arr   = np.asanyarray(color_f.get_data())  if color_f else None
                 # RAW first: the colourised copy is for the operator's eyes and
@@ -807,14 +873,22 @@ _INSPECT = {"located": None, "plan": None, "detect": None}
 
 
 def _handeye():
-    """The camera-to-base transform, if both halves are known."""
+    """
+    The camera-to-base transform, if both halves are known.
+
+    The TCP pose comes through _tcp_now(), which prefers the verified RTDE
+    telemetry and only falls back to the legacy 30003 globals. Reading the
+    globals directly — as this did — meant that on a cell running the new
+    telemetry path the pose was all zeros, so this returned None and every
+    3D feature reported "no hand-eye calibration" moments after one had been
+    solved and applied.
+    """
     if not _HAS_EXT:
         return None
     T_tcp_cam = ur_bridge_ext.SCAN3D.T_tcp_cam
     if T_tcp_cam is None:
         return None
-    with data_lock:
-        pose = list(global_tcp_pose)
+    pose = _tcp_now()
     if not pose or len(pose) < 6 or not any(pose):
         return None
     try:
@@ -898,6 +972,309 @@ def _handle_inspect(data: dict):
                 "located": bool(loc),
                 "planned": bool(_INSPECT["plan"]),
                 "n_candidates": (_INSPECT["detect"] or {}).get("n_total", 0)}
+    return None
+
+
+# ============================================================
+# Hand-eye calibration, multi-view reconstruction, and the rest of the camera.
+#
+# All three keep their working state IN THIS PROCESS. The arrays involved — a
+# board's corner list, a voxel grid, a fused cloud — are large, are useless to
+# a browser, and are needed by the NEXT step, so serialising them out and back
+# would be pure cost. What crosses the socket is numbers and decisions.
+# ============================================================
+_HE = {"session": None}
+_MV = {"session": None, "region": None, "plan": None}
+
+
+def _tcp_now():
+    if _HAS_EXT and ur_bridge_ext.UR.enabled:
+        st = ur_bridge_ext.UR.state() or {}
+        pose = st.get("actual_TCP_pose")
+        if pose and any(pose):
+            return list(pose)
+    with data_lock:
+        pose = list(global_tcp_pose)
+    return pose if pose and any(pose) else None
+
+
+def _apply_handeye(T_tcp_cam) -> dict:
+    """One place where the calibration takes effect, so it cannot half-apply."""
+    if not _HAS_EXT:
+        return {"ok": False, "error": "ur_bridge_ext unavailable"}
+    try:
+        import numpy as _np
+        ur_bridge_ext.SCAN3D.T_tcp_cam = _np.asarray(T_tcp_cam, dtype=float).reshape(4, 4)
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+    return {"ok": True}
+
+
+def _handle_handeye(data: dict):
+    mtype = data.get("type")
+    sess = _HE["session"]
+
+    if mtype == "handeye_status":
+        loaded = handeye.load() if _HAS_HANDEYE else {"ok": False}
+        out = {"type": "handeye_status_res",
+               "available": _HAS_HANDEYE,
+               "applied": bool(_HAS_EXT and ur_bridge_ext.SCAN3D.T_tcp_cam is not None),
+               "saved": {k: loaded.get(k) for k in
+                         ("calib_version", "translation_mm", "rotation_deg",
+                          "target_spread_mm", "verdict", "solved_utc", "path")}
+               if loaded.get("ok") else None}
+        if _HAS_HANDEYE:
+            out.update(sess.status() if sess else
+                       {"n": 0, "error": handeye.available()[1]})
+        return out
+
+    if not _HAS_HANDEYE:
+        return {"type": "handeye_res", "ok": False,
+                "error": "hand-eye calibration needs OpenCV and numpy on the "
+                         "host — run: pip install opencv-python numpy"}
+
+    if mtype == "handeye_begin":
+        spec = handeye.TargetSpec(**{k: v for k, v in (data.get("target") or {}).items()
+                                     if k in handeye.TargetSpec.__dataclass_fields__})
+        _HE["session"] = handeye.HandEyeSession(spec)
+        return {"type": "handeye_res", "cmd": "begin", "ok": True,
+                "target": spec.as_dict(),
+                "note": ("Fix the board where the camera can see it and the arm "
+                         "can move around it. Take a dozen poses, rotating the "
+                         "tool 30-60 deg about ALL THREE axes between them, at "
+                         "a range of distances.")}
+
+    if mtype == "handeye_preview":
+        # Detect without storing: the operator can see whether the board is
+        # found before committing a pose, which is the difference between
+        # twelve good samples and twelve samples.
+        with camera_lock:
+            color = global_rgb_frame
+            intr = global_depth_intr
+        spec = (sess.spec if sess else handeye.TargetSpec(
+            **{k: v for k, v in (data.get("target") or {}).items()
+               if k in handeye.TargetSpec.__dataclass_fields__}))
+        res = handeye.detect_target(color, spec, intr)
+        # The corner list is for drawing only; cap it so a 9x14 board does not
+        # push a 500-point array through the socket 10 times a second.
+        if res.get("corners") and len(res["corners"]) > 200:
+            res["corners"] = res["corners"][:200]
+        # Send back the very frame the corners were measured on. Drawing them
+        # over whatever frame the browser happens to hold puts the overlay a
+        # pose or two behind while the arm is moving, and an overlay that is
+        # silently offset from its image is worse than no overlay — it reads
+        # as a calibration error rather than as latency.
+        if _HAS_VISION and color is not None:
+            try:
+                ok_enc, buf = cv2.imencode(".jpg", color,
+                                           [cv2.IMWRITE_JPEG_QUALITY, 58])
+                if ok_enc:
+                    res["frame"] = base64.b64encode(buf).decode("utf-8")
+            except Exception:
+                pass
+        return {"type": "handeye_preview_res", **res}
+
+    if sess is None:
+        return {"type": "handeye_res", "cmd": mtype, "ok": False,
+                "error": "start a calibration first"}
+
+    if mtype == "handeye_capture":
+        with camera_lock:
+            color = global_rgb_frame
+            intr = global_depth_intr
+        return {"type": "handeye_capture_res",
+                **sess.add(color, _tcp_now(), intr)}
+    if mtype == "handeye_undo":
+        return {"type": "handeye_capture_res", **sess.remove_last()}
+    if mtype == "handeye_clear":
+        return {"type": "handeye_capture_res", **sess.clear()}
+    if mtype == "handeye_solve":
+        res = sess.solve(data.get("method", "all"))
+        if res.get("ok") and data.get("apply", True):
+            res["applied"] = _apply_handeye(res["T_tcp_cam"]).get("ok", False)
+        return {"type": "handeye_solve_res", **res}
+    if mtype == "handeye_save":
+        res = handeye.save(sess.result, data.get("path") or handeye.DEFAULT_PATH)
+        return {"type": "handeye_res", "cmd": "save", **res}
+    if mtype == "handeye_load":
+        res = handeye.load(data.get("path") or handeye.DEFAULT_PATH)
+        if res.get("ok"):
+            res["applied"] = _apply_handeye(res["T_tcp_cam"]).get("ok", False)
+        return {"type": "handeye_res", "cmd": "load", **res}
+    return None
+
+
+def _handle_multiview(data: dict):
+    mtype = data.get("type")
+    with camera_lock:
+        depth_raw = global_depth_raw
+        intr = global_depth_intr
+
+    if mtype == "mv_status":
+        sess = _MV["session"]
+        return {"type": "mv_status_res",
+                "available": _HAS_MV,
+                "error": "" if _HAS_MV else "multiview needs numpy on the host",
+                "has_handeye": bool(_HAS_EXT and ur_bridge_ext.SCAN3D.T_tcp_cam is not None),
+                "has_depth": depth_raw is not None,
+                "has_intrinsics": intr is not None,
+                "region": _MV["region"],
+                "plan": {k: (_MV["plan"] or {}).get(k) for k in
+                         ("n", "standoff_mm", "tilt_deg", "rings", "explain",
+                          "azimuth_coverage_deg", "travel_mm")}
+                if _MV["plan"] else None,
+                **(sess.status() if sess else {"views": 0})}
+
+    if not _HAS_MV:
+        return {"type": "mv_res", "ok": False,
+                "error": "multiview needs numpy on the host"}
+
+    if mtype == "mv_region":
+        T = _handeye()
+        res = multiview.region_from_roi(
+            depth_raw, intr, data.get("roi") or [0, 0, 100, 100],
+            T_base_cam=T,
+            depth_scale=getattr(intr, "depth_scale", 0.001) if intr else 0.001)
+        _MV["region"] = res if res.get("ok") else None
+        _MV["plan"] = None
+        return {"type": "mv_region_res", **_strip(res)}
+
+    if mtype == "mv_plan":
+        reg = _MV["region"]
+        if not reg:
+            return {"type": "mv_plan_res", "ok": False,
+                    "error": "draw a box around the part first"}
+        T_tcp_cam = ur_bridge_ext.SCAN3D.T_tcp_cam if _HAS_EXT else None
+        res = multiview.plan_views(
+            reg, intr=intr, T_tcp_cam=T_tcp_cam,
+            n_views=data.get("n_views"),
+            standoff_mm=data.get("standoff_mm"),
+            tilt_deg=data.get("tilt_deg"),
+            rings=data.get("rings"),
+            overlap=float(data.get("overlap", 0.55)),
+            envelope=ENVELOPE if data.get("use_envelope", True) else None,
+            start_pose=_tcp_now())
+        _MV["plan"] = res if res.get("ok") else None
+        return {"type": "mv_plan_res", **res}
+
+    if mtype == "mv_begin":
+        reg = _MV["region"]
+        if not reg:
+            return {"type": "mv_res", "cmd": "begin", "ok": False,
+                    "error": "draw a box around the part first"}
+        T_tcp_cam = ur_bridge_ext.SCAN3D.T_tcp_cam if _HAS_EXT else None
+        if T_tcp_cam is None:
+            return {"type": "mv_res", "cmd": "begin", "ok": False,
+                    "error": "hand-eye calibration not set — do step 2 first"}
+        if intr is None:
+            return {"type": "mv_res", "cmd": "begin", "ok": False,
+                    "error": "camera intrinsics unavailable — start the depth stream"}
+        try:
+            _MV["session"] = multiview.MultiViewSession(
+                intr, T_tcp_cam, reg,
+                voxel_mm=float(data.get("voxel_mm", 1.5)),
+                margin_mm=float(data.get("margin_mm", 25.0)))
+        except Exception as e:      # noqa: BLE001
+            return {"type": "mv_res", "cmd": "begin", "ok": False, "error": str(e)}
+        return {"type": "mv_res", "cmd": "begin", "ok": True,
+                **_MV["session"].status()}
+
+    sess = _MV["session"]
+    if sess is None:
+        return {"type": "mv_res", "cmd": mtype, "ok": False,
+                "error": "start a scan first"}
+
+    if mtype == "mv_capture":
+        return {"type": "mv_capture_res",
+                **sess.add_view(depth_raw, _tcp_now(),
+                                stride=int(data.get("stride", 2)),
+                                label=data.get("label", ""))}
+    if mtype == "mv_build":
+        return {"type": "mv_build_res",
+                **sess.build(min_hits=int(data.get("min_hits", 2)),
+                             plane_tol_mm=float(data.get("plane_tol_mm", 4.0)),
+                             link_mm=float(data.get("link_mm", 8.0)),
+                             keep_plane=bool(data.get("keep_plane", False)))}
+    if mtype == "mv_preview":
+        return {"type": "mv_preview_res",
+                **sess.preview(max_points=int(data.get("max_points", 12000)),
+                               source=data.get("source", "surface"))}
+    if mtype == "mv_plan_path":
+        res = sess.plan_path(
+            standoff=float(data.get("standoff_mm", 100.0)) / 1000.0,
+            line_spacing=float(data.get("spacing_mm", 5.0)) / 1000.0,
+            step_along=float(data.get("step_mm", 5.0)) / 1000.0,
+            margin=float(data.get("margin_mm", 5.0)) / 1000.0)
+        return {"type": "mv_plan_path_res", **res}
+    if mtype == "mv_export":
+        name = data.get("name") or f"scan_{int(time.time())}"
+        return {"type": "mv_res", "cmd": "export",
+                **sess.export_ply(Path("scans") / f"{name}.ply")}
+    return None
+
+
+def _handle_rs(data: dict):
+    mtype = data.get("type")
+    if mtype == "rs_enumerate":
+        if not _HAS_RSF:
+            return {"type": "rs_enumerate_res", "available": False,
+                    "error": "rs_features unavailable"}
+        return {"type": "rs_enumerate_res", **rs_features.enumerate_device()}
+    if not _HAS_RSF:
+        return {"type": "rs_res", "cmd": mtype, "ok": False,
+                "error": "rs_features unavailable"}
+    if mtype == "rs_options":
+        return {"type": "rs_res", "cmd": "options",
+                **rs_features.set_options(data.get("settings") or [])}
+    if mtype == "rs_emitter":
+        return {"type": "rs_res", "cmd": "emitter",
+                **rs_features.set_emitter(data.get("mode", "on"),
+                                          data.get("laser_power"))}
+    if mtype == "rs_filters":
+        cfg = data.get("config") or {}
+        with _rs_config_lock:
+            merged = {**(_rs_config.get("filters") or {}), **cfg}
+            _rs_config["filters"] = merged
+        # Applied live where possible; a filter chain needs no pipeline
+        # restart, so the stream does not blink for a slider change.
+        if _FILTERS is not None:
+            _FILTERS.configure(merged)
+            desc = _FILTERS.describe()
+        else:
+            desc = rs_features.FilterChain(merged).describe()
+        return {"type": "rs_filters_res", "ok": True, **desc}
+    if mtype == "rs_selfcal":
+        return {"type": "rs_selfcal_res",
+                **rs_features.self_calibrate(
+                    data.get("mode", "calibrate"),
+                    float(data.get("target_distance_mm", 600.0)),
+                    int(data.get("speed", 2)))}
+    if mtype == "rs_advanced_get":
+        return {"type": "rs_advanced_res", "cmd": "get", **rs_features.advanced_get()}
+    if mtype == "rs_advanced_set":
+        return {"type": "rs_advanced_res", "cmd": "set",
+                **rs_features.advanced_set(data.get("json", ""))}
+    if mtype == "rs_advanced_enable":
+        return {"type": "rs_advanced_res", "cmd": "enable",
+                **rs_features.advanced_enable(bool(data.get("on", True)))}
+    if mtype == "rs_extrinsics":
+        return {"type": "rs_extrinsics_res",
+                **rs_features.stream_extrinsics(global_rs_profile)}
+    if mtype == "rs_metadata":
+        return {"type": "rs_metadata_res", **(global_frame_meta or
+                                              {"available": False})}
+    if mtype == "rs_ir_diagnose":
+        with camera_lock:
+            ir1, ir2, draw = global_ir1_frame, global_ir2_frame, global_depth_raw
+        return {"type": "rs_ir_diagnose_res", **rs_features.diagnose_ir(ir1, ir2, draw)}
+    if mtype == "rs_pointcloud":
+        with camera_lock:
+            draw, color, intr = global_depth_raw, global_rgb_frame, global_depth_intr
+        name = data.get("name") or f"cloud_{int(time.time())}"
+        return {"type": "rs_res", "cmd": "pointcloud",
+                **rs_features.export_pointcloud(
+                    draw, intr, Path("scans") / f"{name}.ply", color,
+                    stride=int(data.get("stride", 2)))}
     return None
 
 
@@ -1007,7 +1384,9 @@ async def local_handler(websocket):
                 if reply is not None:
                     await websocket.send(json.dumps(reply))
                     continue
-            if _HAS_BENCH and str(mtype or "").startswith("bench_"):
+            if _HAS_BENCH and (str(mtype or "").startswith("bench_")
+                               or str(mtype or "").startswith("imu_")
+                               or mtype == "sensors_report"):
                 reply = await asyncio.to_thread(bench_agent.handle_message, data)
                 if reply is not None:
                     await websocket.send(json.dumps(reply))
@@ -1055,6 +1434,21 @@ async def local_handler(websocket):
                     log.warning("camera_config stored but NO CAMERA SUPPORT on this "
                                 "agent (%s) — the config will take effect only once "
                                 "the vision dependencies are installed", _VISION_ERR)
+                continue
+            if str(mtype or "").startswith("handeye_"):
+                reply = await asyncio.to_thread(_handle_handeye, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
+                continue
+            if str(mtype or "").startswith("mv_"):
+                reply = await asyncio.to_thread(_handle_multiview, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
+                continue
+            if str(mtype or "").startswith("rs_"):
+                reply = await asyncio.to_thread(_handle_rs, data)
+                if reply is not None:
+                    await websocket.send(json.dumps(reply))
                 continue
             if _HAS_VISINSP and str(mtype or "").startswith("inspect_"):
                 reply = await asyncio.to_thread(_handle_inspect, data)
@@ -1330,6 +1724,47 @@ async def main():
         )
         log.info(" Benchmark:    runs -> %s  sources=%s",
                  bench_agent.RECORDER.out_dir.resolve(), started)
+
+    if _HAS_SENSORS:
+        # Attach the drivers this agent already owns to the modality registry.
+        # Everything registered here is recorded into every run automatically,
+        # so the sensors still in their boxes need a descriptor, not a patch.
+        def _ur_channel():
+            if _HAS_EXT and ur_bridge_ext.UR.enabled:
+                st = ur_bridge_ext.UR.state() or {}
+                if st.get("actual_TCP_pose"):
+                    return {k: st[k] for k in
+                            ("actual_q", "actual_qd", "actual_TCP_pose",
+                             "actual_TCP_force", "actual_current")
+                            if k in st}
+            return None
+
+        def _camera_channel(cid):
+            with camera_lock:
+                if cid == "cam_depth":
+                    if global_depth_raw is None:
+                        return None
+                    i = global_depth_intr
+                    return {"fill": float((global_depth_raw > 0).mean())
+                            if _HAS_VISION else None,
+                            "intrinsics": {"fx": i.fx, "fy": i.fy, "cx": i.cx,
+                                           "cy": i.cy} if i else None}
+                if cid == "cam_color":
+                    return {"present": global_rgb_frame is not None} \
+                        if global_rgb_frame is not None else None
+                if cid == "cam_ir":
+                    if global_ir1_frame is None:
+                        return None
+                    return {"left": True, "right": global_ir2_frame is not None}
+            return None
+
+        wired = sensor_hub.wire_standard_sources(
+            ur_state=_ur_channel,
+            imu_latest=(bench_agent.HUB.latest if _HAS_BENCH else None),
+            camera_state=_camera_channel)
+        rep = sensor_hub.HUB.report()
+        log.info(" Modalities:   %d registered (%d scored, %d awaiting hardware)",
+                 rep["n_total"], len(rep["benchmark_channels"]), rep["n_declared"])
 
     log.info("=" * 64)
     log.info(" SONAIR UR Host Agent")

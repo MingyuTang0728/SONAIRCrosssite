@@ -239,6 +239,48 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite;
   vertical-align:-1px;margin-right:5px}
 @keyframes sp{to{transform:rotate(360deg)}}
+/* `hidden` must win. Several overlays set display:flex, which is more
+   specific than the browser's own [hidden] rule, so hiding them by setting
+   .hidden = true left them painted on top of the live picture. */
+[hidden]{display:none!important}
+
+/* ---- added: streams, attitude, charts, roi ---- */
+.streams{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+.stream{position:relative;background:#0a0e13;border:1px solid var(--line);
+  border-radius:9px;overflow:hidden;aspect-ratio:4/3}
+.stream canvas{width:100%;height:100%;display:block;object-fit:contain}
+.stream .slab{position:absolute;top:7px;left:9px;font-size:10px;font-weight:700;
+  letter-spacing:.07em;text-transform:uppercase;color:#cfe0f5;
+  background:rgba(8,12,18,.72);padding:3px 8px;border-radius:5px;z-index:2}
+.stream .sempty{position:absolute;inset:0;display:flex;align-items:center;
+  justify-content:center;text-align:center;padding:16px;color:var(--text-3);
+  font-size:12px;line-height:1.5}
+.att{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:center}
+.att canvas{width:200px;height:170px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:9px}
+.strip{width:100%;height:76px;background:var(--surface-2);
+  border:1px solid var(--line);border-radius:7px;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.chip{font-size:11px;padding:4px 10px;border-radius:20px;background:var(--raised);
+  border:1px solid var(--line);color:var(--text-2);font-family:var(--mono)}
+.chip.ok{border-color:var(--ok);color:var(--ok)}
+.chip.bad{border-color:var(--bad);color:var(--bad)}
+.chip.warn{border-color:var(--warn);color:var(--warn)}
+.raw{font-family:var(--mono);font-size:11px;color:var(--text-2);background:#0a0e13;
+  border:1px solid var(--line);border-radius:7px;padding:10px 12px;margin-top:9px;
+  white-space:pre-wrap;word-break:break-all;max-height:110px;overflow:auto}
+.poselist{max-height:210px;overflow:auto;margin-top:10px}
+.sl{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;
+  font-size:12px;padding:5px 0;border-bottom:1px solid var(--line)}
+.sl:last-child{border-bottom:none}
+.sl .sv{font-family:var(--mono);color:var(--text-3);font-size:11px}
+.rng{display:grid;grid-template-columns:1fr 62px;gap:9px;align-items:center}
+.rng input[type=range]{width:100%;accent-color:var(--accent)}
+.rng .rv{font-family:var(--mono);font-size:11.5px;color:var(--text-2);text-align:right}
+.roihint{position:absolute;bottom:9px;left:11px;font-size:11px;color:#cfe0f5;
+  background:rgba(8,12,18,.72);padding:4px 9px;border-radius:5px;z-index:3}
+@media(max-width:1100px){.streams{grid-template-columns:1fr}
+  .att{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -262,10 +304,16 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     <span class="n">1</span><span><span class="lbl">Connect</span><small>Link the cell</small></span></button>
   <button class="step" data-page="robot">
     <span class="n">2</span><span><span class="lbl">Robot</span><small>Move &amp; monitor</small></span></button>
+  <button class="step" data-page="camera">
+    <span class="n">3</span><span><span class="lbl">Camera</span><small>Streams &amp; depth</small></span></button>
+  <button class="step" data-page="sensors">
+    <span class="n">4</span><span><span class="lbl">Sensors</span><small>Motion &amp; modalities</small></span></button>
+  <button class="step" data-page="calib">
+    <span class="n">5</span><span><span class="lbl">Calibrate</span><small>Camera on the tool</small></span></button>
   <button class="step" data-page="inspect">
-    <span class="n">3</span><span><span class="lbl">Inspect</span><small>Scan &amp; find</small></span></button>
+    <span class="n">6</span><span><span class="lbl">Inspect</span><small>Scan &amp; find</small></span></button>
   <button class="step" data-page="record">
-    <span class="n">4</span><span><span class="lbl">Record</span><small>Capture a run</small></span></button>
+    <span class="n">7</span><span><span class="lbl">Record</span><small>Capture a run</small></span></button>
   <button class="estop" id="btnEstop">STOP ROBOT</button>
   <div class="hint" style="padding:0 4px">Software stop only. The physical
   e-stop is the safety device.</div>
@@ -466,11 +514,13 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 <!-- ==================== 3. INSPECT ==================== -->
 <main class="page" id="page-inspect" hidden>
   <h2>Inspect a component</h2>
-  <p class="lead">Put the part on the fixture under the camera, then work down
-  the four steps. The picture updates at every stage so you can see what the
-  system found before the robot moves.</p>
+  <p class="lead">Two routes. <b>3D scan</b> photographs the part from several
+  angles and merges them into a measured model &mdash; use it when the shape
+  matters. <b>Find the part</b> works from a single view and is quicker. Both
+  end in a scan path the robot can run.</p>
 
   <div class="flow" id="inspFlow">
+    <div class="fs" data-fs="9" id="fs3d"><b>&#9670;</b>3D scan</div>
     <div class="fs active" data-fs="1"><b>1</b>Find the part</div>
     <div class="fs" data-fs="2"><b>2</b>Plan the scan</div>
     <div class="fs" data-fs="3"><b>3</b>Look for problems</div>
@@ -484,9 +534,12 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
         <div class="vtools">
           <button class="btn" id="btnViewColor">Colour</button>
           <button class="btn" id="btnViewDepth">Depth</button>
+          <button class="btn" id="btnViewModel">3D model</button>
+          <button class="btn" id="btnRoi">Draw a box</button>
         </div>
         <canvas id="inspCanvas" width="640" height="480"></canvas>
         <div class="empty" id="inspEmpty">Connect the camera to see the part.</div>
+        <div class="roihint" id="roiHint" hidden>Drag a box around the part.</div>
       </div>
       <div class="legend">
         <span><i style="background:#3fb950"></i> part outline</span>
@@ -497,6 +550,54 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     </section>
 
     <div>
+      <section class="block">
+        <h3>3D scan <span class="tag" id="mvTag">not started</span></h3>
+        <p class="hint" style="margin-top:0">One view sees one side. To measure
+        a part properly the camera has to look at it from several angles and
+        the views have to be merged. Draw a box round the part, and the angles
+        are worked out from its size.</p>
+
+        <div class="row" style="margin-top:11px">
+          <button class="btn primary" id="btnMvRegion" disabled>Use the box I drew</button>
+          <button class="btn" id="btnMvPlan" disabled>Work out the angles</button>
+        </div>
+        <div class="grid g3" style="margin-top:12px">
+          <div class="tile"><div class="k">Part size</div><div class="v" id="mvSize" style="font-size:14px">&mdash;</div><div class="d">mm, from the box</div></div>
+          <div class="tile"><div class="k">Photographs</div><div class="v" id="mvN">&mdash;</div><div class="d">worked out from the size</div></div>
+          <div class="tile"><div class="k">Standoff</div><div class="v" id="mvStand">&mdash;<span class="u">mm</span></div><div class="d">so the part fills the frame</div></div>
+        </div>
+        <div class="note info" id="mvPlanMsg">Draw a box on the view first.</div>
+
+        <div class="grid g4" style="margin-top:13px">
+          <div class="field"><label>Photographs (blank = automatic)</label><input id="mvViews" type="number" step="1" placeholder="auto"/></div>
+          <div class="field"><label>Standoff mm (blank = automatic)</label><input id="mvStandoff" type="number" step="10" placeholder="auto"/></div>
+          <div class="field"><label>Tilt &deg; (blank = automatic)</label><input id="mvTilt" type="number" step="5" placeholder="auto"/></div>
+          <div class="field"><label>Detail size (mm)</label><input id="mvVoxel" type="number" value="1.5" step="0.5"/></div>
+        </div>
+
+        <div class="row" style="margin-top:13px">
+          <button class="btn go" id="btnMvBegin" disabled>Start the scan</button>
+          <button class="btn" id="btnMvCapture" disabled>Take this view</button>
+          <button class="btn primary" id="btnMvAuto" disabled>Move and take them all</button>
+          <button class="btn" id="btnMvStopAuto" disabled>Stop</button>
+        </div>
+        <div class="grid g3" style="margin-top:12px">
+          <div class="tile"><div class="k">Views merged</div><div class="v" id="mvViewsDone">0</div></div>
+          <div class="tile"><div class="k">Surface points</div><div class="v" id="mvPts">&mdash;</div><div class="d">confirmed by two views</div></div>
+          <div class="tile"><div class="k">Measured size</div><div class="v" id="mvMeasured" style="font-size:14px">&mdash;</div><div class="d">mm, from the model</div></div>
+        </div>
+        <div class="poselist" id="mvList"></div>
+        <div class="note warn" id="mvRunMsg">The arm will move. Check the area
+        is clear before starting.</div>
+
+        <div class="row" style="margin-top:13px">
+          <button class="btn primary" id="btnMvBuild" disabled>Build the model</button>
+          <button class="btn" id="btnMvPath" disabled>Plan the path on the model</button>
+          <button class="btn" id="btnMvExport" disabled>Save the model</button>
+        </div>
+        <div class="note info" id="mvBuildMsg">&mdash;</div>
+      </section>
+
       <section class="block">
         <h3>1 &middot; Find the part</h3>
         <div class="grid g2">
@@ -574,6 +675,286 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   </div>
 </main>
 
+<!-- ==================== 3. CAMERA ==================== -->
+<main class="page" id="page-camera" hidden>
+  <h2>Camera</h2>
+  <p class="lead">All four images this camera produces, and the controls that
+  decide whether the depth is good enough to measure with. The two infrared
+  views are what depth is calculated from &mdash; when depth has holes, they
+  show why.</p>
+
+  <section class="block">
+    <h3>What the camera sees <span class="tag" id="camDevTag">&mdash;</span></h3>
+    <div class="streams">
+      <div class="stream"><div class="slab">Colour</div>
+        <canvas id="sColor" width="640" height="480"></canvas>
+        <div class="sempty" id="sColorE">Not streaming.</div></div>
+      <div class="stream"><div class="slab">Depth</div>
+        <canvas id="sDepth" width="640" height="480"></canvas>
+        <div class="sempty" id="sDepthE">Not streaming.</div></div>
+      <div class="stream"><div class="slab">Infrared &mdash; left</div>
+        <canvas id="sIr1" width="640" height="480"></canvas>
+        <div class="sempty" id="sIr1E">Not streaming. Turn the infrared pair on below.</div></div>
+      <div class="stream"><div class="slab">Infrared &mdash; right</div>
+        <canvas id="sIr2" width="640" height="480"></canvas>
+        <div class="sempty" id="sIr2E">Not streaming.</div></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="chk"><input type="checkbox" id="cbIr" checked/> Show the infrared pair</label>
+      <button class="btn" id="btnIrWhy">Why is depth missing?</button>
+      <button class="btn" id="btnCloud">Save this view as a 3D file</button>
+      <button class="btn" id="btnMeta">Check frame timing</button>
+    </div>
+    <div class="note info" id="camStreamMsg">Click anywhere on the depth image to
+    read the distance to that point.</div>
+  </section>
+
+  <section class="block">
+    <h3>Projector</h3>
+    <div class="row">
+      <div class="seg" id="emitSeg">
+        <button class="segb on" data-mode="on">On</button>
+        <button class="segb" data-mode="off">Off</button>
+        <button class="segb" data-mode="alternating">Alternating</button>
+      </div>
+      <div class="rng" style="min-width:240px;margin-left:auto">
+        <input type="range" id="laserPow" min="0" max="360" step="10" value="150"/>
+        <span class="rv" id="laserPowV">150</span>
+      </div>
+    </div>
+    <div class="note info" id="emitMsg">The projector throws a pattern the camera
+    can match on. On a machined or painted surface it is the difference between
+    good depth and none.</div>
+  </section>
+
+  <section class="block">
+    <h3>Depth quality</h3>
+    <div class="row">
+      <button class="btn" id="btnQual2">Measure now</button>
+      <button class="btn" id="btnSelfCal">Re-calibrate the camera</button>
+      <div class="field" style="margin-left:auto"><label>Target distance for tare (mm)</label>
+        <input id="tareDist" type="number" value="600" step="50"/></div>
+      <button class="btn" id="btnTare">Tare to that distance</button>
+    </div>
+    <div class="grid g4" style="margin-top:12px">
+      <div class="tile"><div class="k">Usable pixels</div><div class="v" id="q2Fill">&mdash;</div><div class="d">across the frame</div></div>
+      <div class="tile"><div class="k">Centre coverage</div><div class="v" id="q2Roi">&mdash;</div><div class="d">where the part sits</div></div>
+      <div class="tile"><div class="k">Distance</div><div class="v" id="q2Dist">&mdash;</div><div class="d">to the middle</div></div>
+      <div class="tile"><div class="k">Depth noise</div><div class="v" id="q2Noise">&mdash;</div><div class="d">smaller is better</div></div>
+    </div>
+    <div class="note info" id="calMsg">Re-calibration takes about ten seconds.
+    Point the camera at a flat, textured surface filling the frame and hold still.</div>
+  </section>
+
+  <section class="block">
+    <h3>Depth processing</h3>
+    <p class="hint" style="margin-top:0">These run on the camera's output before
+    anything measures it. Fewer is usually better: filling holes invents depth
+    that was never measured, which looks better on screen and measures worse.</p>
+    <div class="grid g3" style="margin-top:10px">
+      <label class="chk"><input type="checkbox" id="fThr" checked/> Ignore anything too near or far</label>
+      <label class="chk"><input type="checkbox" id="fSpa" checked/> Smooth across the image</label>
+      <label class="chk"><input type="checkbox" id="fTmp" checked/> Smooth over time</label>
+      <label class="chk"><input type="checkbox" id="fDec"/> Halve the resolution (faster)</label>
+      <label class="chk"><input type="checkbox" id="fHole"/> Fill holes (invents depth)</label>
+      <label class="chk"><input type="checkbox" id="fDisp" checked/> Filter in disparity space</label>
+    </div>
+    <div class="grid g3" style="margin-top:12px">
+      <div class="field"><label>Nearest kept (m)</label><input id="fMin" type="number" value="0.15" step="0.05"/></div>
+      <div class="field"><label>Furthest kept (m)</label><input id="fMax" type="number" value="1.50" step="0.1"/></div>
+      <div class="field"><label>Smoothing strength</label><input id="fAlpha" type="number" value="0.5" step="0.05"/></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="btn primary" id="btnFilters">Apply</button></div>
+    <div class="note info" id="filtMsg">&mdash;</div>
+  </section>
+
+  <section class="block">
+    <h3>This camera</h3>
+    <div class="grid g4" id="rsInfoTiles"></div>
+    <div class="row" style="margin-top:12px">
+      <button class="btn" id="btnRsEnum">Refresh</button>
+      <button class="btn" id="btnExtr">Show where the lenses are</button>
+    </div>
+    <div class="note info" id="rsInfoMsg">&mdash;</div>
+  </section>
+</main>
+
+<!-- ==================== 4. SENSORS ==================== -->
+<main class="page" id="page-sensors" hidden>
+  <h2>Motion sensors</h2>
+  <p class="lead">Live orientation from the IMU on the tool, and every other
+  measurement channel this cell knows about &mdash; including the ones whose
+  hardware has not arrived yet.</p>
+
+  <section class="block">
+    <h3>Connect to the IMU <span class="tag" id="imuKindTag">not connected</span></h3>
+    <div class="grid g3">
+      <div class="field"><label>Sensor name</label>
+        <select id="imuUnit">
+          <option value="ind0">Industrial IMU (FusionHub)</option>
+          <option value="con0">Second IMU</option>
+        </select></div>
+      <div class="field"><label>How it sends data</label>
+        <select id="imuKind">
+          <option value="udp-listen">FusionHub sends to this PC (UDP)</option>
+          <option value="tcp-client">This PC connects to FusionHub (TCP)</option>
+          <option value="tcp-listen">FusionHub connects to this PC (TCP)</option>
+          <option value="http-poll">Ask FusionHub over the web interface</option>
+          <option value="serial">Straight from a COM port</option>
+          <option value="file-tail">Follow a file FusionHub is writing</option>
+        </select></div>
+      <div class="field"><label>Rotation units</label>
+        <select id="imuUnits"><option value="auto">Work it out</option>
+          <option value="deg">Degrees per second</option>
+          <option value="rad">Radians per second</option></select></div>
+    </div>
+    <div class="grid g3" style="margin-top:12px" id="imuCfgFields"></div>
+    <div class="row" style="margin-top:13px">
+      <button class="btn primary big" id="btnImuStart">Connect</button>
+      <button class="btn" id="btnImuStop">Disconnect</button>
+      <button class="btn" id="btnImuFind">Find it for me</button>
+      <button class="btn" id="btnImuRaw">Show what is arriving</button>
+      <label class="chk" style="margin-left:auto"><input type="checkbox" id="cbD435i" checked/>
+        Also use the camera's own motion sensor</label>
+    </div>
+    <div class="note info" id="imuMsg">Not connected.</div>
+    <div class="raw" id="imuRaw" hidden></div>
+  </section>
+
+  <section class="block">
+    <h3>How it is lying <span class="tag" id="attSrcTag">&mdash;</span></h3>
+    <div class="att">
+      <canvas id="attCube" width="400" height="340"></canvas>
+      <div>
+        <div class="grid g3">
+          <div class="tile"><div class="k">Roll</div><div class="v" id="attRoll">&mdash;<span class="u">&deg;</span></div></div>
+          <div class="tile"><div class="k">Pitch</div><div class="v" id="attPitch">&mdash;<span class="u">&deg;</span></div></div>
+          <div class="tile"><div class="k">Yaw</div><div class="v" id="attYaw">&mdash;<span class="u">&deg;</span></div></div>
+          <div class="tile"><div class="k">Turning</div><div class="v" id="attRate">&mdash;<span class="u">&deg;/s</span></div></div>
+          <div class="tile"><div class="k">Acceleration</div><div class="v" id="attAcc">&mdash;<span class="u">m/s&sup2;</span></div></div>
+          <div class="tile"><div class="k">Update rate</div><div class="v" id="attHz">&mdash;<span class="u">Hz</span></div></div>
+        </div>
+        <div class="chips" id="attChips"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:13px">
+      <button class="btn" id="btnImuZero">Re-level (hold it still)</button>
+      <div class="seg" id="stripSeg" style="margin-left:auto">
+        <button class="segb on" data-ch="gyro">Turning</button>
+        <button class="segb" data-ch="accel">Acceleration</button>
+        <button class="segb" data-ch="euler">Angle</button>
+      </div>
+    </div>
+    <canvas class="strip" id="imuStrip" width="1200" height="152" style="margin-top:11px"></canvas>
+    <div class="note info" id="attMsg">Waiting for data.</div>
+  </section>
+
+  <section class="block">
+    <h3>Every measurement channel</h3>
+    <p class="hint" style="margin-top:0">Channels marked <b>scored</b> count
+    toward the benchmark: they can be measured cheaply on real hardware and
+    simulated faithfully. The rest are evidence for the inspection case, not
+    benchmark numbers &mdash; the distinction is deliberate.</p>
+    <div style="overflow-x:auto;margin-top:10px">
+      <table class="data">
+        <thead><tr><th>Channel</th><th>What it measures</th><th>Rate</th>
+          <th>Mounted on</th><th>Role</th><th>State</th></tr></thead>
+        <tbody id="sensorTable"><tr><td colspan="6" style="color:var(--text-3)">
+          Connect to the host agent.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="note info" id="sensorMsg">&mdash;</div>
+  </section>
+</main>
+
+<!-- ==================== 5. CALIBRATE ==================== -->
+<main class="page" id="page-calib" hidden>
+  <h2>Where the camera sits on the tool</h2>
+  <p class="lead">Everything 3D depends on this one measurement. Until it is
+  done the camera can see a part but the robot cannot be told where it is.
+  It takes about five minutes and it only has to be repeated if the camera is
+  moved or knocked.</p>
+
+  <div class="flow" id="calFlow">
+    <div class="fs active"><b>1</b> Set up the board</div>
+    <div class="fs"><b>2</b> Take a dozen poses</div>
+    <div class="fs"><b>3</b> Work it out</div>
+    <div class="fs"><b>4</b> Save</div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:16px" id="calGrid">
+    <section class="block" style="margin:0">
+      <h3>Live view <span class="tag" id="calSeenTag">looking&hellip;</span></h3>
+      <div class="viewport" style="aspect-ratio:4/3">
+        <canvas id="calCanvas" width="640" height="480"></canvas>
+        <div class="empty" id="calEmpty">Connect the camera.</div>
+      </div>
+      <div class="legend" style="margin-top:10px">
+        <span><i class="dot" style="background:#3ddc84"></i>Board corners found</span>
+        <span><i class="dot" style="background:#e8c66a"></i>Board outline</span>
+      </div>
+      <div class="note info" id="calLiveMsg">Hold the board so the whole of it is
+      in view.</div>
+    </section>
+
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <section class="block" style="margin:0">
+        <h3>1 &middot; The board</h3>
+        <div class="grid g2">
+          <div class="field"><label>Pattern</label><select id="calKind">
+            <option value="chessboard">Chessboard</option>
+            <option value="charuco">ChArUco</option></select></div>
+          <div class="field"><label>Square size (mm)</label>
+            <input id="calSq" type="number" value="25" step="0.5"/></div>
+          <div class="field"><label>Inner corners across</label>
+            <input id="calCols" type="number" value="9" step="1"/></div>
+          <div class="field"><label>Inner corners down</label>
+            <input id="calRows" type="number" value="6" step="1"/></div>
+        </div>
+        <div class="note warn" style="margin-top:10px">Count <b>inner corners</b>,
+        not squares. A board of 10&times;7 squares has 9&times;6 inner corners.
+        Getting this wrong is the commonest way to end up with a calibration
+        that looks fine and is wrong.</div>
+        <button class="btn primary wide" id="btnCalBegin" style="margin-top:10px">Start</button>
+      </section>
+
+      <section class="block" style="margin:0">
+        <h3>2 &middot; Poses <span class="tag" id="calNTag">0</span></h3>
+        <div class="row">
+          <button class="btn go big" id="btnCalCap" disabled>Capture this pose</button>
+          <button class="btn" id="btnCalUndo" disabled>Undo</button>
+          <button class="btn danger" id="btnCalClear" disabled>Clear</button>
+        </div>
+        <div class="grid g3" style="margin-top:12px">
+          <div class="tile"><div class="k">Poses</div><div class="v" id="calN">0</div></div>
+          <div class="tile"><div class="k">Largest tilt</div><div class="v" id="calRot">&mdash;<span class="u">&deg;</span></div></div>
+          <div class="tile"><div class="k">Corner accuracy</div><div class="v" id="calRep">&mdash;<span class="u">px</span></div></div>
+        </div>
+        <div class="poselist" id="calList"></div>
+        <div class="note info" id="calAdvice">Move the arm so the board is seen
+        from a different angle each time &mdash; tilt it 30 to 60 degrees about
+        all three directions, and vary the distance.</div>
+      </section>
+
+      <section class="block" style="margin:0">
+        <h3>3 &middot; Work it out</h3>
+        <button class="btn primary wide big" id="btnCalSolve" disabled>Work out where the camera is</button>
+        <div class="grid g3" style="margin-top:12px">
+          <div class="tile"><div class="k">Offset</div><div class="v" id="calT" style="font-size:14px">&mdash;</div><div class="d">mm from the tool flange</div></div>
+          <div class="tile"><div class="k">Turned by</div><div class="v" id="calR" style="font-size:14px">&mdash;</div><div class="d">degrees</div></div>
+          <div class="tile" id="calTileErr"><div class="k">Accuracy</div><div class="v" id="calErr">&mdash;<span class="u">mm</span></div><div class="d">board reconstructed to</div></div>
+        </div>
+        <div class="note info" id="calVerdict">Not solved yet.</div>
+        <div class="row" style="margin-top:11px">
+          <button class="btn go" id="btnCalSave" disabled>Save and use it</button>
+          <button class="btn" id="btnCalLoad">Load the saved one</button>
+        </div>
+        <div class="note info" id="calSaveMsg">&mdash;</div>
+      </section>
+    </div>
+  </div>
+</main>
+
 <!-- ==================== 4. RECORD ==================== -->
 <main class="page" id="page-record" hidden>
   <h2>Record a run</h2>
@@ -614,5 +995,6 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 <script src="vendor/three/OrbitControls.js"></script>
 <script src="vendor/three/GLTFLoader.js"></script>
 <script src="console.js"></script>
+<script src="console_adv.js"></script>
 </body>
 </html>

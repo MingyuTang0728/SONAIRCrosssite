@@ -98,6 +98,11 @@ class Sample:
     em: dict[str, Sequence[float]] = field(default_factory=dict)
     # third modality placeholder (force, if Section 11 resolves that way)
     aux: dict[str, float] = field(default_factory=dict)
+    # every other registered modality, keyed by sensor_hub channel id. Kept as
+    # a free-form block on purpose: a channel that arrives mid-campaign must
+    # not require a schema change, because a schema change splits the campaign
+    # into files that cannot be compared with one another.
+    sensors: dict[str, dict] = field(default_factory=dict)
 
     def to_json(self) -> dict:
         d: dict[str, Any] = {"t": round(self.t, 6)}
@@ -115,6 +120,8 @@ class Sample:
             d["em"] = self.em
         if self.aux:
             d["aux"] = self.aux
+        if self.sensors:
+            d["sensors"] = self.sensors
         return d
 
 
