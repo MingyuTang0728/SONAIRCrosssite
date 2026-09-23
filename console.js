@@ -245,6 +245,9 @@
 
   function renderRobot(s) {
     if (!s) return;
+    // The cell view follows the real arm. Without this the model was a
+    // picture of a robot, not a view of THIS robot.
+    if (three && three.setJoints && s.actual_q) three.setJoints(s.actual_q);
     var p = s.actual_TCP_pose || [];
     $("tX").textContent = fmt(p[0] * 1000, 1);
     $("tY").textContent = fmt(p[1] * 1000, 1);
@@ -1059,34 +1062,171 @@
         scene.add(pathLine);
       } };
 
-    if (typeof THREE.GLTFLoader === "function") {
-      new THREE.GLTFLoader().load("ur5e.glb", function (g) {
-        var root = g.scene;
-        // Normalise whatever the export used. A UR5e reaches about 0.85 m, so
-        // scale the model to that and re-centre it on the floor rather than
-        // trusting the file's units — millimetre, centimetre and metre exports
-        // all exist, and the wrong one puts the arm off-screen with no error.
+    /* ---- the arm --------------------------------------------------------
+       The model is a URDF export: six named revolute bones in a kinematic
+       chain, in centimetres. Two things had to be measured rather than
+       assumed, and both were, against the UR5e's real forward kinematics:
+
+         the joints turn about their LOCAL Y axis, not Z;
+         the export's frame is the robot's, rotated a half turn about
+         vertical, so at 1/100 scale the flange lands exactly where forward
+         kinematics says — 0.000 mm at the rest pose and at a test pose with
+         every joint away from zero.
+
+       That second part is why the view was wrong before: the model was fitted
+       to the viewport by a scale-to-fill heuristic while the planned path was
+       drawn in metres in a mirrored frame, so the arm and its path were
+       neither the same size nor the same way round. Now there is one frame:
+       robot base coordinates in metres, mapped to the view as (x, z, -y).  */
+
+    var JOINT_BONES = ["shoulder_pan_joint", "shoulder_lift_joint",
+                       "elbow_joint", "wrist_1_joint", "wrist_2_joint",
+                       "wrist_3_joint"];
+    var rig = null;       // { group, bones[], rest[], animated }
+    var Y_AXIS = new THREE.Vector3(0, 1, 0);
+
+    function unitScale(root) {
+      // Millimetres, centimetres and metres all exist in the wild and none of
+      // them say so in the file. The overall size does: a robot arm is about
+      // a metre, so the magnitude names the unit.
+      var size = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
+      var reach = Math.max(size.x, size.y, size.z);
+      if (reach > 200) return { s: 0.001, unit: "millimetres" };
+      if (reach > 20) return { s: 0.01, unit: "centimetres" };
+      return { s: 1, unit: "metres" };
+    }
+
+    function mountModel(root, label) {
+      if (rig && rig.group) {
+        scene.remove(rig.group);
+        rig.group.traverse(function (o) {
+          if (o.geometry) o.geometry.dispose();
+          if (o.material) [].concat(o.material).forEach(function (m) { m.dispose(); });
+        });
+      }
+      var bones = [], rest = [];
+      root.traverse(function (o) {
+        JOINT_BONES.forEach(function (n, i) {
+          if ((o.name || "").indexOf(n) === 0) {
+            bones[i] = o; rest[i] = o.quaternion.clone();
+          }
+        });
+      });
+      var animated = bones.filter(Boolean).length === 6;
+      var group = new THREE.Group();
+      var u = unitScale(root);
+
+      if (animated) {
+        // Known rig: put it in the robot's own frame so the arm, the path and
+        // the tool position all agree.
+        group.scale.setScalar(u.s);
+        group.rotation.y = Math.PI;
+        group.add(root);
+      } else {
+        // Unknown model: no joints to drive, so just make it visible —
+        // centred on the floor at a believable size.
         var box = new THREE.Box3().setFromObject(root);
         var size = box.getSize(new THREE.Vector3());
-        var reach = Math.max(size.x, size.y, size.z);
-        if (reach > 0) root.scale.setScalar(0.9 / reach);
+        var reach = Math.max(size.x, size.y, size.z) || 1;
+        root.scale.setScalar(0.9 / reach);
         box = new THREE.Box3().setFromObject(root);
         var c = box.getCenter(new THREE.Vector3());
         root.position.sub(new THREE.Vector3(c.x, box.min.y, c.z));
-        scene.add(root);
-        // `hidden`, like every other overlay on this page. Two ways to hide
-        // one thing means a fix to one of them silently misses the other.
-        $("stage3dEmpty").hidden = true;
-        three.target = root;
-        three.fit(root);
-        root.traverse(function (o) {
-          if (/joint|link|shoulder|elbow|wrist|base/i.test(o.name || "")) joints.push(o);
-        });
-      }, undefined, function () {
-        $("stage3dEmpty").textContent =
-          "Could not load the robot model file (ur5e.glb). The preview is off; "
-          + "nothing else is affected.";
+        group.add(root);
+      }
+      scene.add(group);
+      rig = { group: group, bones: bones, rest: rest, animated: animated };
+      three.target = group;
+      three.fit(group);
+      $("stage3dEmpty").hidden = true;
+      say("cellMsg", animated
+        ? (label + " loaded in " + u.unit + ". The six joints are named, so the "
+           + "view follows the real arm.")
+        : (label + " loaded, but it has no named joints "
+           + "(shoulder_pan_joint, shoulder_lift_joint, elbow_joint, "
+           + "wrist_1_joint … wrist_3_joint), so it is shown as a fixed shape "
+           + "and will not follow the robot."),
+        animated ? "ok" : "warn");
+      if (state.ur && state.ur.actual_q) three.setJoints(state.ur.actual_q);
+    }
+
+    three.setJoints = function (q) {
+      if (!rig || !rig.animated || !q || q.length < 6) return;
+      for (var i = 0; i < 6; i++) {
+        if (!rig.bones[i]) continue;
+        rig.bones[i].quaternion.copy(rig.rest[i])
+          .multiply(new THREE.Quaternion().setFromAxisAngle(Y_AXIS, q[i]));
+      }
+      // Frame it once, on the first real pose. The model loads at its rest
+      // pose, which is not where the arm is standing, so a view fitted to the
+      // rest pose can open with the real arm half out of frame. Refitting on
+      // every update instead would swing the camera around continuously,
+      // so it happens exactly once and the Fit button covers the rest.
+      if (!rig.framed) {
+        rig.framed = true;
+        rig.group.updateMatrixWorld(true);
+        three.fit(rig.group);
+      }
+    };
+    three.hasRig = function () { return !!(rig && rig.animated); };
+
+    /* Where the MODEL thinks the flange is, in robot base coordinates.
+       Comparing that with the pose the robot reports checks the whole chain
+       at once — the right model, the right joint mapping, the right units,
+       the right frame. A view that silently disagrees with the robot is
+       worse than no view, so this is what "Check the view" reports. */
+    three.flangeInBase = function () {
+      if (!rig || !rig.animated) return null;
+      var node = null;
+      rig.group.traverse(function (o) {
+        if (!node && (o.name || "").indexOf("flange-tool0") === 0) node = o;
       });
+      if (!node) {
+        rig.group.traverse(function (o) {
+          if ((o.name || "").indexOf("wrist_3_link") === 0) node = o;
+        });
+      }
+      if (!node) return null;
+      rig.group.updateMatrixWorld(true);
+      var p = new THREE.Vector3();
+      node.getWorldPosition(p);
+      // the view's (x, y, z) is the robot's (x, -z, y)
+      return [p.x, -p.z, p.y];
+    };
+
+    three.loadFrom = function (url, label, ext) {
+      var done = function (root) { mountModel(root, label); };
+      var fail = function (e) {
+        say("cellMsg", "Could not read " + label + ". "
+          + (e && e.message ? e.message : "The file may not be a model this "
+             + "viewer understands."), "bad");
+      };
+      try {
+        if (ext === "stl" && typeof THREE.STLLoader === "function") {
+          new THREE.STLLoader().load(url, function (geo) {
+            geo.computeVertexNormals();
+            done(new THREE.Mesh(geo, new THREE.MeshStandardMaterial(
+              { color: 0xb9c6d4, roughness: 0.65, metalness: 0.1 })));
+          }, undefined, fail);
+        } else if (ext === "ply" && typeof THREE.PLYLoader === "function") {
+          new THREE.PLYLoader().load(url, function (geo) {
+            geo.computeVertexNormals();
+            done(new THREE.Points(geo, new THREE.PointsMaterial(
+              { size: 0.004, color: 0x7fb4ef })));
+          }, undefined, fail);
+        } else {
+          new THREE.GLTFLoader().load(url, function (g) { done(g.scene); },
+                                     undefined, fail);
+        }
+      } catch (e) { fail(e); }
+    };
+
+    if (typeof THREE.GLTFLoader === "function") {
+      three.loadFrom("ur5e.glb", "The built-in UR5e model", "glb");
+    } else {
+      $("stage3dEmpty").textContent =
+        "The 3D preview needs its libraries, which are in vendor/three next to "
+        + "this page. Everything else works without it.";
     }
 
     (function loop() {
@@ -1119,8 +1259,85 @@
     }
     three.setPath(plan.waypoints.map(function (w) { return w.coords; }));
     say("cellMsg", "Showing the planned path: " + plan.waypoints.length
-      + " points. Blue is where the tool will travel.", "ok");
+      + " points. Blue is where the tool will travel."
+      + (three.hasRig && three.hasRig() ? ""
+         : " The loaded model has no named joints, so it is not placed in the "
+           + "robot's frame — read the path against the grid, not against the "
+           + "model."), "ok");
   });
+  /* ---- load your own model ----------------------------------------------
+     Read from the file the operator picks, not from a path typed somewhere:
+     a blob URL needs no server, no copying into the project folder, and works
+     the same whether the page is served locally or from anywhere else.
+
+     A model with the six URDF joint names drives the arm; anything else is
+     shown as a fixed shape and SAYS so, because a part that looks like it is
+     tracking the robot and is not would be worse than no preview at all.  */
+  $("btn3dLoad").addEventListener("click", function () { $("modelFile").click(); });
+
+  $("modelFile").addEventListener("change", function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    var ext = (f.name.split(".").pop() || "").toLowerCase();
+    if (["glb", "gltf", "stl", "ply"].indexOf(ext) < 0) {
+      say("cellMsg", "That file type is not supported. Use GLB, glTF, STL or "
+        + "PLY.", "bad");
+      this.value = ""; return;
+    }
+    if (!three || !three.loadFrom) {
+      say("cellMsg", "The 3D view has not loaded.", "warn");
+      this.value = ""; return;
+    }
+    say("cellMsg", "Reading " + f.name + " (" + Math.round(f.size / 1048576 * 10) / 10
+      + " MB)…", "info");
+    var url = URL.createObjectURL(f);
+    three.loadFrom(url, f.name, ext);
+    // The loaders read the blob synchronously from the URL; release it on the
+    // next turn so a big upload is not held in memory for the session.
+    setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+    this.value = "";
+  });
+
+  $("btn3dReset").addEventListener("click", function () {
+    if (!three || !three.loadFrom) return;
+    say("cellMsg", "Reloading the built-in model…", "info");
+    three.loadFrom("ur5e.glb", "The built-in UR5e model", "glb");
+  });
+
+  /* Does the picture agree with the robot? */
+  function cellCheck() {
+    if (!three || !three.flangeInBase) return null;
+    var model = three.flangeInBase();
+    var s = state.ur || {};
+    var tcp = s.actual_TCP_pose;
+    if (!model || !tcp || tcp.length < 3) return null;
+    // The reported pose is the TCP, which sits at the flange only when no
+    // tool offset is set; a configured TCP legitimately moves it. So this is
+    // reported as a distance, with that caveat, rather than as pass/fail.
+    var d = Math.sqrt(Math.pow(model[0] - tcp[0], 2)
+                    + Math.pow(model[1] - tcp[1], 2)
+                    + Math.pow(model[2] - tcp[2], 2)) * 1000;
+    return { model: model, tcp: tcp.slice(0, 3), mm: d };
+  }
+  API.cellCheck = cellCheck;
+
+  $("btn3dCheck").addEventListener("click", function () {
+    var r = cellCheck();
+    if (!r) {
+      say("cellMsg", "Nothing to compare yet — the view needs a model with "
+        + "named joints and a connected robot.", "warn");
+      return;
+    }
+    say("cellMsg", "The model puts the flange at "
+      + r.model.map(function (v) { return fmt(v * 1000, 0); }).join(", ")
+      + " mm; the robot reports its tool at "
+      + r.tcp.map(function (v) { return fmt(v * 1000, 0); }).join(", ")
+      + " mm — " + fmt(r.mm, 0) + " mm apart. That difference IS your tool "
+      + "offset if one is set; with no tool offset it should be near zero, "
+      + "and a large number means the model does not match this robot.",
+      r.mm < 400 ? "ok" : "warn");
+  });
+
   $("btn3dFit").addEventListener("click", function () {
     if (!three) { say("cellMsg", "The 3D view has not loaded.", "warn"); return; }
     three.fit();

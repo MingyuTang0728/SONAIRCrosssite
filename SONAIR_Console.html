@@ -153,7 +153,9 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .viewport .vlabel{position:absolute;top:9px;left:11px;font-size:10px;
   text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);
   background:rgba(13,17,23,.82);padding:3px 8px;border-radius:4px;z-index:3;pointer-events:none}
-.viewport .vtools{position:absolute;top:7px;right:8px;display:flex;gap:5px;z-index:3}
+.viewport .vtools{position:absolute;top:7px;right:8px;left:8px;display:flex;gap:5px;
+  z-index:3;flex-wrap:wrap;justify-content:flex-end;pointer-events:none}
+.viewport .vtools .btn{pointer-events:auto}
 .viewport .vtools .btn{padding:5px 10px;font-size:11.5px}
 .viewport .empty{position:absolute;inset:0;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:8px;color:var(--text-3);
@@ -403,10 +405,14 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
         <div class="vtools">
           <button class="btn" id="btn3dFit">Fit</button>
           <button class="btn" id="btn3dPath">Show path</button>
+          <button class="btn" id="btn3dCheck">Check the view</button>
+          <button class="btn" id="btn3dLoad">Load a model</button>
+          <button class="btn" id="btn3dReset">Built-in UR5e</button>
         </div>
         <canvas id="stage3d"></canvas>
         <div class="empty" id="stage3dEmpty">Loading the robot model&hellip;</div>
       </div>
+      <input type="file" id="modelFile" accept=".glb,.gltf,.stl,.ply" hidden/>
       <div class="note info" id="cellMsg">Drag to turn the view, scroll to zoom.
       Press <b>Show path</b> once a scan has been planned.</div>
     </section>
@@ -1105,6 +1111,8 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 <script src="vendor/three/three.min.js"></script>
 <script src="vendor/three/OrbitControls.js"></script>
 <script src="vendor/three/GLTFLoader.js"></script>
+<script src="vendor/three/STLLoader.js"></script>
+<script src="vendor/three/PLYLoader.js"></script>
 <script src="console.js"></script>
 <script src="console_adv.js"></script>
 </body>
