@@ -86,11 +86,22 @@ def check_python():
     elif (v.major, v.minor) in ((3, 9), (3, 10), (3, 11)):
         ok(f"Python {v.major}.{v.minor} — pyrealsense2 publishes wheels for this version.")
     else:
-        warn(f"Python {v.major}.{v.minor}: pyrealsense2 often has NO prebuilt wheel here, "
-             f"so `pip install pyrealsense2` may fail even though everything else works.",
-             "If the camera install fails, install Python 3.11 alongside and use "
-             "`py -3.11 -m venv .venv` for this project. Everything except the "
-             "camera works on any 3.9+.")
+        # Only a warning if the wheel is actually absent. Saying "3.12 may not
+        # have a wheel" to someone whose pyrealsense2 imports fine sends them
+        # off to install a second Python for no reason — and a second Python
+        # is exactly how the packages end up in the interpreter that is not
+        # the one running the agent.
+        try:
+            import pyrealsense2  # noqa: F401
+            ok(f"Python {v.major}.{v.minor} — pyrealsense2 is installed and "
+               f"imports here, so the version is fine.")
+        except ImportError:
+            warn(f"Python {v.major}.{v.minor}: pyrealsense2 often has NO prebuilt "
+                 f"wheel here, so `pip install pyrealsense2` may fail even though "
+                 f"everything else works.",
+                 "If the camera install fails, install Python 3.11 alongside and use "
+                 "`py -3.11 -m venv .venv` for this project. Everything except the "
+                 "camera works on any 3.9+.")
 
     if sys.prefix != sys.base_prefix:
         ok(f"Running inside a virtual environment ({Path(sys.prefix).name}).")
@@ -337,7 +348,16 @@ def check_camera():
             if any("Motion" in s for s in sensors):
                 ok("   built-in IMU present (this is a D435i, not a plain D435)")
             else:
-                warn("   no motion module — this camera has no built-in IMU.")
+                warn("   no motion module — this is a plain D435, NOT a D435i. "
+                     "It has no built-in IMU and never will.",
+                     "Nothing to install; this is the hardware. It means the "
+                     "camera cannot contribute an inertial channel, so the "
+                     "benchmark has ONE inertial tier (the unit on FusionHub) "
+                     "rather than two, and there is no second unit to "
+                     "cross-check it against. Untick 'Also use the camera's "
+                     "own motion sensor' in the console, and if a second tier "
+                     "is wanted, it needs either a D435i or a cheap consumer "
+                     "IMU on the carrier.")
         except Exception as e:
             warn(f"device present but could not be interrogated: {e}")
 

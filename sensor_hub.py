@@ -282,7 +282,12 @@ def install_defaults(hub: SensorHub | None = None) -> SensorHub:
     hub.declare(id="imu_d435i", label="Camera IMU (BMI055)",
                 modality="angular_rate", units="rad/s, m/s^2", rate_hz=200.0,
                 frame="camera", vendor="Intel", transport="USB",
-                role="benchmark", fields=["gyro", "accel", "quat"])
+                role="benchmark", fields=["gyro", "accel", "quat"],
+                detail="Only on a D435i. A plain D435 has no motion module, "
+                       "so on that camera this channel stays declared and "
+                       "never streams — the benchmark then has one inertial "
+                       "tier rather than two, with nothing to cross-check it "
+                       "against.")
     hub.declare(id="cam_depth", label="Depth camera", modality="vision_depth",
                 units="m", rate_hz=30.0, frame="camera", vendor="Intel D435i",
                 transport="USB", role="application",

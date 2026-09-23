@@ -252,6 +252,28 @@
     }).join("");
     if ($("camDevTag")) $("camDevTag").textContent = (d.name || "camera")
       + " · USB " + (d.usb || "?");
+    // A plain D435 has no motion module and never will. Leaving the "use the
+    // camera's own motion sensor" option enabled invites the operator to wait
+    // for a channel that cannot exist, so it is disabled and the reason is
+    // given where the choice is made rather than in a terminal check.
+    var hasMotion = (d.sensors || []).some(function (s) {
+      return /motion/i.test(s.name || "");
+    });
+    var cb = $("cbD435i");
+    if (cb) {
+      cb.disabled = !hasMotion;
+      if (!hasMotion) {
+        cb.checked = false;
+        var lab = cb.parentElement;
+        if (lab && !lab.dataset.noted) {
+          lab.dataset.noted = "1";
+          lab.style.opacity = ".55";
+          lab.title = "This camera is a D435, which has no built-in motion "
+            + "sensor. A D435i does.";
+          lab.appendChild(document.createTextNode(" — this camera has none"));
+        }
+      }
+    }
     var opts = (d.sensors || []).reduce(function (n, s) {
       return n + (s.options || []).length; }, 0);
     say("rsInfoMsg", d.usb_warning || ((d.sensors || []).length
