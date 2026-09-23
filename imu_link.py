@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 import math
 import os
 import re
@@ -301,6 +302,285 @@ def _binary_advice(fmt: str) -> str:
             "binary sensor protocols are not parsed here.")
 
 
+# ---------------------------------------------------------------------------
+# protobuf
+# ---------------------------------------------------------------------------
+
+def _pb_varint(buf, i):
+    v = shift = 0
+    while True:
+        if i >= len(buf):
+            raise IndexError("truncated varint")
+        b = buf[i]
+        i += 1
+        v |= (b & 0x7F) << shift
+        shift += 7
+        if not b & 0x80:
+            return v, i
+        if shift > 70:
+            raise ValueError("varint too long")
+
+
+def protobuf_walk(buf, path="", depth=0, out=None, lenient=False):
+    """
+    Walk Protocol Buffers wire format WITHOUT a .proto file.
+
+    The wire format carries field numbers, wire types and lengths but no
+    names and no type names, so a schema-less walk gets the structure and the
+    values and nothing else. That turns out to be enough: what an inertial
+    message contains can be recovered from the numbers themselves, which is
+    what `ProtobufImu` below does. Waiting for a .proto file that the vendor
+    may not publish is not a plan.
+
+    Raises on anything that is not valid protobuf, so callers can use a
+    successful walk as the format test.
+    """
+    if out is None:
+        out = []
+    if depth > 6:
+        return out
+    i = 0
+    while i < len(buf):
+        try:
+            key, i = _pb_varint(buf, i)
+        except Exception:
+            if lenient:
+                return out
+            raise
+        field, wt = key >> 3, key & 7
+        if field == 0:
+            if lenient:
+                return out
+            raise ValueError("field number 0 is not valid protobuf")
+        p = f"{path}.{field}" if path else str(field)
+        if wt == 0:
+            v, i = _pb_varint(buf, i)
+            out.append((p, "varint", v))
+        elif wt == 1:
+            if i + 8 > len(buf):
+                if lenient:
+                    return out
+                raise ValueError("truncated 64-bit field")
+            out.append((p, "double", struct.unpack_from("<d", buf, i)[0]))
+            i += 8
+        elif wt == 2:
+            n, i = _pb_varint(buf, i)
+            if i + n > len(buf):
+                if not lenient:
+                    raise ValueError("truncated length-delimited field")
+                # A preview is a truncated message by definition. Descend into
+                # the part that IS there rather than stopping: the whole point
+                # of the preview is to show what the packet contains, and the
+                # readable prefix usually contains the first vectors.
+                try:
+                    out.extend(protobuf_walk(buf[i:], p, depth + 1, [], True))
+                except Exception:
+                    pass
+                return out
+            sub = buf[i:i + n]
+            i += n
+            try:
+                nested = protobuf_walk(sub, p, depth + 1, [], lenient)
+            except Exception:
+                out.append((p, "bytes", sub))
+                continue
+            if nested:
+                out.extend(nested)
+            else:
+                out.append((p, "bytes", sub))
+        elif wt == 5:
+            if i + 4 > len(buf):
+                if lenient:
+                    return out
+                raise ValueError("truncated 32-bit field")
+            out.append((p, "float", struct.unpack_from("<f", buf, i)[0]))
+            i += 4
+        else:
+            if lenient:
+                return out
+            raise ValueError(f"wire type {wt} is not valid protobuf")
+    return out
+
+
+def _pb_vectors(entries):
+    """
+    Group consecutive numeric fields sharing a parent into vectors.
+
+    FusionHub packs each 3-axis reading as its own sub-message of three
+    doubles, so the grouping is just "same parent path". A quaternion arrives
+    the same way with four.
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for path, kind, value in entries:
+        if kind not in ("double", "float"):
+            continue
+        parent = path.rpartition(".")[0] or path
+        if parent not in groups:
+            groups[parent] = []
+            order.append(parent)
+        groups[parent].append(float(value))
+    return [(p, groups[p]) for p in order if len(groups[p]) in (3, 4)]
+
+
+class ProtobufImu:
+    """
+    Read a protobuf inertial stream with no schema, by recognising the
+    physics rather than the field names.
+
+    FusionHub's External Output publishes protobuf. There are no field names
+    on the wire and the .proto is not to hand, so the field NUMBERS have to be
+    mapped to meanings some other way. The measurements themselves do it:
+
+      a 4-vector of unit length            is an orientation quaternion
+      a 3-vector averaging 9.8             is acceleration in m/s^2
+      a 3-vector averaging 1.0             is acceleration in g
+      a 3-vector averaging 20-90           is a magnetometer in microtesla
+      whatever is left                     is the gyroscope
+
+    Gravity is the anchor: a sensor on a bench or on an arm is under 1 g on
+    average whatever else it is doing, and nothing else in an inertial message
+    sits at that magnitude. Direction is not used, only magnitude, so it holds
+    however the unit is mounted.
+
+    Evidence is accumulated over several samples and then the mapping is
+    LOCKED to the field numbers it found, because from then on the field
+    numbers are exact and the physics is only a heuristic. The mapping is
+    reported so it can be checked, and a wrong one is visible immediately:
+    orientation that does not move when the sensor moves.
+    """
+
+    DECIDE_AFTER = 25
+
+    def __init__(self):
+        self.mapping: dict[str, str] | None = None
+        self.time_path: str | None = None
+        self.time_scale = 1.0
+        self.n = 0
+        self._norm_sum: dict[str, float] = {}
+        self._norm_n: dict[str, int] = {}
+        self._len: dict[str, int] = {}
+        self.error = ""
+
+    # -- decoding ----------------------------------------------------------
+    def feed(self, raw):
+        try:
+            entries = protobuf_walk(raw)
+        except Exception as e:                      # noqa: BLE001
+            self.error = str(e)
+            return None, {}
+        if not entries:
+            return None, {}
+        vectors = _pb_vectors(entries)
+        if not vectors:
+            return None, {}
+
+        if self.mapping is None:
+            self._observe(entries, vectors)
+            if self.n < self.DECIDE_AFTER:
+                return None, {}
+            self._decide(vectors)
+
+        rec: dict[str, list] = {}
+        for path, values in vectors:
+            role = self.mapping.get(path)
+            if role == "quat":
+                rec["quat"] = quat_normalise(values[:4])
+            elif role == "accel":
+                rec["accel"] = values[:3]
+            elif role == "accel_g":
+                rec["accel"] = [v * GRAVITY for v in values[:3]]
+            elif role == "gyro":
+                rec["gyro"] = values[:3]
+            elif role == "mag":
+                rec["mag"] = values[:3]
+
+        t_src = None
+        if self.time_path:
+            for path, kind, value in entries:
+                if path == self.time_path and kind == "varint":
+                    t_src = float(value) * self.time_scale
+                    break
+        return t_src, rec
+
+    # -- learning ----------------------------------------------------------
+    def _observe(self, entries, vectors):
+        self.n += 1
+        for path, values in vectors:
+            n = math.sqrt(sum(v * v for v in values))
+            self._norm_sum[path] = self._norm_sum.get(path, 0.0) + n
+            self._norm_n[path] = self._norm_n.get(path, 0) + 1
+            self._len[path] = len(values)
+        if self.time_path is None:
+            # The biggest varint that looks like a wall-clock time. Nanosecond
+            # epochs are ~1.8e18 now, microseconds ~1.8e15, milliseconds
+            # ~1.8e12 — the magnitude names the unit, so the scale comes from
+            # the same observation rather than from an assumption.
+            best = None
+            for path, kind, value in entries:
+                if kind != "varint" or value < 1e11:
+                    continue
+                if best is None or value > best[1]:
+                    best = (path, value)
+            if best:
+                self.time_path = best[0]
+                v = best[1]
+                self.time_scale = (1e-9 if v > 1e17 else
+                                   1e-6 if v > 1e14 else
+                                   1e-3 if v > 1e11 else 1.0)
+
+    def _decide(self, vectors):
+        mean = {p: self._norm_sum[p] / max(1, self._norm_n[p])
+                for p in self._norm_sum}
+        mapping: dict[str, str] = {}
+
+        # Orientation first: a unit-length 4-vector is unambiguous.
+        for path, values in vectors:
+            if self._len.get(path) == 4 and abs(mean.get(path, 0) - 1.0) < 0.05:
+                mapping[path] = "quat"
+
+        threes = [p for p, v in vectors
+                  if self._len.get(p) == 3 and p not in mapping]
+
+        # Gravity, in whichever unit it arrived in. Closest to the expected
+        # magnitude wins, so a second vector that merely overlaps the band
+        # cannot steal it.
+        def claim(band, role):
+            cands = [p for p in threes
+                     if p not in mapping and band[0] <= mean.get(p, 0) <= band[1]]
+            if not cands:
+                return
+            target = (band[0] + band[1]) / 2.0
+            mapping[min(cands, key=lambda p: abs(mean[p] - target))] = role
+
+        claim((8.5, 11.5), "accel")
+        if "accel" not in mapping.values():
+            claim((0.85, 1.15), "accel_g")
+        claim((15.0, 90.0), "mag")
+
+        for p in threes:
+            mapping.setdefault(p, "gyro")
+        self.mapping = mapping
+
+    # -- reporting ---------------------------------------------------------
+    def status(self) -> dict:
+        if self.mapping is None:
+            return {"protobuf_mapping": "working it out",
+                    "protobuf_samples": self.n}
+        names = {"quat": "orientation", "accel": "acceleration (m/s^2)",
+                 "accel_g": "acceleration (g)", "gyro": "turn rate",
+                 "mag": "magnetic field"}
+        return {
+            "protobuf_mapping": {f"field {p}": names.get(r, r)
+                                 for p, r in sorted(self.mapping.items())},
+            "protobuf_time_field": self.time_path,
+            "protobuf_time_unit": {1e-9: "nanoseconds", 1e-6: "microseconds",
+                                   1e-3: "milliseconds",
+                                   1.0: "seconds"}.get(self.time_scale, "?"),
+            "protobuf_samples": self.n,
+        }
+
+
 def parse_payload(payload, gyro_units: str = "auto") -> tuple[float | None, dict, str]:
     """
     One datagram or line -> (t_src, canonical record, format name).
@@ -546,10 +826,40 @@ def sniff(payload) -> dict:
         is_text = False
 
     out = {"bytes": len(raw), "text": is_text,
-           "preview": text if is_text else " ".join(f"{b:02x}" for b in preview[:48])}
+           "preview": text if is_text else " ".join(f"{b:02x}" for b in raw[:160])}
     if not is_text:
-        out["format"] = _name_binary(raw)
-        out["advice"] = _binary_advice(out["format"])
+        fmt = _name_binary(raw)
+        # Protobuf carries no field names, so the only way to show what is in
+        # it is to decode it. Leniently: a preview is routinely a truncated
+        # message, and refusing to show the part that IS readable helps nobody.
+        try:
+            entries = protobuf_walk(raw, lenient=True)
+        except Exception:
+            entries = []
+        vectors = _pb_vectors(entries)
+        if len(entries) >= 3 and vectors:
+            out["format"] = "protobuf"
+            out["protobuf"] = [
+                {"field": p, "type": k,
+                 "value": (round(v, 6) if isinstance(v, float)
+                           else v if not isinstance(v, bytes) else f"<{len(v)} bytes>")}
+                for p, k, v in entries[:24]]
+            out["vectors"] = [
+                {"field": p, "n": len(v),
+                 "values": [round(x, 5) for x in v],
+                 "magnitude": round(math.sqrt(sum(x * x for x in v)), 4)}
+                for p, v in vectors]
+            out["advice"] = (
+                "This is Protocol Buffers — FusionHub's External Output "
+                "publishes binary, not text. It is decoded here without a "
+                "schema: the magnitudes above identify the channels, since a "
+                "unit-length 4-vector is an orientation and a 3-vector "
+                "averaging 9.8 (or 1.0) is gravity. Connect and let it run "
+                "for a second; the mapping it settles on is shown on the "
+                "link.")
+            return out
+        out["format"] = fmt
+        out["advice"] = _binary_advice(fmt)
         return out
 
     t, rec, fmt = parse_payload(raw)
@@ -596,6 +906,7 @@ class _Base:
         self.last_raw = b""
         self.last_fmt = ""
         self.units = GyroUnits(gyro_units)
+        self.pb = ProtobufImu()
         self.t_first = None
         self.t_last = None
         self._recent = deque(maxlen=64)
@@ -639,6 +950,31 @@ class _Base:
         raise NotImplementedError
 
     # -- shared ------------------------------------------------------------
+    def _parse(self, data, csvp):
+        """
+        One parse path for every transport: text, then protobuf, then CSV.
+
+        Ordering is by certainty, not by convenience. The text parse is
+        unambiguous when it works. Protobuf comes next because a successful
+        schema-less walk is strong evidence — random bytes essentially never
+        parse as valid wire format. A bare CSV row is last, because a row of
+        numbers will happily "parse" as almost anything and must not get first
+        refusal.
+        """
+        t, rec, fmt = parse_payload(data, "raw")
+        if rec:
+            return t, rec, fmt
+        raw = data if isinstance(data, (bytes, bytearray)) else str(data).encode()
+        t2, rec2 = self.pb.feed(raw)
+        if rec2:
+            return t2, rec2, "protobuf"
+        if csvp is not None:
+            for line in raw.decode("utf-8", "ignore").splitlines():
+                t3, rec3 = csvp.feed(line)
+                if rec3:
+                    return t3, rec3, "csv"
+        return t, rec, fmt
+
     def _emit(self, raw, t_src, rec, fmt):
         self.last_raw = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode()
         if not rec:
@@ -676,7 +1012,7 @@ class _Base:
                 "rate_hz": round(self.rate_hz(), 1),
                 "age_s": round(age, 2) if age is not None else None,
                 "format": self.last_fmt, "error": self.error,
-                **self.units.status(),
+                **self.units.status(), **self.pb.status(),
                 "last_raw": self.last_raw[:200].decode("utf-8", "replace")
                 if self.last_raw else ""}
 
@@ -710,13 +1046,7 @@ class UdpListen(_Base):
                 continue
             except OSError:
                 break
-            t, rec, fmt = parse_payload(data, "raw")
-            if not rec:
-                for line in data.decode("utf-8", "ignore").splitlines():
-                    t2, rec2 = csvp.feed(line)
-                    if rec2:
-                        t, rec, fmt = t2, rec2, "csv"
-                        break
+            t, rec, fmt = self._parse(data, csvp)
             self._emit(data, t, rec, fmt)
 
 
@@ -765,10 +1095,7 @@ class TcpClient(_Base):
                 line, buf = buf.split(b"\n", 1)
                 if not line.strip():
                     continue
-                t, rec, fmt = parse_payload(line, "raw")
-                if not rec:
-                    t, rec = csvp.feed(line.decode("utf-8", "ignore"))
-                    fmt = "csv"
+                t, rec, fmt = self._parse(line, csvp)
                 self._emit(line, t, rec, fmt)
 
 
@@ -833,10 +1160,7 @@ class TcpListen(_Base):
                     line, buf = buf.split(b"\n", 1)
                     if not line.strip():
                         continue
-                    t, rec, fmt = parse_payload(line, "raw")
-                    if not rec:
-                        t, rec = csvp.feed(line.decode("utf-8", "ignore"))
-                        fmt = "csv"
+                    t, rec, fmt = self._parse(line, csvp)
                     self._emit(line, t, rec, fmt)
 
 
@@ -869,7 +1193,7 @@ class HttpPoll(_Base):
             try:
                 with _urlreq.urlopen(self.url, timeout=2.0) as r:
                     data = r.read(65535)
-                t, rec, fmt = parse_payload(data, "raw")
+                t, rec, fmt = self._parse(data, None)
                 self._emit(data, t, rec, fmt)
             except Exception as e:                   # noqa: BLE001
                 self.error = str(e)
@@ -910,10 +1234,7 @@ class SerialLink(_Base):
                 break
             if not line.strip():
                 continue
-            t, rec, fmt = parse_payload(line, "raw")
-            if not rec:
-                t, rec = csvp.feed(line.decode("utf-8", "ignore"))
-                fmt = "csv"
+            t, rec, fmt = self._parse(line, csvp)
             self._emit(line, t, rec, fmt)
 
 
@@ -953,10 +1274,7 @@ class FileTail(_Base):
             if not line:
                 self._stop.wait(0.05)
                 continue
-            t, rec, fmt = parse_payload(line, "raw")
-            if not rec:
-                t, rec = csvp.feed(line)
-                fmt = "csv"
+            t, rec, fmt = self._parse(line.encode(), csvp)
             self._emit(line.encode(), t, rec, fmt)
 
 
@@ -1051,15 +1369,7 @@ class WebSocketClient(_Base):
                             msg = await asyncio.wait_for(ws.recv(), timeout=0.25)
                         except asyncio.TimeoutError:
                             continue
-                        t, rec, fmt = parse_payload(msg, "raw")
-                        if not rec:
-                            text = msg.decode("utf-8", "ignore") \
-                                if isinstance(msg, (bytes, bytearray)) else str(msg)
-                            for line in text.splitlines():
-                                t2, rec2 = csvp.feed(line)
-                                if rec2:
-                                    t, rec, fmt = t2, rec2, "csv"
-                                    break
+                        t, rec, fmt = self._parse(msg, csvp)
                         self._emit(msg, t, rec, fmt)
             except asyncio.CancelledError:
                 break
@@ -1199,16 +1509,10 @@ class ZmqSub(_Base):
             # and reporting "nothing recognised" because we read the topic
             # would send the operator hunting in FusionHub for a fault in here.
             data = parts[-1]
-            t, rec, fmt = parse_payload(data, "raw")
+            t, rec, fmt = self._parse(data, csvp)
             if not rec and len(parts) > 1:
                 data = parts[0]
-                t, rec, fmt = parse_payload(data, "raw")
-            if not rec:
-                for line in data.decode("utf-8", "ignore").splitlines():
-                    t2, rec2 = csvp.feed(line)
-                    if rec2:
-                        t, rec, fmt = t2, rec2, "csv"
-                        break
+                t, rec, fmt = self._parse(data, csvp)
             self._emit(data, t, rec, fmt)
 
     def health(self) -> dict:

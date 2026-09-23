@@ -420,11 +420,27 @@
     var box = $("imuRaw"); if (!box) return;
     box.hidden = false;
     if (!d.ok) { box.textContent = d.error || ""; return; }
-    box.textContent = "Last packet (" + d.bytes + " bytes, looks like "
-      + (d.format || "?") + "):\n" + (d.preview || "")
-      + "\n\nRecognised: " + ((d.fields || []).join(", ") || "nothing")
-      + (d.timestamp_found ? " · has its own timestamp" : " · no timestamp, arrival time used");
-    if (d.advice) say("imuMsg", d.advice, "warn");
+    var txt = "Last packet (" + d.bytes + " bytes, looks like "
+      + (d.format || "?") + "):\n" + (d.preview || "");
+    if (d.vectors && d.vectors.length) {
+      // Protocol Buffers carries no field names, so the only useful view is
+      // the decoded numbers and their magnitudes — which is also exactly what
+      // identifies each channel.
+      txt += "\n\nDecoded readings:";
+      d.vectors.forEach(function (v) {
+        txt += "\n  field " + v.field + "  ["
+          + v.values.map(function (x) { return fmt(x, 4); }).join(", ")
+          + "]   magnitude " + fmt(v.magnitude, 3);
+      });
+      txt += "\n\n(A magnitude near 9.81 is gravity, near 1.0 with four "
+        + "numbers is an orientation.)";
+    } else {
+      txt += "\n\nRecognised: " + ((d.fields || []).join(", ") || "nothing")
+        + (d.timestamp_found ? " · has its own timestamp"
+                             : " · no timestamp, arrival time used");
+    }
+    box.textContent = txt;
+    if (d.advice) say("imuMsg", d.advice, d.vectors ? "info" : "warn");
   });
 
   S.on("imu_transports_res", function (d) {
@@ -441,6 +457,24 @@
     // on every reading, so anything appended to it survives about 50 ms.
     att.units = (l.gyro_units && l.gyro_units !== "deciding")
       ? { units: l.gyro_units, basis: l.gyro_units_basis || "" } : null;
+
+    // A binary stream with no field names has had its channels worked out
+    // from the readings themselves. Show what that came to: a wrong guess is
+    // otherwise only visible as orientation that does not follow the sensor.
+    var m = l.protobuf_mapping;
+    if (m && typeof m === "object") {
+      att.pb = Object.keys(m).map(function (k) { return k + " = " + m[k]; });
+      say("imuMsg", "Connected. This stream is binary with no field names, so "
+        + "the channels were identified from the readings: "
+        + att.pb.join(", ") + ". Times come from " + (l.protobuf_time_field
+          ? "field " + l.protobuf_time_field + " in "
+            + (l.protobuf_time_unit || "?") : "arrival time")
+        + ". If the orientation does not follow the sensor, tell me and the "
+        + "mapping can be pinned.", "ok");
+    } else if (m === "working it out") {
+      say("imuMsg", "Connected. Working out which field is which — give it a "
+        + "second.", "info");
+    }
   });
 
   S.on("imu_zero_res", function (d) {
@@ -450,7 +484,7 @@
 
   /* ---- attitude cube -------------------------------------------------- */
   var att = { quat: [1, 0, 0, 0], euler: [0, 0, 0], src: "", have: false,
-              units: null };
+              units: null, pb: null };
 
   function qmat(q) {
     var w = q[0], x = q[1], y = q[2], z = q[3];
@@ -614,6 +648,7 @@
       chips.push(["ok", "turn rate read as " + (att.units.units === "deg"
         ? "degrees/s" : "radians/s")]);
     }
+    if (att.pb) chips.push(["ok", "binary stream, channels identified"]);
     if ($("attChips")) {
       $("attChips").innerHTML = chips.map(function (c) {
         return '<span class="chip ' + c[0] + '">' + esc(c[1]) + "</span>";

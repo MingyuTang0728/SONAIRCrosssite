@@ -113,6 +113,21 @@ number after the colon, and FusionHub is the server. Choose the transport
 **FusionHub's External Output** and paste that endpoint in verbatim; the
 wildcard is rewritten to localhost for you.
 
+**It publishes Protocol Buffers, not text.** There is no format option on
+the node. Protobuf carries field numbers but no field names, and the `.proto`
+is not published, so the channels are identified from the readings instead:
+a unit-length 4-vector is an orientation, a 3-vector averaging 9.8 (or 1.0)
+is gravity, a 3-vector averaging 20-90 is a magnetometer, and what is left is
+the gyroscope. Gravity is the anchor — a sensor on a bench or on an arm
+averages 1 g whatever else it is doing, and nothing else in an inertial
+message sits at that magnitude. Only magnitudes are used, never directions,
+so it holds however the unit is mounted.
+
+The mapping is learned over the first twenty-odd packets, then LOCKED to the
+field numbers it found, and reported on the link — from that point the field
+numbers are exact and the physics is only how they were discovered. A wrong
+mapping is visible immediately: orientation that does not follow the sensor.
+
 Pointing a plain TCP transport at it is the trap: the TCP handshake succeeds,
 the link reports connected, and what arrives is ZeroMQ's own protocol rather
 than your data. **Show what is arriving** names that case — it reports the
