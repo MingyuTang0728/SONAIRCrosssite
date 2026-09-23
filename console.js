@@ -378,11 +378,19 @@
   /* ---- the single place a velocity leaves this page ---- */
   function sendVel(v) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    // Skip identical repeats while still refreshing often enough that the
-    // host's watchdog never trips mid-move. The watchdog is 400 ms.
     var same = v.every(function (c, i) { return Math.abs(c - jog.lastSent[i]) < 1e-6; });
+    var moving = v.some(function (c) { return Math.abs(c) > 1e-6; });
     var now = performance.now();
-    if (same && now - jog.sentAt < 150) return;
+    // Repeat only WHILE MOVING. The refresh exists so the host's 400 ms
+    // watchdog cannot trip mid-move; a stopped robot has nothing to keep
+    // alive, so once the stop has been sent this goes quiet.
+    //
+    // Without the `moving` test this fired every 150 ms forever, on every
+    // page, whether or not anyone was jogging — about seven messages a second
+    // of pure noise sharing one socket with the camera frames, the telemetry
+    // and every button press, and handled inline on the agent because jogs
+    // must not queue. Buttons elsewhere felt sluggish for that reason alone.
+    if (same && (!moving || now - jog.sentAt < 150)) return;
     jog.lastSent = v.slice(); jog.sentAt = now;
     ws.send(JSON.stringify({ type: "jog_vel", xd: v, ttl_ms: 400 }));
   }
@@ -1096,11 +1104,26 @@
   }
   window.addEventListener("resize", resize3D);
   $("btn3dPath").addEventListener("click", function () {
-    if (!three) return;
-    if (!state.plan) { alert("Plan a scan first, on the Inspect page."); return; }
-    three.setPath(state.plan.waypoints.map(function (w) { return w.coords; }));
+    if (!three) {
+      say("cellMsg", "The 3D view has not loaded.", "warn"); return;
+    }
+    // Not alert(): it blocks the page, it cannot be styled, and every other
+    // message in this console appears in its own panel. One convention.
+    var plan = state.plan;
+    if (!plan || !plan.waypoints || !plan.waypoints.length) {
+      say("cellMsg", "No scan path yet. Plan one on the Inspect page — either "
+        + "route works — and it will appear here.", "warn");
+      return;
+    }
+    three.setPath(plan.waypoints.map(function (w) { return w.coords; }));
+    say("cellMsg", "Showing the planned path: " + plan.waypoints.length
+      + " points. Blue is where the tool will travel.", "ok");
   });
-  $("btn3dFit").addEventListener("click", function () { if (three) three.fit(); });
+  $("btn3dFit").addEventListener("click", function () {
+    if (!three) { say("cellMsg", "The 3D view has not loaded.", "warn"); return; }
+    three.fit();
+    say("cellMsg", "View re-centred on the robot.", "info");
+  });
 
   /* -------------------------------------------------- heartbeat ---------- */
   setInterval(function () {

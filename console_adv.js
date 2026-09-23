@@ -1215,3 +1215,398 @@
     }
   });
 })();
+
+/* ===========================================================================
+   Robot control — everything ur_control.py supports.
+
+   These were all implemented on the agent and none of them had a control on
+   the page, so the robot panel was jog and nothing else: no way to power the
+   arm on, release its brakes, clear a protective stop, run a pendant program,
+   hand-guide it, set the payload or zero the force sensor. The backend was
+   never the limit; the page was.
+   =========================================================================== */
+(function () {
+  "use strict";
+  var S = window.SONAIR;
+  if (!S) return;
+  var $ = S.$, send = S.send, say = S.say, fmt = S.fmt, esc = S.esc;
+
+  function on(id, ev, fn) { var e = $(id); if (e) e.addEventListener(ev, fn); }
+  function num(id, d) { var v = parseFloat(($(id) || {}).value); return isFinite(v) ? v : d; }
+  function nums(id, n, d) {
+    var parts = String((($(id) || {}).value || "")).split(/[,\s]+/)
+      .map(parseFloat).filter(function (v) { return isFinite(v); });
+    while (parts.length < n) parts.push(d || 0);
+    return parts.slice(0, n);
+  }
+
+  /* ---- starting the link -------------------------------------------- */
+  on("btnUrStart", "click", function () {
+    if (!S.require("urStartMsg")) return;
+    var host = (($("urHost") || {}).value || "").trim();
+    if (!host) { say("urStartMsg", "Enter the robot's IP address.", "bad"); return; }
+    say("urStartMsg", "Connecting to " + esc(host) + "…", "info");
+    send({ type: "ur_service_start", host: host,
+           frequency: num("urRate", 125), rtde_inputs: true });
+  });
+
+  S.on("ur_service_start_res", function (d) {
+    if (d.ok === false || d.error) {
+      say("urStartMsg", plainLinkError(d.error || d.msg), "bad");
+      return;
+    }
+    say("urStartMsg", "Connected. Reading the robot now.", "ok");
+    send({ type: "ur_service_status" });
+    send({ type: "get_urp_list" });
+  });
+
+  function plainLinkError(e) {
+    e = String(e || "");
+    if (/timed out|timeout|refused|unreachable|No route/i.test(e)) {
+      return "Could not reach the robot at that address. Check the IP on the "
+        + "pendant (Settings → Network), that this PC is on the same network, "
+        + "and that the cable is in.";
+    }
+    if (/remote/i.test(e)) {
+      return "The robot answered but refused the connection. Put the pendant "
+        + "into Remote Control — it will not accept commands in Local mode.";
+    }
+    return "The robot link did not start. " + (e ? "The agent reported: " + e : "");
+  }
+
+  /* ---- a command that the robot refused must never be silent -------- */
+  S.on("cmd_rejected", function (d) {
+    var why = String(d.reason || "refused");
+    var plain = /envelope/i.test(why)
+      ? "That move would leave the allowed working area, so it was blocked "
+        + "before it reached the robot."
+      : /speed|velocity/i.test(why)
+      ? "That move asked for more speed than the cell allows."
+      : "The move was refused: " + why;
+    say("jogMsg", plain, "bad");
+    say("powerMsg", plain, "bad");
+  });
+
+  /* ---- power and recovery -------------------------------------------- */
+  var POWER = [
+    ["btnPowerOn", "ur_power_on", "Powering the arm on…"],
+    ["btnBrakeRelease", "ur_brake_release", "Releasing the brakes — the arm will move slightly…"],
+    ["btnPowerOff", "ur_power_off", "Powering the arm off…"],
+    ["btnUnlockPstop", "ur_unlock_protective_stop", "Clearing the protective stop…"],
+    ["btnClosePopup", "ur_close_popup", "Dismissing the pendant message…"]
+  ];
+  POWER.forEach(function (p) {
+    on(p[0], "click", function () {
+      if (!S.require("powerMsg")) return;
+      if (p[1] === "ur_power_off" &&
+          !confirm("Power the arm off? It will drop into its brakes.")) return;
+      if (p[1] === "ur_brake_release" &&
+          !confirm("Release the brakes? The arm settles under its own weight. "
+                   + "Is the area clear?")) return;
+      say("powerMsg", p[2], "info");
+      send({ type: p[1] });
+    });
+  });
+
+  /* ---- pendant programs ---------------------------------------------- */
+  on("btnUrpRefresh", "click", function () {
+    if (!S.require("urpMsg")) return;
+    say("urpMsg", "Reading the program list…", "info");
+    send({ type: "get_urp_list" });
+  });
+
+  S.on("urp_list", function (d) {
+    var sel = $("urpList"); if (!sel) return;
+    var list = d.list || [];
+    if (!list.length) {
+      sel.innerHTML = "<option>No programs found</option>";
+      say("urpMsg", "No programs on the pendant, or the robot is not connected "
+        + "yet.", "warn");
+      return;
+    }
+    sel.innerHTML = list.map(function (n) {
+      return "<option>" + esc(String(n)) + "</option>"; }).join("");
+    say("urpMsg", list.length + " programs on the pendant.", "ok");
+  });
+
+  on("btnUrpLoad", "click", function () {
+    if (!S.require("urpMsg")) return;
+    var name = (($("urpList") || {}).value || "").trim();
+    if (!name || /^No |^Connect /.test(name)) {
+      say("urpMsg", "Pick a program first.", "warn"); return;
+    }
+    say("urpMsg", "Loading " + esc(name) + "…", "info");
+    send({ type: "ur_load_program", name: name });
+  });
+  [["btnUrpPlay", "ur_play", "Starting the program…"],
+   ["btnUrpPause", "ur_pause", "Pausing…"],
+   ["btnUrpStop", "ur_stop_program", "Stopping the program…"]].forEach(function (p) {
+    on(p[0], "click", function () {
+      if (!S.require("urpMsg")) return;
+      if (p[1] === "ur_play" && !confirm("Run the loaded program? The arm will "
+          + "move. Is the area clear?")) return;
+      say("urpMsg", p[2], "info");
+      send({ type: p[1] });
+    });
+  });
+
+  /* ---- hand guiding: held, never latched ------------------------------
+     Freedrive makes the arm limp. A toggle that can be left on by a misclick
+     is the wrong control for that, so it follows the button: pressed means
+     on, released means off, and losing the window releases it too.         */
+  var fd = false;
+  function setFreedrive(want) {
+    if (want === fd) return;
+    fd = want;
+    send({ type: "ur_freedrive", enable: want });
+    var tag = $("fdTag");
+    if (tag) { tag.textContent = want ? "ON — arm is loose" : "off"; }
+    say("fdMsg", want
+      ? "The arm is loose. Let go of the button to lock it again."
+      : "The arm is locked.", want ? "warn" : "info");
+  }
+  (function () {
+    var b = $("btnFreedrive"); if (!b) return;
+    ["pointerdown"].forEach(function (e) {
+      b.addEventListener(e, function (ev) {
+        if (!S.require("fdMsg")) return;
+        ev.preventDefault();
+        b.setPointerCapture && b.setPointerCapture(ev.pointerId);
+        setFreedrive(true);
+      });
+    });
+    ["pointerup", "pointercancel", "pointerleave", "blur"].forEach(function (e) {
+      b.addEventListener(e, function () { setFreedrive(false); });
+    });
+    window.addEventListener("blur", function () { setFreedrive(false); });
+  })();
+  S.on("close", function () { fd = false; });
+
+  /* ---- tool settings -------------------------------------------------- */
+  on("btnSetPayload", "click", function () {
+    if (!S.require("toolMsg")) return;
+    var cog = nums("plCog", 3, 0).map(function (v) { return v / 1000.0; });
+    send({ type: "ur_set_payload", mass: num("plMass", 0), cog: cog });
+    say("toolMsg", "Payload set to " + fmt(num("plMass", 0), 2) + " kg. A wrong "
+      + "payload makes every force reading wrong too.", "info");
+  });
+
+  on("btnSetTcp", "click", function () {
+    if (!S.require("toolMsg")) return;
+    var v = nums("tcpVals", 6, 0);
+    // mm and degrees on screen, metres and radians on the wire
+    var pose = [v[0] / 1000, v[1] / 1000, v[2] / 1000,
+                v[3] * Math.PI / 180, v[4] * Math.PI / 180, v[5] * Math.PI / 180];
+    if (!confirm("Change the tool centre point? Every position the robot "
+        + "reports, and every calibration made against it, is relative to "
+        + "this. Continue?")) return;
+    send({ type: "ur_set_tcp", pose: pose });
+    say("toolMsg", "Tool centre applied. Re-do the hand-eye calibration — it "
+      + "was measured against the old one.", "warn");
+  });
+
+  on("btnZeroFt", "click", function () {
+    if (!S.require("toolMsg")) return;
+    send({ type: "ur_zero_ft" });
+    say("toolMsg", "Zeroing the force sensor…", "info");
+  });
+
+  (function () {
+    var host = $("toolVSeg"); if (!host) return;
+    host.addEventListener("click", function (e) {
+      var b = e.target.closest(".segb"); if (!b) return;
+      if (!S.require("toolMsg")) return;
+      var v = Number(b.dataset.v);
+      if (v > 0 && !confirm("Switch the tool output to " + v + " V? Check what "
+          + "is plugged into the tool connector first.")) return;
+      host.querySelectorAll(".segb").forEach(function (o) {
+        o.classList.toggle("on", o === b); });
+      send({ type: "ur_set_tool_voltage", volts: v });
+    });
+  })();
+
+  /* ---- speed limit ----------------------------------------------------- */
+  on("urSpeed", "input", function () { $("urSpeedV").textContent = this.value + "%"; });
+  on("urSpeed", "change", function () {
+    if (!S.require("speedMsg")) return;
+    send({ type: "ur_speed_slider", fraction: Number(this.value) / 100 });
+    say("speedMsg", "Speed limit set to " + this.value + "%. This scales every "
+      + "movement, including the planned scan.", "info");
+  });
+
+  /* ---- results from every one of the above ----------------------------- */
+  var CMD_TARGET = {
+    ur_power_on: "powerMsg", ur_power_off: "powerMsg",
+    ur_brake_release: "powerMsg", ur_unlock_protective_stop: "powerMsg",
+    ur_close_popup: "powerMsg", ur_close_safety_popup: "powerMsg",
+    ur_load_program: "urpMsg", ur_play: "urpMsg", ur_pause: "urpMsg",
+    ur_stop_program: "urpMsg",
+    ur_set_payload: "toolMsg", ur_set_tcp: "toolMsg", ur_zero_ft: "toolMsg",
+    ur_set_tool_voltage: "toolMsg",
+    ur_speed_slider: "speedMsg", ur_freedrive: "fdMsg"
+  };
+  var CMD_DONE = {
+    ur_power_on: "Arm powered on. Release the brakes next.",
+    ur_brake_release: "Brakes released — the arm is ready to move.",
+    ur_power_off: "Arm powered off.",
+    ur_unlock_protective_stop: "Protective stop cleared.",
+    ur_close_popup: "Pendant message dismissed.",
+    ur_load_program: "Program loaded.",
+    ur_play: "Program running.",
+    ur_pause: "Program paused.",
+    ur_stop_program: "Program stopped.",
+    ur_zero_ft: "Force sensor zeroed.",
+    ur_set_tool_voltage: "Tool voltage set."
+  };
+
+  S.on("ur_cmd_res", function (d) {
+    var where = CMD_TARGET[d.cmd];
+    if (!where) return;               // the main console already reports jogs
+    if (d.ok) {
+      say(where, CMD_DONE[d.cmd] || "Done.", "ok");
+      if (d.cmd === "ur_load_program") send({ type: "get_urp_list" });
+    } else {
+      say(where, plainRobotError(d.cmd, d.msg), "bad");
+    }
+  });
+
+  function plainRobotError(cmd, msg) {
+    var m = String(msg || "");
+    if (/remote/i.test(m)) {
+      return "The pendant is in Local mode. Switch it to Remote Control — the "
+        + "robot ignores commands otherwise.";
+    }
+    if (/not started|no connection|not connected/i.test(m)) {
+      return "The robot link is not running. Go to step 1 and connect first.";
+    }
+    if (/protective/i.test(m)) {
+      return "The robot is in a protective stop. Clear it above, then try again.";
+    }
+    if (/emergency/i.test(m)) {
+      return "The emergency stop is engaged. Release the physical button first.";
+    }
+    if (/File not found|no such/i.test(m)) {
+      return "The robot could not find that program.";
+    }
+    return "The robot refused it: " + m;
+  }
+
+  /* ---- replies the page used to drop on the floor ---------------------- */
+  S.on("dashboard_res", function (d) {
+    say("powerMsg", "The robot replied: " + esc(String(d.res || "").trim()),
+        "info");
+  });
+
+  S.on("imu_d435i_res", function (d) {
+    if (d.ok) return;
+    say("imuMsg", d.error
+      ? "The camera's motion sensor could not start: " + d.error
+      : "This camera has no built-in motion sensor.", "warn");
+  });
+
+  S.on("imu_tcp_probe_res", function (d) {
+    if (!d.ok) return;
+    say("imuMsg", (d.open || []).length
+      ? "Ports answering on " + esc(d.host) + ": " + d.open.join(", ")
+      : "Nothing is listening on " + esc(d.host) + " on any of the usual ports.",
+      (d.open || []).length ? "ok" : "warn");
+  });
+
+  S.on("rs_advanced_res", function (d) {
+    say("rsInfoMsg", d.ok ? "Camera preset applied."
+      : (d.error || "The camera refused that preset."), d.ok ? "ok" : "warn");
+  });
+
+  S.on("bench_offset_res", function (d) {
+    if (!d.ok) return;
+    say("rcMsg", "Sensor timing offset recorded. Worst residual "
+      + fmt(d.worst_residual_ms, 2) + " ms.", "ok");
+  });
+
+  /* Page open: ask for what this page shows. */
+  S.page("robot", function () {
+    if (S.connected()) {
+      send({ type: "ur_service_status" });
+      send({ type: "get_urp_list" });
+    }
+  });
+})();
+
+/* ===========================================================================
+   The last four robot commands that had no control.
+   =========================================================================== */
+(function () {
+  "use strict";
+  var S = window.SONAIR;
+  if (!S) return;
+  var $ = S.$, send = S.send, say = S.say, esc = S.esc;
+  function on(id, ev, fn) { var e = $(id); if (e) e.addEventListener(ev, fn); }
+
+  // A safety popup is NOT the same dialog as an ordinary one and does not
+  // close with the same command. Having only the ordinary one meant the
+  // button appeared to do nothing on exactly the popup that matters.
+  on("btnCloseSafety", "click", function () {
+    if (!S.require("powerMsg")) return;
+    say("powerMsg", "Dismissing the safety message…", "info");
+    send({ type: "ur_close_safety_popup" });
+  });
+
+  // The commonest reason a command "does nothing" is the pendant sitting in
+  // Local mode, where the robot accepts the connection and ignores the
+  // instructions. Worth being able to ask directly.
+  on("btnCheckRemote", "click", function () {
+    if (!S.require("powerMsg")) return;
+    say("powerMsg", "Asking the robot…", "info");
+    send({ type: "ur_remote_control" });
+  });
+
+  S.on("ur_cmd_res", function (d) {
+    if (d.cmd === "ur_close_safety_popup") {
+      say("powerMsg", d.ok ? "Safety message dismissed."
+        : "The robot refused: " + (d.msg || ""), d.ok ? "ok" : "bad");
+    } else if (d.cmd === "ur_remote_control") {
+      var yes = /true|enabled/i.test(String(d.msg || ""));
+      say("powerMsg", yes
+        ? "The pendant is in Remote Control — the robot will accept commands."
+        : "The pendant is in LOCAL mode. It will accept a connection and "
+          + "ignore every command. Switch it to Remote Control on the "
+          + "pendant's top-right menu.", yes ? "ok" : "bad");
+    } else if (d.cmd === "ur_set_tool_dout" || d.cmd === "ur_set_aout") {
+      say("ioMsg", d.ok ? "Output set." : "The robot refused: " + (d.msg || ""),
+          d.ok ? "ok" : "bad");
+    }
+  });
+
+  // Tool-connector digital outputs: this is where a probe or a light gets
+  // wired, so the inspection sensors arriving later land here.
+  var toolOut = [false, false];
+  function renderToolOut() {
+    var host = $("ioToolOut"); if (!host) return;
+    host.innerHTML = toolOut.map(function (v, i) {
+      return '<button class="btn' + (v ? " go" : "") + '" data-tpin="' + i
+        + '">Tool out ' + i + ": " + (v ? "ON" : "off") + "</button>";
+    }).join("");
+  }
+  renderToolOut();
+  (function () {
+    var host = $("ioToolOut"); if (!host) return;
+    host.addEventListener("click", function (e) {
+      var b = e.target.closest("[data-tpin]"); if (!b) return;
+      if (!S.require("ioMsg")) return;
+      var pin = Number(b.dataset.tpin);
+      toolOut[pin] = !toolOut[pin];
+      renderToolOut();
+      send({ type: "ur_set_tool_dout", pin: pin, value: toolOut[pin] });
+    });
+  })();
+
+  on("btnAout", "click", function () {
+    if (!S.require("ioMsg")) return;
+    var v = parseFloat(($("aoutVal") || {}).value);
+    if (!(v >= 0 && v <= 1)) {
+      say("ioMsg", "The analogue value must be between 0 and 1.", "bad"); return;
+    }
+    send({ type: "ur_set_aout", pin: Number(($("aoutPin") || {}).value || 0),
+           value: v });
+  });
+})();

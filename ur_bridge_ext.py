@@ -57,140 +57,38 @@ except Exception:
 # 3D reconstruction session, driven from the browser
 # =============================================================================
 
-class Scan3DService:
+class HandEyeStore:
     """
-    Wraps scan3d.ReconstructionSession with the state the UI needs.
+    Where the camera sits on the tool, held in one place.
 
-    Capture is pull-based: the browser (or an automated sweep) moves the arm,
-    then asks for a capture. Doing it that way rather than capturing on a timer
-    means every view is taken with the arm settled, and a view taken mid-motion
-    — which smears the depth image and poisons the fused cloud — cannot happen
-    by accident.
+    This was a full reconstruction service — start, capture, reconstruct,
+    plan — and it worked, but multiview.py replaced it with a better pipeline
+    (the region is cropped in the base frame before fusion, viewpoints are
+    planned from the part's own size, and a view that lands too few points is
+    refused rather than merged). Two 3D pipelines behind one console is a
+    choice the operator should never have to make, and the old one had no
+    controls, so it was reachable only by hand-written messages.
+
+    What survived is the part everything genuinely shares: the hand-eye
+    transform. The calibration writes it here and the inspection and scanning
+    code reads it here, so there is exactly one answer to "where is the
+    camera" and no way for two copies to drift apart.
+
+    The `*_fn` attributes are kept because the bridge sets them; nothing reads
+    them now, and they cost nothing to accept.
     """
 
     def __init__(self):
-        self.session = None
-        self.intrinsics = None
         self.T_tcp_cam = None
-        self.last_error = ""
-        self.frames_fn = None        # () -> raw depth array
-        self.pose_fn = None          # () -> TCP pose
-        self.intrinsics_fn = None    # () -> CameraIntrinsics
-
-    def available(self) -> tuple[bool, str]:
-        if not _HAS_SCAN:
-            return False, "scan3d needs numpy on the host"
-        if self.frames_fn is None:
-            return False, "no depth source wired — is the RealSense running?"
-        return True, ""
-
-    def start(self, T_tcp_cam=None, voxel_mm: float = 2.0) -> dict:
-        ok, why = self.available()
-        if not ok:
-            return {"ok": False, "error": why}
-        intr = None
-        if self.intrinsics_fn:
-            try:
-                intr = self.intrinsics_fn()
-            except Exception as e:
-                return {"ok": False, "error": f"could not read camera intrinsics: {e}"}
-        if intr is None:
-            return {"ok": False, "error":
-                    "camera intrinsics unavailable — start the depth stream first. "
-                    "Intrinsics must come from the camera, never from a datasheet."}
-
-        if T_tcp_cam is None:
-            T_tcp_cam = self.T_tcp_cam
-        if T_tcp_cam is None:
-            return {"ok": False, "error":
-                    "hand-eye calibration (T_tcp_cam) not set. Every point in the "
-                    "reconstruction inherits this transform and a 2 deg error puts "
-                    "the cloud 10 mm out at 300 mm standoff — it cannot be guessed."}
-
-        self.T_tcp_cam = np.asarray(T_tcp_cam, dtype=float).reshape(4, 4)
-        self.intrinsics = intr
-        self.session = scan3d.ReconstructionSession(
-            intr, self.T_tcp_cam, voxel_m=voxel_mm / 1000.0)
-        return {"ok": True, "voxel_mm": voxel_mm,
-                "intrinsics": {"fx": intr.fx, "fy": intr.fy, "cx": intr.cx,
-                               "cy": intr.cy, "width": intr.width,
-                               "height": intr.height,
-                               "depth_scale": intr.depth_scale}}
-
-    def capture(self, stride: int = 2) -> dict:
-        if self.session is None:
-            return {"ok": False, "error": "no reconstruction session — call scan3d_start"}
-        try:
-            depth = self.frames_fn()
-        except Exception as e:
-            return {"ok": False, "error": f"depth read failed: {e}"}
-        if depth is None:
-            return {"ok": False, "error": "no depth frame available right now"}
-        try:
-            pose = self.pose_fn() if self.pose_fn else None
-        except Exception as e:
-            return {"ok": False, "error": f"TCP pose read failed: {e}"}
-        if not pose or len(pose) < 6:
-            return {"ok": False, "error":
-                    "no TCP pose — the arm must be connected, since a view "
-                    "without its pose cannot be placed in the base frame"}
-        try:
-            res = self.session.add_view(depth, pose, stride=stride)
-            return {"ok": True, **res}
-        except Exception as e:
-            self.last_error = str(e)
-            return {"ok": False, "error": str(e)}
-
-    def survey(self, centre, radius=0.25, height=0.35, n_views=8) -> dict:
-        """The viewpoint ring, converted to TCP poses the arm can be sent to."""
-        if not _HAS_SCAN:
-            return {"ok": False, "error": "scan3d needs numpy"}
-        if self.T_tcp_cam is None:
-            return {"ok": False, "error": "hand-eye calibration not set"}
-        views = scan3d.plan_survey_poses(centre, radius=radius, height=height,
-                                         n_views=n_views)
-        for v in views:
-            v["tcp_pose"] = scan3d.survey_to_tcp(v["camera_pose"], self.T_tcp_cam)
-        return {"ok": True, "views": views, "n": len(views)}
-
-    def reconstruct(self, min_hits: int = 2, plane_tol_mm: float = 4.0,
-                    link_mm: float = 8.0) -> dict:
-        if self.session is None:
-            return {"ok": False, "error": "no reconstruction session"}
-        try:
-            return self.session.reconstruct(min_hits=min_hits,
-                                            plane_tol=plane_tol_mm / 1000.0,
-                                            link_m=link_mm / 1000.0)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-
-    def plan(self, standoff_mm=100.0, line_spacing_mm=5.0, step_mm=5.0,
-             margin_mm=5.0, tool_rotvec=None) -> dict:
-        if self.session is None:
-            return {"ok": False, "error": "no reconstruction session"}
-        try:
-            return self.session.plan(
-                standoff=standoff_mm / 1000.0,
-                line_spacing=line_spacing_mm / 1000.0,
-                step_along=step_mm / 1000.0,
-                margin=margin_mm / 1000.0,
-                tool_rotvec=tuple(tool_rotvec) if tool_rotvec else (0.0, math.pi, 0.0))
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        self.frames_fn = None
+        self.pose_fn = None
+        self.intrinsics_fn = None
 
     def status(self) -> dict:
-        ok, why = self.available()
-        s = {"available": ok, "reason": why, "active": self.session is not None,
-             "has_handeye": self.T_tcp_cam is not None}
-        if self.session:
-            s["cloud"] = self.session.cloud.stats()
-            s["views"] = len(self.session.captures)
-            if self.session.component:
-                s["component"] = self.session.component.as_dict()
-        return s
+        return {"has_handeye": self.T_tcp_cam is not None}
 
 
-SCAN3D = Scan3DService()
+SCAN3D = HandEyeStore()
 
 
 # =============================================================================
@@ -343,37 +241,8 @@ def handle_message(data: dict) -> dict | None:
                     "msg": "UR control not started — send ur_service_start first"}
         return ur_handle(UR.controller, data)
 
-    if t == "scan3d_status":
-        return {"type": "scan3d_status", **SCAN3D.status()}
-    if t == "scan3d_set_handeye":
-        m = data.get("T_tcp_cam")
-        if not m or len(m) != 4 or any(len(r) != 4 for r in m):
-            return {"type": "scan3d_res", "cmd": t, "ok": False,
-                    "error": "T_tcp_cam must be a 4x4 matrix"}
-        SCAN3D.T_tcp_cam = np.asarray(m, dtype=float) if _HAS_NUMPY else m
-        return {"type": "scan3d_res", "cmd": t, "ok": True}
-    if t == "scan3d_start":
-        return {"type": "scan3d_res", "cmd": t,
-                **SCAN3D.start(data.get("T_tcp_cam"), data.get("voxel_mm", 2.0))}
-    if t == "scan3d_survey":
-        return {"type": "scan3d_survey_res",
-                **SCAN3D.survey(data.get("centre", [0.4, 0.0, 0.1]),
-                                data.get("radius", 0.25), data.get("height", 0.35),
-                                int(data.get("n_views", 8)))}
-    if t == "scan3d_capture":
-        return {"type": "scan3d_capture_res", **SCAN3D.capture(int(data.get("stride", 2)))}
-    if t == "scan3d_reconstruct":
-        return {"type": "scan3d_reconstruct_res",
-                **SCAN3D.reconstruct(int(data.get("min_hits", 2)),
-                                     float(data.get("plane_tol_mm", 4.0)),
-                                     float(data.get("link_mm", 8.0)))}
-    if t == "scan3d_plan":
-        return {"type": "scan3d_plan_res",
-                **SCAN3D.plan(float(data.get("standoff_mm", 100.0)),
-                              float(data.get("line_spacing_mm", 5.0)),
-                              float(data.get("step_mm", 5.0)),
-                              float(data.get("margin_mm", 5.0)),
-                              data.get("tool_rotvec"))}
+    # The scan3d_* messages were removed with the service they drove; the
+    # multi-view pipeline (mv_* in multimodal_bridge) does that job now.
     return None
 
 

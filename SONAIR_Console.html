@@ -349,6 +349,20 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     </div>
   </section>
 
+  <section class="block">
+    <h3>Robot link</h3>
+    <div class="grid g3">
+      <div class="field"><label>Robot IP address</label>
+        <input id="urHost" value="192.168.0.20"/></div>
+      <div class="field"><label>Updates per second</label>
+        <input id="urRate" type="number" value="125" step="5"/></div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn primary" id="btnUrStart">Connect to the robot</button></div>
+    </div>
+    <div class="note warn" id="urStartMsg">The pendant must be in <b>Remote
+    Control</b>, and this PC must be on the same network as the robot.</div>
+  </section>
+
   <section class="block" id="blkCamSetup">
     <h3>Camera setup <span class="tag" id="camModeTag">&mdash;</span></h3>
     <div class="grid g4">
@@ -393,6 +407,8 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
         <canvas id="stage3d"></canvas>
         <div class="empty" id="stage3dEmpty">Loading the robot model&hellip;</div>
       </div>
+      <div class="note info" id="cellMsg">Drag to turn the view, scroll to zoom.
+      Press <b>Show path</b> once a scan has been planned.</div>
     </section>
 
     <section class="block" style="margin:0">
@@ -491,6 +507,87 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   </section>
 
   <section class="block">
+    <h3>Power &amp; recovery</h3>
+    <p class="hint" style="margin-top:0">The same buttons as the pendant's
+    initialisation screen. Use these when the arm is powered down, or after a
+    protective stop.</p>
+    <div class="row" style="margin-top:11px">
+      <button class="btn" id="btnPowerOn">Power on</button>
+      <button class="btn go" id="btnBrakeRelease">Release brakes</button>
+      <button class="btn danger" id="btnPowerOff">Power off</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="btnUnlockPstop">Clear protective stop</button>
+      <button class="btn" id="btnClosePopup">Dismiss pendant message</button>
+      <button class="btn" id="btnCloseSafety">Dismiss safety message</button>
+      <button class="btn" id="btnCheckRemote">Is the pendant in Remote?</button>
+    </div>
+    <div class="note info" id="powerMsg">&mdash;</div>
+  </section>
+
+  <section class="block">
+    <h3>Programs on the pendant</h3>
+    <div class="row">
+      <div class="field" style="flex:1;min-width:220px"><label>Program</label>
+        <select id="urpList"><option>Connect the robot first</option></select></div>
+      <button class="btn" id="btnUrpRefresh" style="align-self:flex-end">Refresh list</button>
+      <button class="btn" id="btnUrpLoad" style="align-self:flex-end">Load</button>
+      <button class="btn go" id="btnUrpPlay" style="align-self:flex-end">Play</button>
+      <button class="btn" id="btnUrpPause" style="align-self:flex-end">Pause</button>
+      <button class="btn danger" id="btnUrpStop" style="align-self:flex-end">Stop</button>
+    </div>
+    <div class="note info" id="urpMsg">&mdash;</div>
+  </section>
+
+  <section class="block">
+    <h3>Hand guiding</h3>
+    <p class="hint" style="margin-top:0">With this on you can push the arm
+    around by hand. It holds only while the button is held down, so letting go
+    always stops it.</p>
+    <div class="row" style="margin-top:11px">
+      <button class="btn go big" id="btnFreedrive">Hold to hand-guide</button>
+      <span class="tag" id="fdTag">off</span>
+    </div>
+    <div class="note warn" id="fdMsg">The arm becomes loose. Support anything
+    heavy on the tool before pressing.</div>
+  </section>
+
+  <section class="block">
+    <h3>Tool settings</h3>
+    <div class="grid g3">
+      <div class="field"><label>Payload mass (kg)</label>
+        <input id="plMass" type="number" value="1.0" step="0.1"/></div>
+      <div class="field"><label>Payload centre X / Y / Z (mm)</label>
+        <input id="plCog" value="0, 0, 40"/></div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" id="btnSetPayload">Apply payload</button></div>
+      <div class="field" style="grid-column:span 2"><label>Tool centre point X Y Z RX RY RZ (mm, deg)</label>
+        <input id="tcpVals" value="0, 0, 0, 0, 0, 0"/></div>
+      <div class="field"><label>&nbsp;</label>
+        <button class="btn" id="btnSetTcp">Apply tool centre</button></div>
+    </div>
+    <div class="row" style="margin-top:13px">
+      <button class="btn" id="btnZeroFt">Zero the force sensor</button>
+      <div class="seg" id="toolVSeg" style="margin-left:auto">
+        <button class="segb on" data-v="0">Tool power off</button>
+        <button class="segb" data-v="12">12 V</button>
+        <button class="segb" data-v="24">24 V</button>
+      </div>
+    </div>
+    <div class="note warn" id="toolMsg">Zero the force sensor with nothing
+    touching the tool, or every later force reading carries the offset.</div>
+  </section>
+
+  <section class="block">
+    <h3>Speed limit</h3>
+    <div class="rng" style="max-width:420px">
+      <input type="range" id="urSpeed" min="5" max="100" step="5" value="100"/>
+      <span class="rv" id="urSpeedV">100%</span>
+    </div>
+    <div class="note info" id="speedMsg">The same slider as the pendant's. It
+    scales every movement, including the planned scan.</div>
+  </section>
+
+  <section class="block">
     <h3>All joint data</h3>
     <table class="data">
       <thead><tr><th>Joint</th><th class="n">Angle</th><th class="n">Speed</th>
@@ -507,6 +604,18 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       <div class="row" id="ioIn"></div>
       <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600;margin:11px 0 6px">Outputs &mdash; click to switch</div>
       <div class="row" id="ioOut"></div>
+      <div class="hint" style="margin-top:12px">On the tool connector</div>
+      <div class="row" id="ioToolOut"></div>
+      <div class="row" style="margin-top:12px;align-items:flex-end">
+        <div class="field"><label>Analogue out</label>
+          <select id="aoutPin"><option value="0">Output 0</option>
+            <option value="1">Output 1</option></select></div>
+        <div class="field"><label>Value 0&ndash;1</label>
+          <input id="aoutVal" type="number" value="0" step="0.05" min="0" max="1"/></div>
+        <button class="btn" id="btnAout">Set</button>
+      </div>
+      <div class="note info" id="ioMsg">Outputs switch real hardware. The tool
+      connector is where a probe or a light would be wired.</div>
     </div>
   </section>
 </main>
