@@ -39,6 +39,7 @@ import logging
 import math
 import re
 import socket
+import sys
 import threading
 import time
 from collections import deque
@@ -102,6 +103,21 @@ CANDIDATE_UDP_PORTS = [5005, 5006, 5555, 6000, 8000, 8888, 9000, 9001, 9763, 400
 CANDIDATE_TCP_PORTS = [5005, 8080, 9000, 9001, 502]
 
 DEG = math.pi / 180.0
+
+
+def pip_hint(package: str) -> str:
+    """
+    Name the interpreter, not just the package.
+
+    A workstation has several Pythons — the system one, a virtual environment,
+    whatever the IDE picked — and "pip install pyzmq" installs into whichever
+    one happens to be on PATH, which is routinely not the one running this
+    agent. The install then succeeds and the import still fails, which reads
+    as the instruction being wrong. Quoting sys.executable removes the guess;
+    the quotes matter because the path usually contains spaces.
+    """
+    exe = sys.executable or "python"
+    return 'run:  "%s" -m pip install %s' % (exe, package)
 
 
 # ---------------------------------------------------------------------------
@@ -868,7 +884,7 @@ class SerialLink(_Base):
     def _open(self):
         if not _HAS_SERIAL:
             raise RuntimeError(f"pyserial not installed ({_SERIAL_ERR}) — "
-                               "run: pip install pyserial")
+                               f"{pip_hint('pyserial')}")
         self._ser = pyserial.Serial(self.port, self.baud, timeout=0.4)
 
     def _close(self):
@@ -961,7 +977,7 @@ class WebSocketClient(_Base):
     def _open(self):
         if not _HAS_WS:
             raise RuntimeError(f"the websockets package is not installed "
-                               f"({_WS_ERR}) — run: pip install websockets")
+                               f"({_WS_ERR}) — {pip_hint('websockets')}")
 
     def _close(self):
         """
@@ -1101,7 +1117,7 @@ class ZmqSub(_Base):
         """
         if not _HAS_ZMQ:
             raise RuntimeError(f"the pyzmq package is not installed "
-                               f"({_ZMQ_ERR}) — run: pip install pyzmq")
+                               f"({_ZMQ_ERR}) — {pip_hint('pyzmq')}")
         if not self.endpoint.startswith(("tcp://", "ipc://", "inproc://")):
             raise ValueError(f"{self.endpoint!r} is not a ZeroMQ endpoint — "
                              "it should look like tcp://127.0.0.1:8901")
@@ -1325,7 +1341,7 @@ def list_serial_ports() -> dict:
     if not _HAS_SERIAL:
         return {"available": False,
                 "error": f"pyserial not installed ({_SERIAL_ERR}) — "
-                         "run: pip install pyserial", "ports": []}
+                         f"{pip_hint('pyserial')}", "ports": []}
     try:
         from serial.tools import list_ports          # type: ignore
         return {"available": True, "ports": [

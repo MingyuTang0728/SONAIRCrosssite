@@ -204,9 +204,13 @@ def check_packages():
 
     if missing_required or missing_optional:
         allp = " ".join(missing_required + missing_optional)
+        # Name THIS interpreter. A workstation has several Pythons, and a bare
+        # `pip install` lands in whichever is on PATH — routinely not the one
+        # the agent runs in, so the install succeeds and the import still
+        # fails, which reads as the instruction being wrong.
         todo.append(("fail" if missing_required else "warn",
-                     "Install the missing packages",
-                     f"python -m pip install {allp}"))
+                     "Install the missing packages into THIS interpreter",
+                     f'"{sys.executable}" -m pip install {allp}'))
 
 
 # --- 4. Repository files ----------------------------------------------------
