@@ -12,9 +12,22 @@ is started.
 In the **same interpreter** the agent runs in:
 
 ```
-pip install numpy opencv-python pyrealsense2 websockets pyzmq
-pip install pyserial          # only if an IMU is on a COM port
+python install_deps.py
 ```
+
+Run that with **the same Python you run the agent with**, and it installs
+whatever is missing into that interpreter. Use it rather than typing a `pip`
+line: on a machine with a system Python, a virtual environment and an IDE
+interpreter, a bare `pip install` lands in whichever is first on PATH — the
+install succeeds, the import still fails, and the instruction looks wrong.
+Naming the interpreter explicitly fixes that and introduces a second trap,
+because PowerShell parses a command beginning with a quoted path as a string
+expression and refuses it with `unexpected token '-m'` unless you remember
+the `&` call operator. A script has no path to quote.
+
+The packages it installs: `websockets` (required), then `numpy`,
+`opencv-python`, `pyzmq`, `pyrealsense2` and `pyserial` for 3D, calibration,
+FusionHub's External Output, the camera, and a COM-port IMU respectively.
 
 `python check_setup.py` reports which of these are present and what each one
 unlocks. Missing `pyrealsense2` disables the camera and nothing else; missing

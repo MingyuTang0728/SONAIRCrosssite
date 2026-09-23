@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import socket
 import sys
@@ -107,16 +108,23 @@ DEG = math.pi / 180.0
 
 def pip_hint(package: str) -> str:
     """
-    Name the interpreter, not just the package.
+    Name the interpreter, in a form the operator's shell will actually run.
 
     A workstation has several Pythons — the system one, a virtual environment,
-    whatever the IDE picked — and "pip install pyzmq" installs into whichever
-    one happens to be on PATH, which is routinely not the one running this
-    agent. The install then succeeds and the import still fails, which reads
-    as the instruction being wrong. Quoting sys.executable removes the guess;
-    the quotes matter because the path usually contains spaces.
+    whatever the IDE picked — and a bare "pip install pyzmq" lands in whichever
+    is first on PATH, routinely not the one running this agent. So the path is
+    quoted in.
+
+    But a quoted path is not enough on Windows: PowerShell parses a command
+    that BEGINS with a quoted string as a string expression, not as a command,
+    and fails with "unexpected token '-m'". The call operator `&` is what makes
+    it a command. Printing the POSIX form to a PowerShell user produces an
+    error message that looks like the advice was wrong, which is worse than
+    giving no path at all.
     """
     exe = sys.executable or "python"
+    if os.name == "nt":
+        return 'run:  & "%s" -m pip install %s' % (exe, package)
     return 'run:  "%s" -m pip install %s' % (exe, package)
 
 

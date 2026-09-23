@@ -219,9 +219,19 @@ def check_packages():
         # `pip install` lands in whichever is on PATH — routinely not the one
         # the agent runs in, so the install succeeds and the import still
         # fails, which reads as the instruction being wrong.
+        # PowerShell parses a command that begins with a quoted string as a
+        # string expression and refuses it with "unexpected token '-m'", so
+        # the call operator is part of the instruction on Windows. Simplest of
+        # all, though, is the helper script — no quoting to get wrong.
+        if os.name == "nt":
+            cmd = f'& "{sys.executable}" -m pip install {allp}'
+            alt = "   or simply:   python install_deps.py"
+        else:
+            cmd = f'"{sys.executable}" -m pip install {allp}'
+            alt = "   or simply:   python3 install_deps.py"
         todo.append(("fail" if missing_required else "warn",
                      "Install the missing packages into THIS interpreter",
-                     f'"{sys.executable}" -m pip install {allp}'))
+                     cmd + "\n" + " " * 8 + alt))
 
 
 # --- 4. Repository files ----------------------------------------------------
