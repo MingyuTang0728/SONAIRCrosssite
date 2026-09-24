@@ -1038,7 +1038,14 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       <section class="block" style="margin:0">
         <h3>2 &middot; Poses <span class="tag" id="calNTag">0</span></h3>
         <div class="row">
-          <button class="btn go big" id="btnCalCap" disabled>Capture this pose</button>
+          <button class="btn primary big" id="btnCalAuto" disabled>Do it automatically</button>
+          <button class="btn danger" id="btnCalAutoStop" disabled>Stop</button>
+        </div>
+        <div class="note warn" style="margin-top:9px">The arm moves on its own.
+        Point the camera at the board, check it is found in the live view, and
+        make sure the area is clear.</div>
+        <div class="row" style="margin-top:11px">
+          <button class="btn go" id="btnCalCap" disabled>Capture this pose</button>
           <button class="btn" id="btnCalUndo" disabled>Undo</button>
           <button class="btn danger" id="btnCalClear" disabled>Clear</button>
         </div>

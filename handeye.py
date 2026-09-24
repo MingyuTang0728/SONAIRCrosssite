@@ -145,6 +145,11 @@ class TargetSpec:
         pts[:, :2] = grid * s
         return pts
 
+    def size_m(self):
+        """Distance between the outer inner-corners, metres."""
+        s = self.square_mm / 1000.0
+        return ((self.cols - 1) * s, (self.rows - 1) * s)
+
     def as_dict(self):
         return dict(self.__dict__)
 
@@ -878,6 +883,283 @@ def _summary(res: dict) -> dict:
 # ---------------------------------------------------------------------------
 # persistence
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# automatic pose planning
+# ---------------------------------------------------------------------------
+
+# Two rounds, because the plan depends on the answer.
+#
+# Round one moves only a little: the board is known to be visible from the
+# starting pose, and small moves keep it visible however wrong the guess about
+# the camera's mounting is. Those few poses are enough for a rough solve.
+# Round two re-plans with that rough answer, which is good to a few
+# millimetres, so the full spread of tilt and roll can be used without views
+# missing the board.
+#
+# Planning the wide set straight away is what fails, and it fails silently:
+# the arm dutifully visits fourteen poses and the board is out of frame in
+# most of them, so the operator watches a long sequence produce four captures.
+STAGES = {
+    "coarse": {"tilt_deg": 11.0, "roll_deg": 22.0, "distance_spread": 0.10,
+               "fill": 0.32},
+    "fine":   {"tilt_deg": 30.0, "roll_deg": 60.0, "distance_spread": 0.30,
+               "fill": 0.45},
+}
+
+
+def plan_auto_poses(tcp_pose, T_cam_target, *, n_poses: int = 14,
+                    stage: str = "fine",
+                    tilt_deg: float | None = None,
+                    roll_deg: float | None = None,
+                    distance_spread: float | None = None,
+                    T_tcp_cam_guess=None, reach=None, envelope=None,
+                    board_size_m=None) -> dict:
+    """
+    From ONE sighting of the board, work out where to take the rest.
+
+    The operator's problem with hand-eye calibration is not the solve, it is
+    producing a dozen poses that are varied enough to determine the answer —
+    and the check that says they are not comes only after the arm has been
+    dragged around for ten minutes. This plans them instead, from the first
+    detection.
+
+    THE CHICKEN AND EGG: where the board is in the robot's frame depends on
+    where the camera sits on the tool, which is what is being solved for. It
+    does not have to be solved to plan, only guessed: the board's distance
+    comes from the detection and is exact, and the camera is somewhere within
+    about 100 mm of the flange. At a 400 mm standoff with a 60 degree field of
+    view, 100 mm of error moves the board by a few degrees in frame. So the
+    guess only has to keep the board VISIBLE; the detections then supply the
+    real data and the solve never uses the guess at all.
+
+    WHAT MAKES A GOOD SET, and why each is here rather than "move it about a
+    bit":
+
+      tilt     the camera views the board from different directions, which is
+               what separates the translation from the rotation.
+      roll     the camera spins about its own optical axis. This is the one
+               people leave out, and it is the one that makes the rotations
+               about genuinely different axes instead of a single family —
+               the degenerate case where the residual reads 0.0 mm and the
+               answer is centimetres wrong.
+      distance varied so scale is observable.
+
+    The poses orbit the BOARD, not the tool, so the board stays near the
+    middle of the frame throughout and few captures are wasted.
+    """
+    ok, why = available()
+    if not ok:
+        return {"ok": False, "error": why}
+    if not tcp_pose or len(tcp_pose) < 6:
+        return {"ok": False, "error": "no TCP pose — is the robot connected?"}
+    st = STAGES.get(stage, STAGES["fine"])
+    tilt_deg = st["tilt_deg"] if tilt_deg is None else tilt_deg
+    roll_deg = st["roll_deg"] if roll_deg is None else roll_deg
+    distance_spread = (st["distance_spread"] if distance_spread is None
+                       else distance_spread)
+
+    T_bt = pose_to_matrix(tcp_pose)
+    X = (np.asarray(T_tcp_cam_guess, dtype=float).reshape(4, 4)
+         if T_tcp_cam_guess is not None else np.eye(4))
+    C = np.asarray(T_cam_target, dtype=float).reshape(4, 4)
+
+    T_bc = T_bt @ X                       # camera in base, approximately
+    # AIM AT THE BOARD'S CENTRE, not its origin. solvePnP returns the pose of
+    # corner (0,0), and for a 25x18 board of 7.5 mm squares that corner is
+    # 110 mm from the middle. Orbiting the corner points the camera 110 mm off
+    # the thing it is supposed to be framing, and the far side of the board
+    # leaves the picture — measured as 3 detections out of 10 planned views.
+    half = np.zeros(3)
+    if board_size_m:
+        half = C[:3, :3] @ np.array([board_size_m[0] / 2.0,
+                                     board_size_m[1] / 2.0, 0.0])
+    centre_cam = C[:3, 3] + half
+    board = (T_bc @ np.append(centre_cam, 1.0))[:3]
+    d = float(np.linalg.norm(centre_cam))   # camera-to-board distance: exact
+    if not (0.05 < d < 3.0):
+        return {"ok": False, "error":
+                f"the board reads {d * 1000:.0f} mm away, which is not a "
+                "plausible working distance — check the square size in "
+                "millimetres, since distance scales directly with it"}
+
+    reach = {"max_radius_m": 0.82, "min_radius_m": 0.20, "min_z_m": 0.02,
+             **(reach or {})}
+    # Start from the direction the camera is currently looking, so the planned
+    # set surrounds the view that is known to work rather than some other one.
+    view = board - T_bc[:3, 3]
+    view = view / (np.linalg.norm(view) or 1.0)
+
+    poses, rejected = [], []
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    for i in range(int(n_poses)):
+        # A spiral over the cap around the current view: spread evenly rather
+        # than clustered, which a random draw is not at this few samples.
+        f = (i + 0.5) / max(1, n_poses)
+        polar = math.radians(tilt_deg) * math.sqrt(f)
+        az = golden * i
+        basis = _frame_about(view)
+        dirn = (math.cos(polar) * view
+                + math.sin(polar) * (math.cos(az) * basis[0]
+                                     + math.sin(az) * basis[1]))
+        dist = d * (1.0 + distance_spread * (2.0 * ((i * 7) % 5) / 4.0 - 1.0))
+        cam_pos = board - dirn * dist
+        # roll alternates sign and grows, so consecutive poses differ in the
+        # axis that matters most and the set never becomes one-sided
+        roll = math.radians(roll_deg) * ((i % 5) - 2) / 2.0
+        T_cam = _look_at_with_roll(cam_pos, board, roll)
+        T_tcp = T_cam @ np.linalg.inv(X)
+        p = matrix_to_pose(T_tcp)
+        bad = _reject(T_tcp[:3, 3], reach, envelope)
+        entry = {"index": i, "tcp_pose": [round(float(v), 5) for v in p],
+                 "tilt_deg": round(math.degrees(polar), 1),
+                 "roll_deg": round(math.degrees(roll), 1),
+                 "distance_mm": round(dist * 1000.0, 0)}
+        if bad:
+            entry["rejected"] = bad
+            rejected.append(entry)
+        else:
+            poses.append(entry)
+
+    if len(poses) < MIN_AUTO_POSES:
+        return {"ok": False, "n": len(poses), "rejected": rejected[:6],
+                "error": (f"only {len(poses)} of {n_poses} planned views are "
+                          "reachable. Move the board closer to the middle of "
+                          "the robot's working area and start again.")}
+
+    return {"ok": True, "poses": poses, "n": len(poses), "stage": stage,
+            "n_rejected": len(rejected), "rejected": rejected[:6],
+            "board_xyz_mm": [round(float(v) * 1000.0, 1) for v in board],
+            "distance_mm": round(d * 1000.0, 0),
+            "explain": (f"{len(poses)} views around the board at "
+                        f"{d * 1000:.0f} mm, tilted up to {tilt_deg:.0f} deg "
+                        f"and rolled up to {roll_deg:.0f} deg about the lens"
+                        + (" — a first pass, kept small so the board stays in "
+                           "frame before the camera's position is known."
+                           if stage == "coarse" else
+                           ". The roll is what makes the rotations "
+                           "independent; without it the solve is degenerate "
+                           "however many poses are taken."))}
+
+
+MIN_AUTO_POSES = 5
+
+
+def plan_bootstrap_poses(tcp_pose, *, angles_deg=(7.0, 7.0, 14.0),
+                         reach=None, envelope=None) -> dict:
+    """
+    The first round, which needs no idea at all of where the camera is.
+
+    Planning views around the board requires knowing roughly where the board
+    is in the robot's frame — and that requires the very transform being
+    solved for. Guessing it does not work: a camera mounted 9 degrees off the
+    tool axis swings the view by 70 mm at half a metre, which is most of a
+    calibration board, so a planned set based on a wrong guess has the board
+    out of frame in nearly every view. Measured: fourteen planned poses, zero
+    detections.
+
+    These poses sidestep it. They are small rotations of the TOOL about its
+    own flange, expressed in the tool's frame — so they are the same commands
+    whatever the camera's mounting, and they need nothing to be known. A small
+    tool rotation moves the camera a little (the lever arm) and turns it a
+    little, which keeps a board that was visible visible, and still produces
+    rotations about all three axes — which is what an AX = XB solve needs and
+    what a set of translations alone can never give it.
+
+    The result is a rough transform, good to a few millimetres. That is not
+    the answer, it is what makes the second round plannable.
+    """
+    ok, why = available()
+    if not ok:
+        return {"ok": False, "error": why}
+    if not tcp_pose or len(tcp_pose) < 6:
+        return {"ok": False, "error": "no TCP pose — is the robot connected?"}
+
+    ax, ay, az = (math.radians(v) for v in angles_deg)
+    # Rotations about all three tool axes, both directions, plus two pairs
+    # taken together so the set is not three separate one-axis families.
+    moves = [(ax, 0, 0), (-ax, 0, 0), (0, ay, 0), (0, -ay, 0),
+             (0, 0, az), (0, 0, -az),
+             (ax * 0.7, ay * 0.7, az * 0.5), (-ax * 0.7, ay * 0.7, -az * 0.5),
+             (ax * 0.7, -ay * 0.7, az * 0.5), (-ax * 0.7, -ay * 0.7, -az * 0.5)]
+
+    T0 = pose_to_matrix(tcp_pose)
+    reach = {"max_radius_m": 0.82, "min_radius_m": 0.20, "min_z_m": 0.02,
+             **(reach or {})}
+    poses, rejected = [], []
+    for i, (rx, ry, rz) in enumerate(moves):
+        R = (rotvec_to_matrix([rx, 0, 0]) @ rotvec_to_matrix([0, ry, 0])
+             @ rotvec_to_matrix([0, 0, rz]))
+        T = T0.copy()
+        T[:3, :3] = T0[:3, :3] @ R          # rotate IN THE TOOL FRAME
+        bad = _reject(T[:3, 3], reach, envelope)
+        entry = {"index": i,
+                 "tcp_pose": [round(float(v), 5) for v in matrix_to_pose(T)],
+                 "about_deg": [round(math.degrees(v), 1) for v in (rx, ry, rz)]}
+        (rejected if bad else poses).append(
+            {**entry, **({"rejected": bad} if bad else {})})
+
+    if len(poses) < MIN_AUTO_POSES:
+        return {"ok": False, "n": len(poses),
+                "error": "the arm cannot make even small rotations here — "
+                         "move it away from its limits and start again."}
+    return {"ok": True, "poses": poses, "n": len(poses), "stage": "bootstrap",
+            "n_rejected": len(rejected), "rejected": rejected[:4],
+            "explain": (f"{len(poses)} small tool rotations of up to "
+                        f"{max(angles_deg):.0f} degrees, about all three axes. "
+                        "These keep the board in view without needing to know "
+                        "where the camera is mounted, and give a rough answer "
+                        "good enough to plan the wide set from.")}
+
+
+def _frame_about(v):
+    """Two unit vectors perpendicular to v, and to each other."""
+    v = np.asarray(v, dtype=float)
+    a = np.array([0.0, 0.0, 1.0])
+    if abs(float(v @ a)) > 0.9:
+        a = np.array([1.0, 0.0, 0.0])
+    u = np.cross(v, a)
+    u = u / (np.linalg.norm(u) or 1.0)
+    w = np.cross(v, u)
+    return u, w / (np.linalg.norm(w) or 1.0)
+
+
+def _look_at_with_roll(pos, target, roll):
+    """Camera at `pos` looking at `target`, spun by `roll` about its own axis."""
+    pos = np.asarray(pos, dtype=float)
+    fwd = np.asarray(target, dtype=float) - pos
+    fwd = fwd / (np.linalg.norm(fwd) or 1.0)
+    up = np.array([0.0, 0.0, 1.0])
+    if abs(float(fwd @ up)) > 0.95:
+        up = np.array([1.0, 0.0, 0.0])
+    right = np.cross(fwd, up)
+    right = right / (np.linalg.norm(right) or 1.0)
+    down = np.cross(fwd, right)
+    R = np.stack([right, down, fwd], axis=1)
+    assert np.linalg.det(R) > 0, "camera frame must be right-handed"
+    cr, sr = math.cos(roll), math.sin(roll)
+    R = R @ np.array([[cr, -sr, 0.0], [sr, cr, 0.0], [0.0, 0.0, 1.0]])
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = pos
+    return T
+
+
+def _reject(p, reach, envelope) -> str:
+    r = float(math.sqrt(p[0] ** 2 + p[1] ** 2 + p[2] ** 2))
+    if r > reach["max_radius_m"]:
+        return f"out of reach ({r * 1000:.0f} mm from the base)"
+    if math.sqrt(p[0] ** 2 + p[1] ** 2) < reach["min_radius_m"]:
+        return "too close to the robot's own column"
+    if p[2] < reach["min_z_m"]:
+        return f"below the table ({p[2] * 1000:.0f} mm)"
+    if envelope:
+        for i, ax in enumerate("xyz"):
+            lim = envelope.get(ax)
+            if lim and not (float(lim[0]) <= p[i] <= float(lim[1])):
+                return f"outside the cell envelope on {ax.upper()}"
+    return ""
+
 
 DEFAULT_PATH = Path("calibration/handeye.json")
 

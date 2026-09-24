@@ -1078,6 +1078,35 @@ def _handle_handeye(data: dict):
         return {"type": "handeye_res", "cmd": mtype, "ok": False,
                 "error": "start a calibration first"}
 
+    if mtype == "handeye_auto_plan":
+        # Plan the next round of poses. Round one needs nothing known; round
+        # two is planned from the rough answer round one produced.
+        stage = data.get("stage", "bootstrap")
+        pose = _tcp_now()
+        if stage == "bootstrap":
+            res = handeye.plan_bootstrap_poses(
+                pose, envelope=ENVELOPE if data.get("use_envelope", True) else None)
+        else:
+            with camera_lock:
+                color = global_rgb_frame
+                intr = global_depth_intr
+            det = handeye.detect_target(color, sess.spec, intr)
+            if not det.get("ok") or "T_cam_target" not in det:
+                return {"type": "handeye_auto_plan_res", "ok": False,
+                        "error": "the board must be visible to plan the wide "
+                                 "set. " + det.get("error", "")}
+            guess = None
+            if sess.result and sess.result.get("ok"):
+                guess = sess.result["T_tcp_cam"]
+            elif _HAS_EXT and ur_bridge_ext.SCAN3D.T_tcp_cam is not None:
+                guess = ur_bridge_ext.SCAN3D.T_tcp_cam
+            res = handeye.plan_auto_poses(
+                pose, det["T_cam_target"],
+                n_poses=int(data.get("n_poses", 14)), stage="fine",
+                T_tcp_cam_guess=guess, board_size_m=sess.spec.size_m(),
+                envelope=ENVELOPE if data.get("use_envelope", True) else None)
+        return {"type": "handeye_auto_plan_res", "stage": stage, **res}
+
     if mtype == "handeye_capture":
         with camera_lock:
             color = global_rgb_frame

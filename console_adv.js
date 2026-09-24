@@ -1610,3 +1610,117 @@
            value: v });
   });
 })();
+
+/* ===========================================================================
+   Automatic hand-eye calibration.
+
+   One sighting of the board, then the arm takes the rest of the views itself.
+   Two rounds, because the second cannot be planned until the first has
+   answered: views around the board can only be worked out once it is known
+   roughly where the camera sits, and that is the thing being measured.
+   Round one is small tool rotations, which need nothing known and keep the
+   board in frame whatever the mounting; round two is the wide set, planned
+   from round one's rough answer.
+   =========================================================================== */
+(function () {
+  "use strict";
+  var S = window.SONAIR;
+  if (!S) return;
+  var $ = S.$, send = S.send, say = S.say, fmt = S.fmt;
+
+  var run = { on: false, queue: [], i: 0, stage: "", timer: null,
+              seen: 0, missed: 0 };
+
+  function stop(msg, kind) {
+    run.on = false;
+    if (run.timer) { clearTimeout(run.timer); run.timer = null; }
+    var b = $("btnCalAuto"), st = $("btnCalAutoStop");
+    if (b) b.disabled = false;
+    if (st) st.disabled = true;
+    if (msg) say("calAdvice", msg, kind || "info");
+  }
+  S.on("close", function () { stop(null); });
+
+  $("btnCalAuto") && $("btnCalAuto").addEventListener("click", function () {
+    if (!S.require("calAdvice")) return;
+    if (!confirm("The arm will move to about twenty positions around the "
+        + "board, photographing it at each. Is the area clear?")) return;
+    run = { on: true, queue: [], i: 0, stage: "bootstrap", timer: null,
+            seen: 0, missed: 0 };
+    this.disabled = true;
+    $("btnCalAutoStop").disabled = false;
+    say("calAdvice", "Working out the first set of positions…", "info");
+    send({ type: "handeye_auto_plan", stage: "bootstrap" });
+  });
+
+  $("btnCalAutoStop") && $("btnCalAutoStop").addEventListener("click",
+    function () { stop("Stopped. The poses captured so far are kept.", "warn"); });
+
+  S.on("handeye_auto_plan_res", function (d) {
+    if (!run.on) return;
+    if (!d.ok) { stop("Could not plan: " + (d.error || ""), "bad"); return; }
+    run.queue = d.poses || [];
+    run.i = 0;
+    say("calAdvice", d.explain || "", "info");
+    step();
+  });
+
+  function step() {
+    if (!run.on) return;
+    if (run.i >= run.queue.length) {
+      say("calAdvice", "Round finished — " + run.seen + " views used, "
+        + run.missed + " skipped because the board was not in them. "
+        + "Working it out…", "info");
+      // Solve, but do not apply yet on the first round: that answer exists to
+      // plan the second round, not to be used.
+      send({ type: "handeye_solve", method: "all",
+             apply: run.stage !== "bootstrap" });
+      return;
+    }
+    var p = run.queue[run.i];
+    say("calAdvice", "Position " + (run.i + 1) + " of " + run.queue.length
+      + (run.stage === "bootstrap" ? " (first pass)" : "") + "…", "info");
+    send({ type: "ur_movel", pose: p.tcp_pose, a: 0.5, v: 0.12 });
+    // Settle before photographing. A board photographed while the arm is
+    // still moving is blurred, and a blurred corner becomes tool error in the
+    // answer rather than a failed detection you can see.
+    run.timer = setTimeout(function () {
+      if (!run.on) return;
+      send({ type: "handeye_capture" });
+      run.i++;
+      run.timer = setTimeout(step, 700);
+    }, 3200);
+  }
+
+  S.on("handeye_capture_res", function (d) {
+    if (!run.on) return;
+    if (d.ok) { run.seen++; } else { run.missed++; }
+  });
+
+  S.on("handeye_solve_res", function (d) {
+    if (!run.on) return;
+    if (!d.ok) {
+      stop("Could not solve: " + (d.error || ""), "bad");
+      return;
+    }
+    if (run.stage === "bootstrap") {
+      run.stage = "fine";
+      say("calAdvice", "First pass done (" + fmt(d.target_spread_mm, 1)
+        + " mm). Planning the wide set from it — this is the one that decides "
+        + "the answer.", "info");
+      send({ type: "handeye_auto_plan", stage: "fine", n_poses: 14 });
+      return;
+    }
+    stop(null);
+    say("calAdvice", "Finished: " + run.seen + " views used across both "
+      + "rounds. See the result below — press Save and use it if it reads "
+      + "good.", d.target_spread_mm <= 5 ? "ok" : "warn");
+  });
+
+  // the automatic button needs a session, like the manual capture buttons
+  S.on("handeye_res", function (d) {
+    if (d.cmd === "begin" && d.ok && $("btnCalAuto")) {
+      $("btnCalAuto").disabled = false;
+    }
+  });
+})();
