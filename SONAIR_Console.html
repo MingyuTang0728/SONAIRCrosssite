@@ -456,6 +456,38 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     </div>
     <div class="note warn" id="urStartMsg">The pendant must be in <b>Remote
     Control</b>, and this PC must be on the same network as the robot.</div>
+    <div class="note info">This one address is used by <b>every</b> channel to
+    the robot &mdash; the live joint data, the motion commands, power and
+    brake release, and the program list. They used to be able to disagree,
+    which is what made half the buttons on the Robot page do nothing while
+    the joint angles updated perfectly.</div>
+  </section>
+
+  <!-- ============ what went wrong, in one place ============
+       An agent that fails quietly gets blamed for the wrong thing. -->
+  <section class="block">
+    <h3>Diagnostics <span class="tag" id="faultTag">&mdash;</span></h3>
+    <div class="grid g3">
+      <div class="tile"><div class="k">Robot address in use</div>
+        <div class="v" id="faultHost" style="font-size:14px">&mdash;</div>
+        <div class="d">every channel</div></div>
+      <div class="tile"><div class="k">Pictures being sent</div>
+        <div class="v" id="faultStreams" style="font-size:14px">none</div>
+        <div class="d">only what this page shows</div></div>
+      <div class="tile"><div class="k">Link</div>
+        <div class="v" id="faultLink" style="font-size:14px">&mdash;</div>
+        <div class="d">state right now</div></div>
+    </div>
+    <div class="kv" id="faultList" style="margin-top:12px">
+      <div class="hint">Connect to see whether the agent has hit anything.</div>
+    </div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn" id="btnFaults">Refresh</button>
+      <button class="btn" id="btnCopyFaults">Copy for a bug report</button>
+    </div>
+    <div class="note info" id="faultMsg">If something stops working, this is
+    the first place to look &mdash; it names the action that failed and what
+    the agent said about it.</div>
   </section>
 
   <section class="block" id="blkCamSetup">
@@ -1213,16 +1245,22 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
             <option value="chessboard">Chessboard</option>
             <option value="charuco">ChArUco</option></select></div>
           <div class="field"><label>Square size (mm)</label>
-            <input id="calSq" type="number" value="25" step="0.5"/></div>
+            <input id="calSq" type="number" value="7.5" step="0.5"/></div>
           <div class="field"><label>Inner corners across</label>
-            <input id="calCols" type="number" value="9" step="1"/></div>
+            <input id="calCols" type="number" value="24" step="1"/></div>
           <div class="field"><label>Inner corners down</label>
-            <input id="calRows" type="number" value="6" step="1"/></div>
+            <input id="calRows" type="number" value="17" step="1"/></div>
         </div>
+        <button class="btn go wide" id="btnCalIdentify" style="margin-top:10px">Read the board for me</button>
         <div class="note warn" style="margin-top:10px">Count <b>inner corners</b>,
-        not squares. A board of 10&times;7 squares has 9&times;6 inner corners.
-        Getting this wrong is the commonest way to end up with a calibration
-        that looks fine and is wrong.</div>
+        not squares &mdash; or press <b>Read the board for me</b> and don't
+        count at all. A calib.io board labelled <b>18&times;25</b> has
+        <b>24&times;17</b> inner corners: the label counts squares, and one
+        row and column of them has no inner corner.
+        <br><br><b>Never enter a smaller size than the board really is.</b>
+        A grid will still be found &mdash; an arbitrary patch of the middle
+        &mdash; and it lands somewhere different in every shot, which ruins
+        the calibration while every number on screen still looks right.</div>
         <div class="note info" style="margin-top:8px">A board with small
         squares needs pixels to match. One square has to land on roughly
         15 pixels or more, so for a 7.5&nbsp;mm board set the colour stream to

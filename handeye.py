@@ -202,6 +202,38 @@ def detect_target(image, spec: TargetSpec, intrinsics=None,
         found, corners = _find_chessboard(gray, spec.cols, spec.rows,
                                           effort=effort)
 
+    if found:
+        # A DETECTION IS NOT ENOUGH: it has to be the WHOLE board.
+        #
+        # Ask a big board for a small grid and the detector happily returns
+        # one -- some arbitrary patch of the interior. Nothing about that
+        # looks wrong: the corners are real, sub-pixel accurate, and the
+        # reprojection error is tiny. But the patch it picks is not anchored
+        # to anything, so it lands a square or two over in the next frame, and
+        # every shift moves the board's origin by one square pitch. The
+        # hand-eye solve is then fitting a target that teleports between
+        # views, and it will return an answer with a plausible residual that
+        # is centimetres wrong.
+        #
+        # So when the true size is knowable, it is checked.
+        truth = measure_board(gray) if effort == "full" else None
+        if truth is not None:
+            tc, tr, _ = truth
+            declared = {spec.cols, spec.rows}
+            if declared != {tc, tr}:
+                return {"ok": False, "sub_grid": True,
+                        "actual_size": [tc, tr],
+                        "frame_px": [int(gray.shape[1]), int(gray.shape[0])],
+                        "error": (
+                            f"This is a {tc} x {tr} board, not "
+                            f"{spec.cols} x {spec.rows}. A grid was found at "
+                            f"the size you entered, but it is only a patch of "
+                            f"the middle of the board — and the patch moves "
+                            f"between shots, which silently ruins the "
+                            f"calibration while every number on screen still "
+                            f"looks fine. Set the size to {tc} across and "
+                            f"{tr} down.")}
+
     if not found:
         return {"ok": False, **_why_not(gray, spec, effort=effort)}
 
@@ -274,6 +306,37 @@ def _sb_flags():
                  "CALIB_CB_NORMALIZE_IMAGE"):
         flags |= getattr(cv2, name, 0)
     return flags
+
+
+def measure_board(gray):
+    """
+    What board is actually in this picture, whatever the operator typed.
+
+    `findChessboardCornersSBWithMeta` with CALIB_CB_LARGER finds the WHOLE
+    board from any smaller guess and reports its true dimensions, so the
+    counting step -- the single commonest way to get a calibration wrong --
+    can be done by the machine instead of by eye.
+
+    Returns (cols, rows, corners) or None.
+    """
+    if not hasattr(cv2, "findChessboardCornersSBWithMeta"):
+        return None
+    flags = _sb_flags() | getattr(cv2, "CALIB_CB_LARGER", 0)
+    # A deliberately small seed: LARGER grows from it, and a seed bigger than
+    # the real board simply fails.
+    for seed in ((4, 3), (3, 3), (6, 5)):
+        try:
+            ok, corners, meta = cv2.findChessboardCornersSBWithMeta(
+                gray, seed, flags)
+        except Exception:
+            return None
+        if ok and meta is not None:
+            m = np.asarray(meta)
+            if m.ndim == 2 and m.size:
+                rows, cols = int(m.shape[0]), int(m.shape[1])
+                if cols >= 3 and rows >= 3:
+                    return cols, rows, corners
+    return None
 
 
 def _attempt(gray, cols, rows):
@@ -468,7 +531,13 @@ def _why_not(gray, spec, effort: str = "full") -> dict:
     """
     h, w = gray.shape[:2]
     out = {"probed": effort == "full", "frame_px": [int(w), int(h)]}
-    found = probe_board_size(gray, spec.cols, spec.rows) if effort == "full" else None
+    # Ask the board what it is before searching for what it might be. One
+    # call, and it answers for any size; the size sweep below is the fallback
+    # for OpenCV builds without it.
+    truth = measure_board(gray) if effort == "full" else None
+    found = (truth[0], truth[1]) if truth else None
+    if found is None and effort == "full":
+        found = probe_board_size(gray, spec.cols, spec.rows)
     if found:
         out["suggested_size"] = list(found)
         out["error"] = (f"No {spec.cols}x{spec.rows} board here, but a "

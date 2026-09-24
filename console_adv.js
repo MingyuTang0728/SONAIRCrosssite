@@ -1077,6 +1077,34 @@
     if (cal.n >= 5) calFlow(2);
   }
 
+  on("btnCalIdentify", "click", function () {
+    if (!S.require("calLiveMsg")) return;
+    say("calLiveMsg", "Reading the board…", "info");
+    send({ type: "handeye_identify", target: calTarget() });
+  });
+
+  S.on("handeye_identify_res", function (d) {
+    if (!d.ok) { say("calLiveMsg", d.error || "Could not read the board.", "warn"); return; }
+    $("calCols").value = d.cols;
+    $("calRows").value = d.rows;
+    var fix = $("calFixSize"); if (fix) fix.hidden = true;
+    var tight = d.pitch_px != null && d.pitch_px < 15;
+    say("calLiveMsg", "That is a " + d.cols + " \u00d7 " + d.rows
+      + " board (" + d.corners + " inner corners), squares "
+      + (d.pitch_px != null ? fmt(d.pitch_px, 0) + " px across at this distance"
+         : "measured")
+      + (tight ? " — that is under the 15 px the detector needs, so move the "
+         + "camera closer before you start" : "")
+      + ". The size has been filled in."
+      + (d.max_distance_mm
+         ? " With these squares the camera can read this board out to about "
+           + d.max_distance_mm + " mm; past that there are too few pixels "
+           + "per square whatever the lighting."
+         : "")
+      + " Press Start.", tight ? "warn" : "ok");
+    if (cal.on) send({ type: "handeye_begin", target: calTarget() });
+  });
+
   on("calFixSize", "click", function () {
     if (!cal.suggest) return;
     $("calCols").value = cal.suggest[0];
@@ -1124,14 +1152,14 @@
     // leaves the operator with nothing to try.
     var fix = $("calFixSize");
     if (fix) {
-      if (!d.ok && d.suggested_size) {
-        cal.suggest = d.suggested_size;
+      var sug = d.suggested_size || d.actual_size;
+      if (!d.ok && sug) {
+        cal.suggest = sug;
         fix.hidden = false;
-        fix.textContent = "Use " + d.suggested_size[0] + " × "
-          + d.suggested_size[1] + " instead";
+        fix.textContent = "Use " + sug[0] + " × " + sug[1] + " instead";
       } else if (d.ok) { fix.hidden = true; }
     }
-    if (!d.ok && d.error) say("calLiveMsg", d.error, "warn");
+    if (!d.ok && d.error) say("calLiveMsg", d.error, d.sub_grid ? "bad" : "warn");
     else if (d.ok) {
       // The square pitch is the margin the detection had. Below about 15 px
       // it stops working, and an operator watching it fall as the arm backs
@@ -1555,8 +1583,14 @@
     var host = (($("urHost") || {}).value || "").trim();
     if (!host) { say("urStartMsg", "Enter the robot's IP address.", "bad"); return; }
     say("urStartMsg", "Connecting to " + esc(host) + "…", "info");
+    // rtde_inputs stays OFF. It opens a SECOND RTDE connection, and older
+    // controllers allow exactly one — the second one takes the slot and the
+    // telemetry stream dies, which presents as a robot that connects and then
+    // shows nothing. The agent's own comment says so; the console was passing
+    // true and defeating it. The only thing it buys is the speed slider,
+    // which the speed control now asks for on demand instead.
     send({ type: "ur_service_start", host: host,
-           frequency: num("urRate", 125), rtde_inputs: true });
+           frequency: num("urRate", 125), rtde_inputs: false });
   });
 
   S.on("ur_service_start_res", function (d) {

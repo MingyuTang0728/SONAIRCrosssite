@@ -44,6 +44,8 @@ import socket
 import struct
 import sys
 import threading
+import traceback
+from collections import deque
 import logging
 from ftplib import FTP
 from datetime import datetime, timezone
@@ -141,6 +143,69 @@ except Exception as _e:          # noqa: BLE001 - never block the robot on this
 # Configuration
 # ============================================================
 UR_IP            = os.environ.get("UR_IP", "192.168.0.20")
+
+# ---------------------------------------------------------------------------
+# THE ROBOT'S ADDRESS, in one place.
+#
+# There are five separate channels to a UR and they used to disagree about
+# where the robot was. Telemetry followed the address typed into the console;
+# the dashboard (29999), the URScript channel (30002), the program list (FTP)
+# and the realtime reader (30003) all kept whatever UR_IP held at import time.
+# Unless the robot happened to sit at the compiled-in default, that meant
+# joint angles streamed perfectly while power on, brake release, load
+# program, play, stop, freedrive and every I/O control quietly did nothing --
+# each one timing out against an address nobody had typed. The symptom is a
+# console that looks connected and is half dead, and nothing on screen says
+# which half.
+#
+# One setter now moves all of them. Changing it bumps a generation counter and
+# drops the long-lived sockets, so the reader and command threads notice on
+# their next pass and reconnect to the new address rather than holding a
+# connection to the old one until something times out.
+# ---------------------------------------------------------------------------
+_ur_addr_lock = threading.Lock()
+_ur_addr_gen  = 0
+
+
+def robot_host() -> str:
+    """The address every UR channel must use. Read it, never cache it."""
+    with _ur_addr_lock:
+        return UR_IP
+
+
+def robot_addr_gen() -> int:
+    with _ur_addr_lock:
+        return _ur_addr_gen
+
+
+def set_robot_host(host: str) -> dict:
+    """Point every channel at `host`. Returns what changed, for the log."""
+    global UR_IP, _ur_addr_gen
+    host = str(host or "").strip()
+    if not host:
+        return {"changed": False, "host": robot_host(), "error": "no address given"}
+    with _ur_addr_lock:
+        if host == UR_IP:
+            return {"changed": False, "host": host}
+        was, UR_IP = UR_IP, host
+        _ur_addr_gen += 1
+        gen = _ur_addr_gen
+    log.info("robot address changed: %s -> %s (generation %d)", was, host, gen)
+    # Drop the sockets that are pinned to the old address. Each owning loop
+    # reconnects on its own; closing from here is what makes it notice now
+    # rather than at the end of a 30 s receive timeout.
+    for sock in (ur_socket_tx, ur_control_tx):
+        try:
+            if sock is not None:
+                sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            if sock is not None:
+                sock.close()
+        except Exception:
+            pass
+    return {"changed": True, "host": host, "was": was, "generation": gen}
 
 # Local face — UoN operator's browser on same LAN
 LOCAL_HOST       = "0.0.0.0"
@@ -275,11 +340,44 @@ _rs_restart_evt  = threading.Event()  # set -> camera_thread restarts pipeline
 # ============================================================
 # UR low-level comms
 # ============================================================
+# ---------------------------------------------------------------------------
+# FAULTS, kept where someone can see them.
+#
+# An agent that dies quietly is an agent that gets blamed for the wrong thing.
+# Every exception that would otherwise vanish into a log file nobody has open
+# lands here, with its traceback, and the console can ask for the list. That
+# turns "it disconnected and I do not know why" -- which costs a round trip
+# and a guess -- into a line of text naming the message that did it.
+# ---------------------------------------------------------------------------
+_FAULTS: "deque" = deque(maxlen=60)
+_fault_lock = threading.Lock()
+
+
+def record_fault(where: str, exc: BaseException, context=None) -> dict:
+    entry = {
+        "at": time.strftime("%H:%M:%S"),
+        "where": where,
+        "error": f"{type(exc).__name__}: {exc}",
+        "context": context,
+        "traceback": traceback.format_exc(limit=8),
+    }
+    with _fault_lock:
+        _FAULTS.append(entry)
+    log.error("fault in %s (%s): %s", where, context, entry["error"])
+    log.debug("%s", entry["traceback"])
+    return entry
+
+
+def faults() -> list:
+    with _fault_lock:
+        return list(_FAULTS)
+
+
 def send_dashboard_cmd(cmd):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(2.0)
-            s.connect((UR_IP, 29999))
+            s.connect((robot_host(), 29999))
             s.recv(1024)
             s.sendall((cmd + "\n").encode("utf-8"))
             res = s.recv(1024).decode("utf-8").strip()
@@ -302,7 +400,7 @@ def send_urscript_to_robot(script_content, stop_first=False):
             time.sleep(0.05)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(2.0)
-            s.connect((UR_IP, 30002))
+            s.connect((robot_host(), 30002))
             s.sendall(script_content.encode("utf-8"))
         log.info("urscript injected (%d bytes)", len(script_content))
         return True
@@ -341,7 +439,7 @@ def send_realtime_script(script_content):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as one:
             one.settimeout(0.35)
-            one.connect((UR_IP, 30002))
+            one.connect((robot_host(), 30002))
             one.sendall(script_content.encode("utf-8"))
         return True
     except Exception as e:
@@ -355,10 +453,12 @@ def ur_control_thread():
     while True:
         s = None
         try:
-            log.info("connecting UR 30002 command @ %s ...", UR_IP)
+            host = robot_host()
+            gen = robot_addr_gen()
+            log.info("connecting UR 30002 command @ %s ...", host)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(5.0)
-            s.connect((UR_IP, 30002))
+            s.connect((host, 30002))
             s.settimeout(None)
             with ur_control_lock:
                 old = ur_control_tx
@@ -369,6 +469,11 @@ def ur_control_thread():
             log.info("UR 30002 command connected")
             while True:
                 time.sleep(1.0)
+                # An address change invalidates this socket even though it is
+                # still perfectly healthy: it is healthy to the WRONG robot.
+                if robot_addr_gen() != gen:
+                    log.info("robot address changed — dropping 30002 to %s", host)
+                    break
                 try:
                     s.sendall(b"# keepalive\n")
                 except Exception:
@@ -388,7 +493,7 @@ def ur_control_thread():
 
 def fetch_urp_list():
     try:
-        ftp = FTP(UR_IP, timeout=3)
+        ftp = FTP(robot_host(), timeout=3)
         ftp.login()
         ftp.cwd("/programs")
         files = ftp.nlst()
@@ -422,15 +527,20 @@ def ur_io_thread():
     _logged_size = set()   # avoid spamming log with unknown packet sizes
     while True:
         try:
-            log.info("connecting UR 30003 @ %s ...", UR_IP)
+            host = robot_host()
+            gen = robot_addr_gen()
+            log.info("connecting UR 30003 @ %s ...", host)
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(5.0)          # generous connect timeout
-            s.connect((UR_IP, 30003))
+            s.connect((host, 30003))
             s.settimeout(30.0)         # recv timeout — long enough to survive brief UR pauses
             ur_socket_tx = s
             log.info("UR 30003 connected")
             buffer = b""
             while True:
+                if robot_addr_gen() != gen:
+                    log.info("robot address changed — dropping 30003 to %s", host)
+                    break
                 chunk = s.recv(4096)
                 if not chunk:
                     log.warning("UR 30003 closed by robot (empty recv)")
@@ -1116,6 +1226,47 @@ def _handle_handeye(data: dict):
         return {"type": "handeye_res", "cmd": mtype, "ok": False,
                 "error": "start a calibration first"}
 
+    if mtype == "handeye_identify":
+        # Counting inner corners by eye on a fine board is the single
+        # commonest way to get a calibration quietly wrong, and it is a thing
+        # a machine does better. Point the camera at the board, press once.
+        with camera_lock:
+            color = global_rgb_frame
+        if color is None:
+            return {"type": "handeye_identify_res", "ok": False,
+                    "error": "no camera picture — start the colour stream"}
+        import numpy as _np
+        img = _np.asarray(color)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+        found = handeye.measure_board(gray)
+        if not found:
+            return {"type": "handeye_identify_res", "ok": False,
+                    "error": "could not read a chessboard in this picture. "
+                             "Get the whole board in frame, filling most of "
+                             "it, with a pale margin all round."}
+        cols, rows, corners = found
+        pitch = handeye.corner_pitch_px(corners, cols, rows)
+        out = {"type": "handeye_identify_res", "ok": True,
+               "cols": cols, "rows": rows,
+               "corners": int(cols * rows),
+               "pitch_px": round(pitch, 1) if pitch else None,
+               "frame_px": [int(gray.shape[1]), int(gray.shape[0])]}
+        # How far away this board can still be read, from the optics rather
+        # than from trial and error. It is the number that decides whether a
+        # fine board suits the working distance at all, and it is not
+        # something anyone can judge by looking.
+        with camera_lock:
+            intr = global_color_intr or global_depth_intr
+        sq = float((data.get("target") or {}).get("square_mm") or 0.0)
+        if intr is not None and sq > 0:
+            try:
+                fx = float(handeye._K_from(intr)[0][0, 0])
+                out["max_distance_mm"] = round(fx * sq / 15.0)
+                out["fx"] = round(fx, 1)
+            except Exception:
+                pass
+        return out
+
     if mtype == "handeye_auto_plan":
         # Plan the next round of poses. Round one needs nothing known; round
         # two is planned from the rough answer round one produced.
@@ -1348,37 +1499,91 @@ def _handle_rs(data: dict):
     return None
 
 
+def _encode_preview(frames: dict, width: int, quality: int) -> dict:
+    """
+    Turn the live frames into a message small enough to send twenty times a
+    second, without touching what the algorithms see.
+
+    THE PREVIEW IS NOT THE MEASUREMENT. Detection, reconstruction and the
+    hand-eye solve all read `global_rgb_frame` at full resolution; this makes
+    a picture for a person, and a person cannot see the difference between
+    1280 px and 720 px in a 600 px wide panel. Sending the full frame cost
+    four times the bytes for no visible gain, and those bytes were what
+    pushed the socket past what the browser could drain.
+
+    Runs on a worker thread. The JPEG encode is the expensive part and it
+    must not happen on the event loop.
+    """
+    out = {"type": "camera_frame"}
+    for name, img in frames.items():
+        try:
+            h, w = img.shape[:2]
+            if w > width:
+                scale = width / float(w)
+                img = cv2.resize(img, (int(w * scale), int(h * scale)),
+                                 interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", img,
+                                   [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+            if ok:
+                out[name] = base64.b64encode(buf).decode("utf-8")
+                out[name + "_px"] = [int(img.shape[1]), int(img.shape[0])]
+        except Exception as e:      # noqa: BLE001
+            # One unencodable frame must not cost the other three.
+            log.debug("preview encode failed for %s: %s", name, e)
+    return out
+
+
 async def local_handler(websocket):
     log.info("local browser connected")
 
+    # What this browser wants to be sent, and how big.
+    #
+    # It used to be everything, always: colour, depth and BOTH infrared
+    # frames, JPEG-encoded and base64-ed every 50 ms whether or not the page
+    # was showing a picture at all. Measured at the resolutions the console
+    # now asks for, that is 269 kB a tick -- 5.2 MB/s -- pushed at a browser
+    # sitting on the Robot page looking at joint angles. The console tells the
+    # agent what it is actually displaying and gets that and nothing else.
+    prefs = {"streams": set(), "width": 720, "quality": 55}
+
     async def stream():
+        errors = 0
+        slow = 0
+        period = 0.05
         while True:
             try:
-                if _HAS_VISION:
+                if _HAS_VISION and prefs["streams"]:
                     with camera_lock:
-                        rgb   = global_rgb_frame
-                        depth = global_depth_frame
-                        ir1   = global_ir1_frame
-                        ir2   = global_ir2_frame
-                    frame_msg = {"type": "camera_frame"}
-                    if rgb is not None:
-                        _, buf = cv2.imencode(".jpg", rgb,
-                                              [cv2.IMWRITE_JPEG_QUALITY, 60])
-                        frame_msg["rgb"] = base64.b64encode(buf).decode("utf-8")
-                    if depth is not None:
-                        _, buf = cv2.imencode(".jpg", depth,
-                                              [cv2.IMWRITE_JPEG_QUALITY, 50])
-                        frame_msg["depth"] = base64.b64encode(buf).decode("utf-8")
-                    if ir1 is not None:
-                        _, buf = cv2.imencode(".jpg", ir1,
-                                              [cv2.IMWRITE_JPEG_QUALITY, 50])
-                        frame_msg["ir1"] = base64.b64encode(buf).decode("utf-8")
-                    if ir2 is not None:
-                        _, buf = cv2.imencode(".jpg", ir2,
-                                              [cv2.IMWRITE_JPEG_QUALITY, 50])
-                        frame_msg["ir2"] = base64.b64encode(buf).decode("utf-8")
-                    if len(frame_msg) > 1:  # at least one stream ready
+                        avail = {"rgb": global_rgb_frame,
+                                 "depth": global_depth_frame,
+                                 "ir1": global_ir1_frame,
+                                 "ir2": global_ir2_frame}
+                    want = {k: v for k, v in avail.items()
+                            if v is not None and k in prefs["streams"]}
+                    if want:
+                        # Encoding happens OFF the event loop. Four JPEGs a
+                        # tick is tens of milliseconds of CPU, and doing it
+                        # here meant the loop that also answers the keepalive
+                        # ping spent most of every 50 ms inside libjpeg.
+                        frame_msg = await asyncio.to_thread(
+                            _encode_preview, want, prefs["width"], prefs["quality"])
+                        t_send = time.monotonic()
                         await websocket.send(json.dumps(frame_msg))
+                        # Adaptive: if the client cannot drain what we send,
+                        # `send` blocks on the transport. Slow down rather
+                        # than queue -- a backlog delays the keepalive too,
+                        # and a missed keepalive closes the connection, which
+                        # is indistinguishable at the browser from a crash.
+                        took = time.monotonic() - t_send
+                        if took > 0.10:
+                            period = min(0.5, period * 1.5)
+                            slow += 1
+                            if slow in (5, 25, 100):
+                                log.warning("browser is not keeping up "
+                                            "(%.0f ms to send) — preview now "
+                                            "%.0f fps", took * 1000, 1 / period)
+                        elif period > 0.05 and took < 0.02:
+                            period = max(0.05, period / 1.2)
                 with data_lock:
                     q   = global_actual_q
                     tcp = global_tcp_pose
@@ -1405,11 +1610,34 @@ async def local_handler(websocket):
                     st = ur_bridge_ext.UR.state()
                     if st:
                         await websocket.send(json.dumps({"type": "ur_state", "s": st}))
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(period)
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except websockets.exceptions.ConnectionClosed:
                 break
+            except Exception as exc:                         # noqa: BLE001
+                # This loop carries the camera, the robot state and every
+                # inertial reading. It used to `break` on the first exception,
+                # silently and for good: one bad frame and the console went
+                # blank -- no picture, no joint angles, no sensors -- while
+                # the socket stayed open, so it did not even look
+                # disconnected. Nothing was logged either.
+                #
+                # A transient fault is now survived. A persistent one gives
+                # up loudly rather than spinning.
+                errors += 1
+                record_fault("live stream", exc, f"error {errors}")
+                if errors >= 20:
+                    log.error("live stream failing repeatedly — stopping it")
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": "agent_fault", "on": "live stream",
+                            "error": "the live stream stopped after 20 errors",
+                            "fatal": True}))
+                    except Exception:
+                        pass
+                    break
+                await asyncio.sleep(0.5)
 
     stream_task = asyncio.create_task(stream())
     try:
@@ -1419,162 +1647,247 @@ async def local_handler(websocket):
             except Exception:
                 continue
             mtype = data.get("type")
-
-            # auth from frontend — local face accepts any (LAN-trusted)
-            if mtype == "auth":
-                await websocket.send(json.dumps({
-                    "type":            "auth_ok",
-                    "session":         "local",
-                    "role":            "host",
-                    "site":            RELAY_SITE,
-                    "envelope":        ENVELOPE,
-                    "authority_state": "host_operator",
-                    "agent_online":    True,
-                }))
-                continue
-            if mtype == "ping":
-                await websocket.send(json.dumps({"type": "pong",
-                                                 "ts": data.get("ts")}))
-                continue
-            if mtype == "estop":
-                estop_ur()
-                continue
-            # Jog messages run INLINE. They are a lock and six floats, and the
-            # whole point of moving the cadence to the host was to stop robot
-            # motion waiting on anything that can stall. A thread-pool hop per
-            # jog message reintroduces exactly that.
-            if _HAS_EXT and str(mtype or "").startswith("jog_"):
-                reply = ur_bridge_ext.handle_message(data)
-                if reply is not None and not reply.pop("quiet", False):
-                    await websocket.send(json.dumps(reply))
-                continue
-
-            if _HAS_EXT:
-                reply = await asyncio.to_thread(ur_bridge_ext.handle_message, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                    continue
-            if _HAS_BENCH and (str(mtype or "").startswith("bench_")
-                               or str(mtype or "").startswith("imu_")
-                               or mtype == "sensors_report"):
-                reply = await asyncio.to_thread(bench_agent.handle_message, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                continue
-            if mtype in ("jog", "movel", "run_script",
-                          "speedl", "speedl_stop", "speedj", "speedj_stop",
-                          "freedrive_start", "freedrive_stop"):
-                ok, reason = await asyncio.to_thread(execute_motion, data)
-                if not ok:
+            # ONE MESSAGE MUST NEVER TAKE THE CONNECTION WITH IT.
+            #
+            # Every handler below used to run bare inside this loop, so any
+            # exception any of them raised -- a robot socket that closed
+            # mid-command, a reply holding a value json could not encode, a
+            # field a newer console sent that an older agent did not expect --
+            # escaped the `async for`, past the ConnectionClosed handler, and
+            # out of local_handler, which closes the websocket. From the
+            # operator's side that is "I pressed a button and it
+            # disconnected", with nothing on screen naming the button.
+            #
+            # The guard costs one try block and turns every one of those into
+            # a message on the page instead.
+            try:
+                await _dispatch(websocket, data, mtype, prefs)
+            except websockets.exceptions.ConnectionClosed:
+                raise
+            except Exception as exc:                         # noqa: BLE001
+                entry = record_fault("message handler", exc, mtype)
+                try:
                     await websocket.send(json.dumps({
-                        "type":   "cmd_rejected",
-                        "seq":    data.get("seq"),
-                        "reason": reason,
+                        "type": "agent_fault",
+                        "on": mtype,
+                        "error": entry["error"],
+                        "at": entry["at"],
                     }))
-                continue
-            if mtype == "get_urp_list":
-                lst = await asyncio.to_thread(fetch_urp_list)
-                await websocket.send(json.dumps({"type": "urp_list",
-                                                 "list": lst}))
-                continue
-            if mtype == "dashboard":
-                res = await asyncio.to_thread(send_dashboard_cmd,
-                                              data.get("cmd", ""))
-                await websocket.send(json.dumps({"type": "dashboard_res",
-                                                 "res": res}))
-                continue
-            if mtype == "camera_config":
-                # Frontend sends the full desired config dict.
-                # We merge it into _rs_config and signal the camera thread
-                # to restart the pipeline with new settings.
-                new_cfg = data.get("config", {})
-                with _rs_config_lock:
-                    _rs_config.update(new_cfg)
-                _rs_restart_evt.set()
-                audit("camera_config_applied", new_cfg)
-                await websocket.send(json.dumps({
-                    "type":            "camera_config_ack",
-                    "config":          {**_rs_config},
-                    "vision_available": _HAS_VISION,
-                    "vision_error":    "" if _HAS_VISION else _VISION_ERR,
-                }))
-                if _HAS_VISION:
-                    log.info("camera_config applied: %s", new_cfg)
-                else:
-                    log.warning("camera_config stored but NO CAMERA SUPPORT on this "
-                                "agent (%s) — the config will take effect only once "
-                                "the vision dependencies are installed", _VISION_ERR)
-                continue
-            if str(mtype or "").startswith("handeye_"):
-                reply = await asyncio.to_thread(_handle_handeye, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                continue
-            if str(mtype or "").startswith("mv_"):
-                reply = await asyncio.to_thread(_handle_multiview, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                continue
-            if str(mtype or "").startswith("rs_"):
-                reply = await asyncio.to_thread(_handle_rs, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                continue
-            if _HAS_VISINSP and str(mtype or "").startswith("inspect_"):
-                reply = await asyncio.to_thread(_handle_inspect, data)
-                if reply is not None:
-                    await websocket.send(json.dumps(reply))
-                continue
+                except Exception:
+                    pass
+            continue
 
-            if _HAS_CAMSVC and mtype in ("camera_probe", "camera_stats",
-                                         "camera_point", "camera_option"):
-                with camera_lock:
-                    depth_raw = global_depth_raw
-                    intr = global_depth_intr
-                scale = (getattr(intr, "depth_scale", None)
-                         or _rs_config.get("depth_units", 0.001))
-
-                if mtype == "camera_probe":
-                    res = await asyncio.to_thread(camera_service.probe)
-                    res["intrinsics"] = camera_service.live_intrinsics(intr, scale)
-                    res["streaming"] = depth_raw is not None
-                    res["vision_available"] = _HAS_VISION
-                    res["vision_error"] = "" if _HAS_VISION else _VISION_ERR
-                    await websocket.send(json.dumps({"type": "camera_probe_res", **res}))
-                elif mtype == "camera_stats":
-                    res = camera_service.stats(depth_raw, scale,
-                                               float(data.get("roi_frac", 0.25)))
-                    await websocket.send(json.dumps({"type": "camera_stats_res", **res}))
-                elif mtype == "camera_point":
-                    res = camera_service.point(depth_raw, data.get("x", 0),
-                                               data.get("y", 0), intr, scale,
-                                               int(data.get("window", 5)))
-                    await websocket.send(json.dumps({"type": "camera_point_res", **res}))
-                else:
-                    res = await asyncio.to_thread(
-                        camera_service.set_option,
-                        data.get("sensor", "depth"),
-                        data.get("option", ""),
-                        data.get("value", 0))
-                    await websocket.send(json.dumps({"type": "camera_option_res", **res}))
-                continue
-
-            if mtype == "get_camera_config":
-                # Frontend requesting current live config (e.g. on reconnect)
-                with _rs_config_lock:
-                    snap = dict(_rs_config)
-                await websocket.send(json.dumps({
-                    "type":            "camera_config_ack",
-                    "config":          snap,
-                    "vision_available": _HAS_VISION,
-                    "vision_error":    "" if _HAS_VISION else _VISION_ERR,
-                }))
-                continue
     except websockets.exceptions.ConnectionClosed:
         pass
+    except Exception as exc:                                 # noqa: BLE001
+        record_fault("local_handler", exc, None)
     finally:
         stream_task.cancel()
         log.info("local browser disconnected")
+
+
+async def _dispatch(websocket, data, mtype, prefs):
+    """
+    Handle one message from the console.
+
+    Split out of the receive loop for one reason: so the loop can wrap it. As
+    long as the dispatch was inline, there was no place to put a guard that
+    did not also swallow the loop's own control flow.
+    """
+
+    # What this page is showing, so the agent sends that and nothing else.
+    if mtype == "stream_prefs":
+        want = data.get("streams")
+        prefs["streams"] = set(want) & {"rgb", "depth", "ir1", "ir2"} if want else set()
+        prefs["width"] = max(240, min(1280, int(data.get("width", 720))))
+        prefs["quality"] = max(25, min(90, int(data.get("quality", 55))))
+        await websocket.send(json.dumps({
+            "type": "stream_prefs_res", "ok": True,
+            "streams": sorted(prefs["streams"]),
+            "width": prefs["width"], "quality": prefs["quality"]}))
+        return
+
+    # Why the last thing went wrong, in the operator's own words.
+    if mtype == "agent_faults":
+        await websocket.send(json.dumps({
+            "type": "agent_faults_res", "ok": True, "faults": faults(),
+            "robot_host": robot_host()}))
+        return
+
+    # auth from frontend — local face accepts any (LAN-trusted)
+    if mtype == "auth":
+        await websocket.send(json.dumps({
+            "type":            "auth_ok",
+            "session":         "local",
+            "role":            "host",
+            "site":            RELAY_SITE,
+            "envelope":        ENVELOPE,
+            "authority_state": "host_operator",
+            "agent_online":    True,
+        }))
+        return
+    if mtype == "ping":
+        await websocket.send(json.dumps({"type": "pong",
+                                         "ts": data.get("ts")}))
+        return
+    if mtype == "estop":
+        estop_ur()
+        return
+    # Jog messages run INLINE. They are a lock and six floats, and the
+    # whole point of moving the cadence to the host was to stop robot
+    # motion waiting on anything that can stall. A thread-pool hop per
+    # jog message reintroduces exactly that.
+    if _HAS_EXT and str(mtype or "").startswith("jog_"):
+        reply = ur_bridge_ext.handle_message(data)
+        if reply is not None and not reply.pop("quiet", False):
+            await websocket.send(json.dumps(reply))
+        return
+
+    # Starting the robot link is where the address the operator typed
+    # becomes THE address, for every channel, before anything tries to
+    # use it. Doing it here rather than inside ur_bridge_ext keeps the
+    # one setter in the one module that owns the other four channels.
+    if mtype == "ur_service_start":
+        moved = await asyncio.to_thread(set_robot_host, data.get("host"))
+        if moved.get("error"):
+            await websocket.send(json.dumps({
+                "type": "ur_service_start_res", "ok": False,
+                "error": moved["error"]}))
+            return
+
+    if _HAS_EXT:
+        reply = await asyncio.to_thread(ur_bridge_ext.handle_message, data)
+        if reply is not None:
+            if mtype == "ur_service_start":
+                reply["address_applied_to"] = [
+                    "telemetry (RTDE 30004)", "realtime (30003)",
+                    "URScript (30002)", "dashboard (29999)",
+                    "program list (FTP)"]
+            await websocket.send(json.dumps(reply))
+            return
+    if _HAS_BENCH and (str(mtype or "").startswith("bench_")
+                       or str(mtype or "").startswith("imu_")
+                       or mtype == "sensors_report"):
+        reply = await asyncio.to_thread(bench_agent.handle_message, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+    if mtype in ("jog", "movel", "run_script",
+                  "speedl", "speedl_stop", "speedj", "speedj_stop",
+                  "freedrive_start", "freedrive_stop"):
+        ok, reason = await asyncio.to_thread(execute_motion, data)
+        if not ok:
+            await websocket.send(json.dumps({
+                "type":   "cmd_rejected",
+                "seq":    data.get("seq"),
+                "reason": reason,
+            }))
+        return
+    if mtype == "get_urp_list":
+        lst = await asyncio.to_thread(fetch_urp_list)
+        await websocket.send(json.dumps({"type": "urp_list",
+                                         "list": lst}))
+        return
+    if mtype == "dashboard":
+        res = await asyncio.to_thread(send_dashboard_cmd,
+                                      data.get("cmd", ""))
+        await websocket.send(json.dumps({"type": "dashboard_res",
+                                         "res": res}))
+        return
+    if mtype == "camera_config":
+        # Frontend sends the full desired config dict.
+        # We merge it into _rs_config and signal the camera thread
+        # to restart the pipeline with new settings.
+        new_cfg = data.get("config", {})
+        with _rs_config_lock:
+            _rs_config.update(new_cfg)
+        _rs_restart_evt.set()
+        audit("camera_config_applied", new_cfg)
+        await websocket.send(json.dumps({
+            "type":            "camera_config_ack",
+            "config":          {**_rs_config},
+            "vision_available": _HAS_VISION,
+            "vision_error":    "" if _HAS_VISION else _VISION_ERR,
+        }))
+        if _HAS_VISION:
+            log.info("camera_config applied: %s", new_cfg)
+        else:
+            log.warning("camera_config stored but NO CAMERA SUPPORT on this "
+                        "agent (%s) — the config will take effect only once "
+                        "the vision dependencies are installed", _VISION_ERR)
+        return
+    if str(mtype or "").startswith("handeye_"):
+        reply = await asyncio.to_thread(_handle_handeye, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+    if str(mtype or "").startswith("mv_"):
+        reply = await asyncio.to_thread(_handle_multiview, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+    if str(mtype or "").startswith("rs_"):
+        reply = await asyncio.to_thread(_handle_rs, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+    if _HAS_VISINSP and str(mtype or "").startswith("inspect_"):
+        reply = await asyncio.to_thread(_handle_inspect, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+
+    if _HAS_CAMSVC and mtype in ("camera_probe", "camera_stats",
+                                 "camera_point", "camera_option"):
+        with camera_lock:
+            depth_raw = global_depth_raw
+            intr = global_depth_intr
+        scale = (getattr(intr, "depth_scale", None)
+                 or _rs_config.get("depth_units", 0.001))
+
+        if mtype == "camera_probe":
+            res = await asyncio.to_thread(camera_service.probe)
+            res["intrinsics"] = camera_service.live_intrinsics(intr, scale)
+            res["streaming"] = depth_raw is not None
+            res["vision_available"] = _HAS_VISION
+            res["vision_error"] = "" if _HAS_VISION else _VISION_ERR
+            await websocket.send(json.dumps({"type": "camera_probe_res", **res}))
+        elif mtype == "camera_stats":
+            res = camera_service.stats(depth_raw, scale,
+                                       float(data.get("roi_frac", 0.25)))
+            await websocket.send(json.dumps({"type": "camera_stats_res", **res}))
+        elif mtype == "camera_point":
+            res = camera_service.point(depth_raw, data.get("x", 0),
+                                       data.get("y", 0), intr, scale,
+                                       int(data.get("window", 5)))
+            await websocket.send(json.dumps({"type": "camera_point_res", **res}))
+        else:
+            res = await asyncio.to_thread(
+                camera_service.set_option,
+                data.get("sensor", "depth"),
+                data.get("option", ""),
+                data.get("value", 0))
+            await websocket.send(json.dumps({"type": "camera_option_res", **res}))
+        return
+
+    if mtype == "get_camera_config":
+        # Frontend requesting current live config (e.g. on reconnect)
+        with _rs_config_lock:
+            snap = dict(_rs_config)
+        await websocket.send(json.dumps({
+            "type":            "camera_config_ack",
+            "config":          snap,
+            "vision_available": _HAS_VISION,
+            "vision_error":    "" if _HAS_VISION else _VISION_ERR,
+        }))
+        return
+
+    # Nothing claimed it. Say so rather than dropping it: a message the
+    # agent does not know is usually a console newer than the agent,
+    # and silence makes that look like a dead button.
+    log.debug("unhandled message type %r", mtype)
+    await websocket.send(json.dumps({
+        "type": "agent_unhandled", "on": mtype}))
 
 
 # ============================================================
@@ -1733,7 +2046,7 @@ async def main():
         # Full telemetry + control. The existing 30003 reader in ur_io_thread
         # stays as it is; this is a second, richer view that the new panels
         # read, so nothing that already worked changes behaviour.
-        res = ur_bridge_ext.UR.start(UR_IP, envelope={
+        res = ur_bridge_ext.UR.start(robot_host(), envelope={
             "x": (ENVELOPE["x_min"], ENVELOPE["x_max"]),
             "y": (ENVELOPE["y_min"], ENVELOPE["y_max"]),
             "z": (ENVELOPE["z_min"], ENVELOPE["z_max"]),
@@ -1838,7 +2151,7 @@ async def main():
 
     log.info("=" * 64)
     log.info(" SONAIR UR Host Agent")
-    log.info(" UR target:    %s", UR_IP)
+    log.info(" UR target:    %s", robot_host())
     log.info(" Local face:   ws://%s:%d  (UoN browser)", LOCAL_HOST, LOCAL_PORT)
     log.info(" Relay URL:    %s", RELAY_URL or "(disabled — local-only mode)")
     log.info(" Relay room:   %s", RELAY_ROOM)

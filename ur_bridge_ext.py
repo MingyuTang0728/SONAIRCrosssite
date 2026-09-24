@@ -235,6 +235,20 @@ def handle_message(data: dict) -> dict | None:
                            frequency=float(data.get("frequency", 125.0)),
                            use_rtde_inputs=bool(data.get("rtde_inputs")))}
 
+    if t == "ur_speed_slider" and UR.controller is not None \
+            and UR.controller.rtde_inputs is None:
+        # Attached HERE, the first time it is actually wanted, rather than at
+        # startup. It opens a second RTDE connection and older controllers
+        # allow only one, so attaching it eagerly cost the telemetry stream
+        # its slot on exactly the controllers least able to spare it. An
+        # operator who never touches the speed slider never pays for it.
+        try:
+            UR.controller.attach_rtde_inputs(RTDEInputChannel(UR.host))
+            log.info("RTDE input channel attached on demand for the speed slider")
+        except Exception as e:      # noqa: BLE001
+            return {"type": "ur_cmd_res", "cmd": t, "ok": False,
+                    "msg": f"speed slider unavailable: {e}"}
+
     if t.startswith("ur_"):
         if UR.controller is None:
             return {"type": "ur_cmd_res", "cmd": t, "ok": False,

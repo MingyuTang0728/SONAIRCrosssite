@@ -52,6 +52,15 @@
   /* -------------------------------------------------- navigation --------- */
   var PAGES = ["connect", "robot", "camera", "sensors", "calib", "inspect", "record"];
   var dockOffered = false;
+
+  function currentPage() {
+    for (var i = 0; i < PAGES.length; i++) {
+      var el = $("page-" + PAGES[i]);
+      if (el && !el.hidden) return PAGES[i];
+    }
+    return "connect";
+  }
+  API.currentPage = currentPage;
   document.querySelectorAll("nav.rail .step").forEach(function (b) {
     b.addEventListener("click", function () {
       document.querySelectorAll("nav.rail .step").forEach(function (o) {
@@ -67,6 +76,7 @@
       // time would fight an operator who closed it on purpose; never opening
       // it leaves the control they need one page away, which is the problem
       // it exists to solve.
+      declareStreams(b.dataset.page);
       if (/^(sensors|calib)$/.test(b.dataset.page) && !dockOffered) {
         dockOffered = true;
         var bar = $("dockBar"), body = $("dockBody");
@@ -86,8 +96,16 @@
 
     ws.onopen = function () {
       say("connMsg", "Connected to the host agent.", "ok");
+      reconnectAt = 1000;
+      state.lastFault = "";
+      send({ type: "agent_faults" });
       $("btnConnect").textContent = "Reconnect";
       send({ type: "auth", role: "host", site: "UoN" });
+      // Declare the streams before anything else asks for data: until this
+      // arrives the agent sends no pictures at all, which is the right
+      // default -- silence costs nothing, and the old default cost megabytes.
+      streamState = "";
+      declareStreams(currentPage());
       send({ type: "ur_service_status" });
       send({ type: "camera_probe" });
       send({ type: "inspect_status" });
@@ -99,27 +117,144 @@
       send({ type: "sensors_report" });
       API.fire("open", {});
     };
-    ws.onclose = function () {
-      say("connMsg", "Disconnected from the host agent.", "bad");
+    ws.onclose = function (ev) {
+      // WHY it closed, not just that it did. A close carries a code and often
+      // a reason, and they separate the three cases an operator otherwise has
+      // to guess between: the agent stopped, the agent crashed on something
+      // it was asked to do, or the link could not keep up.
+      var why = closeReason(ev);
+      say("connMsg", "Disconnected from the host agent. " + why
+        + (state.lastFault ? " The last thing the agent reported was: "
+           + esc(state.lastFault) : ""), "bad");
       lamp("lampRobot", "lampRobotV", "", "Not connected");
       lamp("lampCam", "lampCamV", "", "Not connected");
       lamp("lampImu", "lampImuV", "", "Not connected");
       ws = null;
-      API.fire("close", {});
+      state.lastClose = { code: ev && ev.code, reason: why };
+      API.fire("close", state.lastClose);
+      // Come back on its own. A dropped link that needs a human to click
+      // Reconnect is a link that stays dropped through the interesting part
+      // of a run.
+      scheduleReconnect();
     };
     ws.onerror = function () {
       say("connMsg", "Could not reach the host agent. Is multimodal_bridge.py "
         + "running on this PC?", "bad");
     };
     ws.onmessage = function (ev) {
-      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
-      handle(d);
+      var d;
+      try { d = JSON.parse(ev.data); }
+      catch (e) {
+        // A message that will not parse is the agent's problem, not a reason
+        // to stop reading the socket.
+        state.badFrames = (state.badFrames || 0) + 1;
+        return;
+      }
+      // One panel throwing must not stop the next message being read.
+      try { handle(d); }
+      catch (e) {
+        if (window.console) console.error("[console] handling " + d.type, e);
+      }
     };
   });
+
+  /* The agent's recent faults, on the Connect page. An agent that fails
+     quietly gets blamed for the wrong thing; this is the list that ends the
+     guessing. */
+  function renderFaults(d) {
+    var box = $("faultList");
+    if (!box) return;
+    if (d && d.faults) state.faults = d.faults;
+    if (d && d.robot_host && $("faultHost")) {
+      $("faultHost").textContent = d.robot_host;
+    }
+    var list = state.faults || [];
+    if (!list.length) {
+      box.innerHTML = '<div class="hint">Nothing has gone wrong since the '
+        + 'agent started.</div>';
+      return;
+    }
+    box.innerHTML = list.slice(-8).reverse().map(function (f) {
+      return '<div class="kvr"><span>' + esc(f.at) + " · "
+        + esc(String(f.context == null ? f.where : f.context)) + "</span><b>"
+        + esc(f.error) + "</b></div>";
+    }).join("");
+  }
+  API.renderFaults = renderFaults;
+
+  (function faultPanel() {
+    var b = $("btnFaults");
+    if (b) b.addEventListener("click", function () {
+      if (!requireLink("faultMsg")) return;
+      send({ type: "agent_faults" });
+      say("faultMsg", "Asked the agent for its recent faults.", "info");
+    });
+    var c = $("btnCopyFaults");
+    if (c) c.addEventListener("click", function () {
+      var txt = JSON.stringify({
+        page: currentPage(), streams: streamState,
+        host: ($("faultHost") || {}).textContent,
+        lastClose: state.lastClose || null,
+        faults: state.faults || []
+      }, null, 2);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(txt).then(function () {
+          say("faultMsg", "Copied. Paste it into the bug report.", "ok");
+        }).catch(function () { showFallback(txt); });
+      } else { showFallback(txt); }
+    });
+    function showFallback(txt) {
+      var box = $("faultList");
+      if (box) box.innerHTML = "<pre style=\"white-space:pre-wrap;font-size:11px\">"
+        + esc(txt) + "</pre>";
+      say("faultMsg", "Could not reach the clipboard — the text is above, "
+        + "select and copy it.", "warn");
+    }
+  })();
+
+  function closeReason(ev) {
+    var c = ev && ev.code;
+    if (c === 1000) return "It closed normally — the agent was probably stopped.";
+    if (c === 1001) return "The agent went away.";
+    if (c === 1006) return "The connection dropped without closing properly. "
+      + "That is usually the agent process exiting, or the network going.";
+    if (c === 1011) return "The agent hit an internal error.";
+    if (c === 1009) return "A message was too large for the link.";
+    return "Close code " + (c == null ? "unknown" : c)
+      + (ev && ev.reason ? " (" + ev.reason + ")" : "") + ".";
+  }
+
+  var reconnectAt = 1000;
+  function scheduleReconnect() {
+    if (state.reconnecting) return;
+    state.reconnecting = true;
+    setTimeout(function () {
+      state.reconnecting = false;
+      if (ws) return;
+      var btn = $("btnConnect");
+      say("connMsg", "Reconnecting…", "info");
+      reconnectAt = Math.min(15000, reconnectAt * 1.7);
+      if (btn) btn.click();
+    }, reconnectAt);
+  }
 
   /* -------------------------------------------------- inbound ------------ */
   function handle(d) {
     switch (d.type) {
+      // The agent caught something and told us which message did it. This is
+      // the difference between "a button does nothing" and a named fault.
+      case "agent_fault":
+        state.lastFault = (d.on ? d.on + ": " : "") + (d.error || "");
+        say("connMsg", "The agent hit a problem handling “" + esc(d.on || "?")
+          + "”: " + esc(d.error || "") + ". The link is still up; that one "
+          + "action did not complete.", "bad");
+        renderFaults(null);
+        break;
+      case "agent_unhandled":
+        if (window.console) console.warn("[console] agent does not know: " + d.on);
+        break;
+      case "agent_faults_res": renderFaults(d); break;
+      case "stream_prefs_res": break;
       case "ur_state": state.ur = d.s; state.urAge = performance.now(); renderRobot(d.s); break;
       case "state": state.urAge = performance.now(); break;
       case "tcp_pose": state.urAge = performance.now(); dockPose(d.q); break;
@@ -633,6 +768,47 @@
 
   /* -------------------------------------------------- camera ------------- */
   var _decoding = { color: false, depth: false };
+
+  /* ---- tell the agent what this page is actually showing ---------------
+     The agent used to push colour, depth and both infrared streams at every
+     browser twenty times a second regardless of what was on screen. On the
+     Robot page, which shows joint angles and a 3D model, that was megabytes a
+     second of pictures nobody was looking at, and it is what pushed the
+     socket past what the browser could drain. Each page declares its needs;
+     the agent sends that and nothing else. --------------------------------- */
+  var PAGE_STREAMS = {
+    connect: [],
+    robot:   [],            // the cell view is driven by joint angles
+    camera:  ["rgb", "depth", "ir1", "ir2"],
+    sensors: [],
+    calib:   ["rgb"],       // the board is found in colour
+    inspect: ["rgb", "depth"],
+    record:  []
+  };
+  var streamState = "";
+
+  function declareStreams(page) {
+    var want = (PAGE_STREAMS[page] || []).slice();
+    // The infrared pair doubles the Camera page's load and is off-screen
+    // unless the operator asks for it, so it follows its own checkbox rather
+    // than the page.
+    var ir = $("cbIr");
+    if (page === "camera" && ir && !ir.checked) {
+      want = want.filter(function (k) { return k !== "ir1" && k !== "ir2"; });
+    }
+    // The Camera page is the only one that needs a big picture; everywhere
+    // else a 640 px preview is indistinguishable in the panel it lands in.
+    var width = page === "camera" ? 960 : 640;
+    var key = page + "|" + want.join(",") + "|" + width;
+    if (key === streamState) return;
+    streamState = key;
+    send({ type: "stream_prefs", streams: want, width: width,
+           quality: page === "camera" ? 62 : 52 });
+  }
+  API.declareStreams = declareStreams;
+  document.addEventListener("change", function (ev) {
+    if (ev.target && ev.target.id === "cbIr") declareStreams(currentPage());
+  });
 
   function onFrame(d) {
     state.camAge = performance.now();
@@ -1459,6 +1635,20 @@
       if (bar) bar.title = ok ? "Robot data is live"
         : live ? "Connected to the agent, but no robot data"
         : "Not connected to the host agent";
+    }
+
+    var fl = $("faultLink");
+    if (fl) {
+      fl.textContent = live ? "connected" : "not connected";
+      fl.style.color = live ? "var(--ok)" : "var(--bad)";
+    }
+    var fs = $("faultStreams");
+    if (fs) fs.textContent = (streamState.split("|")[1] || "") || "none";
+    var ft = $("faultTag");
+    if (ft) {
+      var n = (state.faults || []).length;
+      ft.textContent = n ? n + " logged" : "clean";
+      ft.className = "tag " + (n ? "warn" : "ok");
     }
 
     if (live) {
