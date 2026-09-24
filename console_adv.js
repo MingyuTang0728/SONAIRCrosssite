@@ -1130,6 +1130,7 @@
 
   S.on("handeye_preview_res", function (d) {
     cal.corners = d.ok ? d.corners : null;
+    cal.outline = d.ok ? d.outline : null;
     if (d.frame) {
       // The overlay and its image must come from the same frame.
       var bin = atob(d.frame), arr = new Uint8Array(bin.length);
@@ -1165,7 +1166,8 @@
       // it stops working, and an operator watching it fall as the arm backs
       // away knows why the next pose will fail before it does.
       var tight = d.pitch_px != null && d.pitch_px < 15;
-      say("calLiveMsg", "Board found, " + (d.n_corners || 0) + " corners"
+      say("calLiveMsg", "Board found, all "
+        + (d.corners_total || d.n_corners || 0) + " corners"
         + (d.reprojection_px != null ? ", accurate to " + fmt(d.reprojection_px, 2)
           + " px" : "")
         + (d.pitch_px != null ? ", squares " + fmt(d.pitch_px, 0) + " px across"
@@ -1226,13 +1228,23 @@
     else { ctx.fillStyle = "#0a0e13"; ctx.fillRect(0, 0, cv.width, cv.height); }
     if (!cal.corners || !cal.corners.length) return;
     ctx.save();
-    ctx.strokeStyle = "#e8c66a"; ctx.lineWidth = 2;
-    ctx.beginPath();
-    cal.corners.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
-    ctx.stroke();
+    // The board's real perimeter. Joining every corner in detection order
+    // traced a zig-zag across the whole grid, which drew as a solid block and
+    // said nothing about where the board's edges were.
+    if (cal.outline && cal.outline.length > 2) {
+      ctx.strokeStyle = "#e8c66a"; ctx.lineWidth = 2.5; ctx.lineJoin = "round";
+      ctx.beginPath();
+      cal.outline.forEach(function (p, i) {
+        i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+      });
+      ctx.closePath(); ctx.stroke();
+    }
+    // Corner dots, scaled to how dense the grid is on screen so a fine board
+    // reads as a grid rather than as a green smear.
+    var r = cal.corners.length > 150 ? 2 : 3;
     ctx.fillStyle = "#3ddc84";
     cal.corners.forEach(function (p) {
-      ctx.beginPath(); ctx.arc(p[0], p[1], 3, 0, 6.3); ctx.fill();
+      ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, 6.3); ctx.fill();
     });
     ctx.restore();
   }
@@ -2001,10 +2013,25 @@
 
   S.on("handeye_auto_plan_res", function (d) {
     if (!run.on) return;
-    if (!d.ok) { stop("Could not plan: " + (d.error || ""), "bad"); return; }
+    if (!d.ok) {
+      // Stopping after the first round leaves the operator holding a pose
+      // set the console itself will refuse, with nothing saying why. Say it
+      // here, where it is still obvious what just happened.
+      stop("Could not plan the next round: " + (d.error || "")
+        + (run.stage === "fine"
+           ? " The first round's poses are kept, but they cannot determine "
+             + "the answer on their own — they only exist to plan the second "
+             + "round. Put the board fully in view and press “Do it "
+             + "automatically” again, or capture a dozen poses by hand with "
+             + "30–60° of tilt between them."
+           : ""), "bad");
+      return;
+    }
     run.queue = d.poses || [];
     run.i = 0;
-    say("calAdvice", d.explain || "", "info");
+    say("calAdvice", (d.explain || "")
+      + (d.planned_from ? " Planned from " + esc(d.planned_from) + "." : ""),
+      "info");
     step();
   });
 
@@ -2012,8 +2039,10 @@
     if (!run.on) return;
     if (run.i >= run.queue.length) {
       say("calAdvice", "Round finished — " + run.seen + " views used, "
-        + run.missed + " skipped because the board was not in them. "
-        + "Working it out…", "info");
+        + run.missed + " skipped because the board was not in them"
+        + (run.missed > run.seen && run.lastMiss
+           ? " (" + esc(run.lastMiss.slice(0, 110)) + ")" : "")
+        + ". Working it out…", run.missed > run.seen ? "warn" : "info");
       // Solve, but do not apply yet on the first round: that answer exists to
       // plan the second round, not to be used.
       send({ type: "handeye_solve", method: "all",
@@ -2037,7 +2066,7 @@
 
   S.on("handeye_capture_res", function (d) {
     if (!run.on) return;
-    if (d.ok) { run.seen++; } else { run.missed++; }
+    if (d.ok) { run.seen++; } else { run.missed++; run.lastMiss = d.error || ""; }
   });
 
   S.on("handeye_solve_res", function (d) {
@@ -2048,9 +2077,15 @@
     }
     if (run.stage === "bootstrap") {
       run.stage = "fine";
-      say("calAdvice", "First pass done (" + fmt(d.target_spread_mm, 1)
-        + " mm). Planning the wide set from it — this is the one that decides "
-        + "the answer.", "info");
+      // The first round's spread is NOT a quality figure. It is small by
+      // construction, because poses that barely rotate reconstruct the board
+      // consistently whatever the transform is — which is precisely why the
+      // second round exists. Reporting it as though it meant something is how
+      // an operator comes to trust a number that cannot be trusted yet.
+      say("calAdvice", "First pass done. It is not the answer and its "
+        + "accuracy figure does not mean anything yet — small rotations "
+        + "always reconstruct consistently. Planning the wide set from it "
+        + "now; that is the round that decides.", "info");
       send({ type: "handeye_auto_plan", stage: "fine", n_poses: 14 });
       return;
     }

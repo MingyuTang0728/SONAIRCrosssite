@@ -250,6 +250,30 @@ which is exactly what stops several views from fusing into one surface.
    when the pose set is not varied enough to determine the answer.
 4. Press **Work out where the camera is**.
 
+### Using "Do it automatically"
+
+Two rounds, and they do different jobs.
+
+**Round one** makes small rotations of the tool *about the board* — the
+distance is taken from the live detection, so the camera orbits the board
+rather than sweeping past it. (Rotating about the flange instead swings the
+aim by the standoff times the tangent of the angle: 114 mm at 450 mm and 14°,
+which is most of a small board, and it cost six of ten poses.) Its answer is
+**not the calibration**, and its accuracy figure means nothing: poses that
+barely rotate reconstruct the board consistently whatever the transform is.
+It exists only so round two can be planned.
+
+**Round two** is the one that decides. It is planned from round one's
+geometry — no new photograph of the board is needed, because after round one
+the board's place in the robot's frame is already known from every sample at
+once. That matters: it used to re-photograph the board at whatever pose round
+one happened to stop at, which is the most awkward viewpoint in the set, and
+when that single frame failed the whole run aborted leaving only round one's
+poses — a set the console itself refuses to use.
+
+If it does stop early it now says so and says what to do. The poses are kept;
+you can press it again with the board fully in view, or finish by hand.
+
 The accuracy figure is not the solver's own residual. It is measured in the
 frame the work happens in: the board has not moved, so the calibration is
 asked to reconstruct it from every pose, and the spread of those

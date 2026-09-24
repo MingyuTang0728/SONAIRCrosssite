@@ -1212,10 +1212,23 @@ def _handle_handeye(data: dict):
                                     effort="full" if deep else "quick")
         if deep and not res.get("ok"):
             _HE["last_deep"] = now
-        # The corner list is for drawing only; cap it so a 9x14 board does not
-        # push a 500-point array through the socket 10 times a second.
-        if res.get("corners") and len(res["corners"]) > 200:
-            res["corners"] = res["corners"][:200]
+        # The corner list is for drawing. It used to be truncated at 200
+        # points to keep the message small, which on a 408-corner board drew
+        # the FIRST 200 -- a solid patch over part of the board, with the rest
+        # bare. That reads as "it only found half of it" when the whole board
+        # was found perfectly, and it is the single most alarming thing the
+        # page can show for no reason at all.
+        #
+        # Thinned instead of truncated, evenly across the grid, so the overlay
+        # covers the board the way the detection does. The outline is sent
+        # separately: the board's real perimeter, which a polyline through
+        # every corner in scan order never was.
+        if res.get("corners"):
+            res["outline"] = handeye.board_outline(
+                res["corners"], spec.cols, spec.rows)
+            res["corners_total"] = len(res["corners"])
+            res["corners"] = handeye.thin_corners(
+                res["corners"], spec.cols, spec.rows, budget=260)
         # Send back the very frame the corners were measured on. Drawing them
         # over whatever frame the browser happens to hold puts the overlay a
         # pose or two behind while the arm is moving, and an overlay that is
@@ -1282,27 +1295,57 @@ def _handle_handeye(data: dict):
         stage = data.get("stage", "bootstrap")
         pose = _tcp_now()
         if stage == "bootstrap":
-            res = handeye.plan_bootstrap_poses(
-                pose, envelope=ENVELOPE if data.get("use_envelope", True) else None)
-        else:
+            # How far the board is, right now. The operator can only start
+            # this while the live view is showing it found, so this is always
+            # available -- and it is what lets the first round orbit the board
+            # instead of sweeping past it.
+            pivot_m = None
             with camera_lock:
                 color = global_rgb_frame
                 intr = global_depth_intr
-            det = handeye.detect_target(color, sess.spec, intr)
-            if not det.get("ok") or "T_cam_target" not in det:
-                return {"type": "handeye_auto_plan_res", "ok": False,
-                        "error": "the board must be visible to plan the wide "
-                                 "set. " + det.get("error", "")}
+            det = handeye.detect_target(color, sess.spec, intr, effort="quick")
+            if det.get("ok") and det.get("distance_mm"):
+                pivot_m = float(det["distance_mm"]) / 1000.0
+            res = handeye.plan_bootstrap_poses(
+                pose, pivot_m=pivot_m,
+                envelope=ENVELOPE if data.get("use_envelope", True) else None)
+            res["pivot_mm"] = round(pivot_m * 1000) if pivot_m else None
+        else:
             guess = None
             if sess.result and sess.result.get("ok"):
                 guess = sess.result["T_tcp_cam"]
             elif _HAS_EXT and ur_bridge_ext.SCAN3D.T_tcp_cam is not None:
                 guess = ur_bridge_ext.SCAN3D.T_tcp_cam
+
+            # Where the board is, from the round that just finished. This
+            # needs no photograph: the first round saw it from a dozen poses
+            # and the answer is in the session already. Re-photographing it
+            # at whatever pose that round ended on made the whole calibration
+            # hinge on one frame, taken from the most awkward viewpoint in the
+            # set -- and when that frame failed, the run aborted and left the
+            # operator with poses the console itself refuses to use.
+            T_cam_target = sess.target_in_camera(pose)
+            source = "the first round"
+            if T_cam_target is None:
+                # No solve to build on. Fall back to looking, and say so.
+                with camera_lock:
+                    color = global_rgb_frame
+                    intr = global_depth_intr
+                det = handeye.detect_target(color, sess.spec, intr)
+                if not det.get("ok") or "T_cam_target" not in det:
+                    return {"type": "handeye_auto_plan_res", "ok": False,
+                            "error": "there is no first-round answer to plan "
+                                     "from, and the board is not visible from "
+                                     "here either. " + det.get("error", "")}
+                T_cam_target = det["T_cam_target"]
+                source = "what the camera can see now"
+
             res = handeye.plan_auto_poses(
-                pose, det["T_cam_target"],
+                pose, T_cam_target,
                 n_poses=int(data.get("n_poses", 14)), stage="fine",
                 T_tcp_cam_guess=guess, board_size_m=sess.spec.size_m(),
                 envelope=ENVELOPE if data.get("use_envelope", True) else None)
+            res["planned_from"] = source
         return {"type": "handeye_auto_plan_res", "stage": stage, **res}
 
     if mtype == "handeye_capture":

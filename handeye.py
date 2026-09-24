@@ -516,6 +516,25 @@ def probe_board_size(gray, cols, rows, span=2, budget_s=2.5):
     return None
 
 
+def _plausible_board(found, spec) -> bool:
+    """
+    Could `found` be the whole board, rather than a strip of it?
+
+    Two tests, and a size has to pass both. It must have a real second
+    dimension -- a grid three corners deep is a strip, whatever its length.
+    And it must account for most of the corners the declared board has: a
+    genuine miscount is off by one or two per side, so it keeps the great
+    majority of them, while a partial view keeps a fraction.
+    """
+    c, r = found
+    if min(c, r) < 5:
+        return False
+    declared = max(1, spec.cols * spec.rows)
+    if (c * r) / declared < 0.55:
+        return False
+    return True
+
+
 def _sharpness(gray):
     """Variance of the Laplacian: the standard cheap focus measure."""
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
@@ -538,6 +557,25 @@ def _why_not(gray, spec, effort: str = "full") -> dict:
     found = (truth[0], truth[1]) if truth else None
     if found is None and effort == "full":
         found = probe_board_size(gray, spec.cols, spec.rows)
+
+    # A SIZE IS ONLY WORTH SUGGESTING IF IT COULD BE A BOARD.
+    #
+    # When part of the board leaves the frame -- which happens at half the
+    # poses of an automatic run, by design, as the arm swings around it -- the
+    # detector still finds a grid in what is left. That grid is a strip:
+    # 17 x 3, 9 x 4. Reporting it as "your board is 17x3, change the counts"
+    # is not merely unhelpful, it is advice that would destroy the
+    # calibration if taken. So a suggestion has to look like a board, and it
+    # has to be a better explanation than "part of it is out of shot".
+    if found and not _plausible_board(found, spec):
+        out["partial"] = list(found)
+        out["error"] = (
+            f"Only part of the board is in view — a {found[0]} x {found[1]} "
+            f"strip of it was readable. Every one of the {spec.cols} x "
+            f"{spec.rows} inner corners has to be in the picture, with a pale "
+            "margin all round. Move back, or aim at the middle of the board.")
+        return out
+
     if found:
         out["suggested_size"] = list(found)
         out["error"] = (f"No {spec.cols}x{spec.rows} board here, but a "
@@ -613,6 +651,47 @@ def _as_corner_array(corners):
     """
     a = np.asarray(corners, dtype=np.float32)
     return a.reshape(-1, 1, 2)
+
+
+def board_outline(corner_list, cols, rows):
+    """
+    The four sides of the board, as a closed polyline.
+
+    Drawing an outline by joining every corner in detection order traces a
+    boustrophedon across the whole grid -- visually a solid block, which says
+    nothing about where the board's edges are. The perimeter is the four
+    edges of the grid, walked in order.
+    """
+    n = len(corner_list)
+    if n < cols * rows or cols < 2 or rows < 2:
+        return []
+    g = [corner_list[r * cols:(r + 1) * cols] for r in range(rows)]
+    top = g[0]
+    right = [g[r][-1] for r in range(1, rows)]
+    bottom = list(reversed(g[-1][:-1]))
+    left = [g[r][0] for r in range(rows - 2, 0, -1)]
+    return top + right + bottom + left
+
+
+def thin_corners(corner_list, cols, rows, budget=260):
+    """
+    Fewer points to draw, spread EVENLY over the board.
+
+    Taking the first N is the obvious thing and the wrong one: the corner list
+    is in scan order, so the first N are the first few rows and the overlay
+    covers a band across one end of the board while the rest sits bare. The
+    operator reads that as a partial detection. Keeping every k-th row and
+    column instead thins the grid without moving where it is.
+    """
+    n = len(corner_list)
+    if n <= budget or n < cols * rows or cols < 2 or rows < 2:
+        return corner_list
+    step = 1
+    while (math.ceil(cols / step) * math.ceil(rows / step)) > budget:
+        step += 1
+    return [corner_list[r * cols + c]
+            for r in range(0, rows, step)
+            for c in range(0, cols, step)]
 
 
 def _corner_list(corners):
@@ -1028,6 +1107,41 @@ class HandEyeSession:
         self.result = res
         return res
 
+    def target_in_camera(self, tcp_pose):
+        """
+        Where the board would appear from `tcp_pose`, WITHOUT looking at it.
+
+        This exists because the automatic routine used to hand over between
+        its two rounds by re-photographing the board at whatever pose the
+        first round happened to stop at. That pose is the last of a set
+        deliberately chosen to view the board from odd angles, so it is
+        exactly the pose most likely to have the board half out of frame --
+        and when that one frame failed, the whole calibration aborted with
+        only the first round's poses, whose small rotations cannot determine
+        the answer. The operator was then left holding a pose set the console
+        itself refuses to use.
+
+        Nothing about it needed a new photograph. After the first round the
+        board's place in the robot's frame is already known, from every
+        sample at once, and where it will appear from a new pose is
+        arithmetic. Returns None when there is no solve to build on.
+        """
+        if not self.result or not self.result.get("ok") or not self.samples:
+            return None
+        X = np.asarray(self.result["T_tcp_cam"], dtype=float)
+        # The board in the base frame, averaged over every sample rather than
+        # taken from one: a single sample carries that sample's detection
+        # noise straight into the plan.
+        mats = [pose_to_matrix(s.tcp_pose) @ X @
+                np.asarray(s.T_cam_target, dtype=float) for s in self.samples]
+        t = np.mean([T[:3, 3] for T in mats], axis=0)
+        R = _project_so3(np.mean([T[:3, :3] for T in mats], axis=0))
+        T_base_target = np.eye(4)
+        T_base_target[:3, :3] = R
+        T_base_target[:3, 3] = t
+        T_base_tcp = pose_to_matrix(tcp_pose)
+        return invert(X) @ invert(T_base_tcp) @ T_base_target
+
     def residual(self, X) -> dict:
         """
         The target has not moved. How much does the calibration say it has?
@@ -1207,10 +1321,20 @@ def plan_auto_poses(tcp_pose, T_cam_target, *, n_poses: int = 14,
 
     T_bc = T_bt @ X                       # camera in base, approximately
     # AIM AT THE BOARD'S CENTRE, not its origin. solvePnP returns the pose of
-    # corner (0,0), and for a 25x18 board of 7.5 mm squares that corner is
-    # 110 mm from the middle. Orbiting the corner points the camera 110 mm off
+    # corner (0,0), and for a 24x17 board of 7.5 mm squares that corner is
+    # 105 mm from the middle. Orbiting the corner points the camera 105 mm off
     # the thing it is supposed to be framing, and the far side of the board
     # leaves the picture — measured as 3 detections out of 10 planned views.
+    #
+    # It also carries weight nobody would guess from the name. Which physical
+    # corner the detector calls (0,0) is not fixed: a plain chessboard has a
+    # 180-degree in-plane ambiguity, and the detector resolves it by image
+    # position, so the label can sit at either end depending on how the camera
+    # is rolled. That flip moves the reported ORIGIN by a whole board width —
+    # measured here at 172.4 mm — while leaving the CENTRE put, to 0.13 mm.
+    # The calibration itself does not care, because a consistent relabelling
+    # of the board's own frame cancels out of AX = XB. Planning does care, and
+    # aiming at the centre is what makes it immune.
     half = np.zeros(3)
     if board_size_m:
         half = C[:3, :3] @ np.array([board_size_m[0] / 2.0,
@@ -1286,8 +1410,8 @@ def plan_auto_poses(tcp_pose, T_cam_target, *, n_poses: int = 14,
 MIN_AUTO_POSES = 5
 
 
-def plan_bootstrap_poses(tcp_pose, *, angles_deg=(7.0, 7.0, 14.0),
-                         reach=None, envelope=None) -> dict:
+def plan_bootstrap_poses(tcp_pose, *, angles_deg=(14.0, 14.0, 22.0),
+                         pivot_m=None, reach=None, envelope=None) -> dict:
     """
     The first round, which needs no idea at all of where the camera is.
 
@@ -1306,6 +1430,27 @@ def plan_bootstrap_poses(tcp_pose, *, angles_deg=(7.0, 7.0, 14.0),
     little, which keeps a board that was visible visible, and still produces
     rotations about all three axes — which is what an AX = XB solve needs and
     what a set of translations alone can never give it.
+
+    WHAT THE ROTATION TURNS ABOUT MATTERS MORE THAN ITS SIZE. Rotating the
+    tool about its own flange origin also swings where the camera points, by
+    the standoff times the tangent of the angle: at 450 mm and 14 degrees that
+    is 114 mm, which is most of a small board, so the board walks out of frame
+    and half the planned poses return nothing. Measured on a real 7.5 mm
+    board: six of ten.
+
+    So when the board's distance is known -- and it is, because the operator
+    can only press this button while the live view is showing the board
+    found -- the rotation is taken about a point that far in front of the
+    tool instead. The camera then orbits the board rather than sweeping past
+    it, and what is left is the lever arm between the flange and the camera,
+    perhaps 90 mm, times the sine of the angle: about 20 mm, against a frame
+    half-height of 180. That is the difference between a round that mostly
+    works and one that mostly does not.
+
+    It assumes the camera looks roughly along the tool's approach axis, which
+    is true of every wrist mount, and it degrades to the old behaviour rather
+    than to something worse if it is not. Because the board stays in view, the
+    angles can be larger, and larger is what an AX = XB solve needs.
 
     The result is a rough transform, good to a few millimetres. That is not
     the answer, it is what makes the second round plannable.
@@ -1327,12 +1472,21 @@ def plan_bootstrap_poses(tcp_pose, *, angles_deg=(7.0, 7.0, 14.0),
     T0 = pose_to_matrix(tcp_pose)
     reach = {"max_radius_m": 0.82, "min_radius_m": 0.20, "min_z_m": 0.02,
              **(reach or {})}
+    # The point the tool turns about, in the base frame: `pivot_m` along the
+    # tool's approach axis, which is where the board is.
+    pivot = None
+    if pivot_m and pivot_m > 0.02:
+        pivot = T0[:3, 3] + T0[:3, :3] @ np.array([0.0, 0.0, float(pivot_m)])
     poses, rejected = [], []
     for i, (rx, ry, rz) in enumerate(moves):
         R = (rotvec_to_matrix([rx, 0, 0]) @ rotvec_to_matrix([0, ry, 0])
              @ rotvec_to_matrix([0, 0, rz]))
         T = T0.copy()
         T[:3, :3] = T0[:3, :3] @ R          # rotate IN THE TOOL FRAME
+        if pivot is not None:
+            # Keep the pivot fixed: move the flange so the point it orbits
+            # stays where it is.
+            T[:3, 3] = pivot - T[:3, :3] @ (T0[:3, :3].T @ (pivot - T0[:3, 3]))
         bad = _reject(T[:3, 3], reach, envelope)
         entry = {"index": i,
                  "tcp_pose": [round(float(v), 5) for v in matrix_to_pose(T)],
