@@ -184,20 +184,10 @@ def detect_target(image, spec: TargetSpec, intrinsics=None) -> dict:
         found, corners = cv2.findCirclesGrid(
             gray, (spec.cols, spec.rows), cv2.CALIB_CB_ASYMMETRIC_GRID)
     else:
-        flags = (cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE |
-                 cv2.CALIB_CB_FAST_CHECK)
-        found, corners = cv2.findChessboardCorners(
-            gray, (spec.cols, spec.rows), flags)
-        if found:
-            crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-            corners = cv2.cornerSubPix(gray, _as_corner_array(corners),
-                                       (11, 11), (-1, -1), crit)
+        found, corners = _find_chessboard(gray, spec.cols, spec.rows)
 
     if not found:
-        return {"ok": False, "error":
-                f"no {spec.cols}x{spec.rows} board found. Check the INNER "
-                f"corner count (a 10x7-square board is 9x6 inner), that the "
-                f"whole board is in frame, and that it is evenly lit."}
+        return {"ok": False, **_why_not(gray, spec)}
 
     corners = _as_corner_array(corners)
     out = {"ok": True, "n_corners": int(len(corners)),
@@ -251,6 +241,118 @@ def _detect_charuco(gray, spec: TargetSpec, intrinsics):
             T[:3, 3] = tvec.reshape(3)
             out["T_cam_target"] = T.tolist()
             out["distance_mm"] = round(float(np.linalg.norm(tvec)) * 1000.0, 1)
+    return out
+
+
+def _find_chessboard(gray, cols, rows):
+    """
+    Find the corners, preferring the detector built for dense boards.
+
+    findChessboardCornersSB handles what the classic one struggles with: many
+    small squares, motion blur, uneven lighting and steep viewing angles — all
+    of which describe a fine-pitch board held at arm's length by a robot. It
+    also returns sub-pixel positions directly, so no separate refinement step
+    can undo them. The classic detector stays as the fallback for builds that
+    lack it.
+
+    CALIB_CB_FAST_CHECK is deliberately absent: it is a cheap early reject
+    that gives up on exactly the marginal images worth trying harder on, and
+    here a detection costs milliseconds while a missed one costs a pose.
+    """
+    if hasattr(cv2, "findChessboardCornersSB"):
+        flags = 0
+        for name in ("CALIB_CB_EXHAUSTIVE", "CALIB_CB_ACCURACY",
+                     "CALIB_CB_NORMALIZE_IMAGE"):
+            flags |= getattr(cv2, name, 0)
+        try:
+            ok, c = cv2.findChessboardCornersSB(gray, (cols, rows), flags)
+            if ok:
+                return True, c
+        except Exception:
+            pass
+    ok, c = cv2.findChessboardCorners(
+        gray, (cols, rows),
+        cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
+    if ok:
+        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+        c = cv2.cornerSubPix(gray, _as_corner_array(c), (11, 11), (-1, -1), crit)
+    return ok, c
+
+
+def probe_board_size(gray, cols, rows, span=2):
+    """
+    Nothing found at the declared size — what IS on the board?
+
+    Tries the sizes around it and the swapped orientation. Miscounting the
+    inner corners is the commonest calibration mistake there is, and "no
+    25x18 board found" gives the operator nothing to act on, while "this is a
+    24x17 board" ends the problem. Bounded deliberately: this runs on a
+    failure, not on every frame.
+    """
+    tried = []
+    for dc in range(-span, span + 1):
+        for dr in range(-span, span + 1):
+            c, r = cols + dc, rows + dr
+            if c < 3 or r < 3 or (c == cols and r == rows):
+                continue
+            tried.append((c, r))
+    tried.append((rows, cols))          # the axes the other way round
+    # nearest first: a miscount is usually off by one
+    tried.sort(key=lambda t: abs(t[0] - cols) + abs(t[1] - rows))
+    for c, r in tried[:14]:
+        try:
+            ok, _ = _find_chessboard(gray, c, r)
+        except Exception:
+            continue
+        if ok:
+            return (c, r)
+    return None
+
+
+def _sharpness(gray):
+    """Variance of the Laplacian: the standard cheap focus measure."""
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _why_not(gray, spec) -> dict:
+    """
+    Say what is wrong with THIS image, not what is usually wrong.
+
+    A detector that only ever reports "not found" makes the operator guess
+    between the count, the focus, the lighting and the framing. Each of those
+    is measurable, so each is measured.
+    """
+    out = {"probed": True}
+    found = probe_board_size(gray, spec.cols, spec.rows)
+    if found:
+        out["suggested_size"] = list(found)
+        out["error"] = (f"No {spec.cols}x{spec.rows} board here, but a "
+                        f"{found[0]}x{found[1]} one WAS found. Change the "
+                        f"inner-corner counts to {found[0]} across and "
+                        f"{found[1]} down. Count inner corners, not squares.")
+        return out
+
+    sharp = _sharpness(gray)
+    out["sharpness"] = round(sharp, 1)
+    mean = float(gray.mean())
+    out["brightness"] = round(mean, 1)
+    reasons = []
+    if sharp < 60:
+        reasons.append("the image is blurred — hold the arm still, and give "
+                       "the camera a moment to settle after it moves")
+    if mean < 45:
+        reasons.append("the picture is very dark — more light on the board, "
+                       "or raise the colour exposure on the Camera page")
+    if mean > 215:
+        reasons.append("the picture is washed out — less light, or lower the "
+                       "colour exposure")
+    if not reasons:
+        reasons.append(f"no {spec.cols}x{spec.rows} grid was found and no "
+                       "nearby size matched either. Check the whole board is "
+                       "in frame with a clear white margin all round, that it "
+                       "is flat, and that the count is of INNER corners")
+    out["error"] = ("Board not detected: " + "; ".join(reasons)
+                    + f". (sharpness {sharp:.0f}, brightness {mean:.0f}/255)")
     return out
 
 

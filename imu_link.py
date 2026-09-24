@@ -51,6 +51,17 @@ from typing import Callable
 log = logging.getLogger("imu_link")
 
 try:
+    from sonair_benchmark.attitude import q_to_euler_deg
+except Exception:                                   # pragma: no cover
+    def q_to_euler_deg(q):
+        w, x, y, z = q
+        sr, cr = 2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)
+        sp = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+        sy, cy = 2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)
+        return [math.degrees(math.atan2(sr, cr)), math.degrees(math.asin(sp)),
+                math.degrees(math.atan2(sy, cy))]
+
+try:
     from sonair_benchmark.imu import parse_fusionhub_row, quat_normalise
     _HAS_BENCH = True
 except Exception:                                   # pragma: no cover
@@ -105,6 +116,7 @@ CANDIDATE_UDP_PORTS = [5005, 5006, 5555, 6000, 8000, 8888, 9000, 9001, 9763, 400
 CANDIDATE_TCP_PORTS = [5005, 8080, 9000, 9001, 502]
 
 DEG = math.pi / 180.0
+GRAVITY = 9.80665
 
 
 def pip_hint(package: str) -> str:
@@ -403,6 +415,12 @@ def _pb_field(buf, i, path, depth, out, lenient):
     return i
 
 
+def _wrap180(d: float) -> float:
+    """Angle difference folded into -180..180, so 179 and -179 are 2 apart."""
+    d = (float(d) + 180.0) % 360.0 - 180.0
+    return d
+
+
 def _pb_vectors(entries):
     """
     Group consecutive numeric fields sharing a parent into vectors.
@@ -462,6 +480,11 @@ class ProtobufImu:
         self.partial = False
         self.partial_reason = ""
         self._norm_sum: dict[str, float] = {}
+        self._euler_sum: dict[str, float] = {}
+        self._euler_n: dict[str, int] = {}
+        self._rate_stats: dict[str, list] = {}
+        self._rate_track: dict[str, float] = {}
+        self._prev_quat = None
         self._norm_n: dict[str, int] = {}
         self._len: dict[str, int] = {}
         self.error = ""
@@ -516,6 +539,11 @@ class ProtobufImu:
                 rec["gyro"] = values[:3]
             elif role == "mag":
                 rec["mag"] = values[:3]
+            elif role == "euler":
+                # Kept for comparison, never fed to the estimator: it is the
+                # same measurement as the quaternion, so treating it as an
+                # independent channel would double-count it.
+                rec["euler_device_deg"] = values[:3]
 
         t_src = None
         if self.time_path:
@@ -533,6 +561,66 @@ class ProtobufImu:
             self._norm_sum[path] = self._norm_sum.get(path, 0.0) + n
             self._norm_n[path] = self._norm_n.get(path, 0) + 1
             self._len[path] = len(values)
+
+        # Is any 3-vector simply the orientation written out as Euler angles?
+        # FusionHub sends both, and the Euler triple has no magnitude that
+        # marks it out — its numbers span +/-180, so it is not gravity, not a
+        # magnetometer, and it is NOT the gyroscope even though that is what
+        # anything left over would otherwise be taken for. Getting this wrong
+        # does not merely lose a channel: the fallback overwrites the real
+        # gyroscope with angles, and 180 "deg/s" of turn rate on a unit lying
+        # still is worse than no reading.
+        #
+        # Deciding it is easy once asked properly: convert the quaternion and
+        # see which triple matches. Degrees are degrees; this needs no bands.
+        quat = None
+        for path, values in vectors:
+            if len(values) == 4 and abs(
+                    math.sqrt(sum(v * v for v in values)) - 1.0) < 0.05:
+                quat = quat_normalise(values)
+                break
+        if quat is None:
+            return
+        euler = q_to_euler_deg(quat)
+        # Only judge on samples where the orientation is well away from level.
+        # Near zero EVERYTHING matches: a gyroscope reading 0.1 rad/s and an
+        # Euler triple of [0.1, 0.0, 0.0] degrees are the same three numbers,
+        # and a rule that cannot tell them apart there will happily call the
+        # gyroscope an orientation. Away from level they are unmistakable.
+        # How well does each 3-vector's size follow the orientation's turn
+        # rate? Kept for the tie-break above, and measured as the spread of
+        # the ratio between them: for the real gyroscope that ratio is a
+        # constant (1, or 57.3 if it reports degrees), whatever the motion.
+        if self._prev_quat is not None:
+            w = 2.0 * math.acos(max(-1.0, min(1.0, abs(
+                sum(a * b for a, b in zip(self._prev_quat, quat))))))
+            if w > 1e-4:
+                for path, values in vectors:
+                    if len(values) != 3:
+                        continue
+                    m = math.sqrt(sum(v * v for v in values))
+                    r = m / w
+                    st = self._rate_stats.setdefault(path, [0.0, 0.0, 0])
+                    st[0] += r
+                    st[1] += r * r
+                    st[2] += 1
+                    if st[2] >= 8:
+                        mean = st[0] / st[2]
+                        var = max(0.0, st[1] / st[2] - mean * mean)
+                        # coefficient of variation: scale-free, so it does not
+                        # care whether the unit reports radians or degrees
+                        self._rate_track[path] = (math.sqrt(var) / mean
+                                                  if mean > 1e-9 else 1e9)
+        self._prev_quat = quat
+
+        if max(abs(v) for v in euler) < 10.0:
+            return
+        for path, values in vectors:
+            if len(values) != 3:
+                continue
+            d = sum(abs(_wrap180(a - b)) for a, b in zip(values, euler)) / 3.0
+            self._euler_sum[path] = self._euler_sum.get(path, 0.0) + d
+            self._euler_n[path] = self._euler_n.get(path, 0) + 1
         if self.time_path is None:
             # The biggest varint that looks like a wall-clock time. Nanosecond
             # epochs are ~1.8e18 now, microseconds ~1.8e15, milliseconds
@@ -565,6 +653,15 @@ class ProtobufImu:
             if self._len.get(path) == 4 and abs(mean[path] - 1.0) < 0.05:
                 mapping[path] = "quat"
 
+        # Then the Euler copy of it, BEFORE any magnitude band gets a look.
+        # It is identified by agreement with the quaternion, which is exact,
+        # and taking it out first is what stops it being mistaken for the
+        # gyroscope by process of elimination.
+        for path, total in self._euler_sum.items():
+            n = self._euler_n.get(path, 0)
+            if n >= 5 and total / n < 2.0 and path not in mapping:
+                mapping[path] = "euler"
+
         threes = [p for p in mean
                   if self._len.get(p) == 3 and p not in mapping]
 
@@ -584,8 +681,23 @@ class ProtobufImu:
             claim((0.85, 1.15), "accel_g")
         claim((15.0, 90.0), "mag")
 
-        for p in threes:
-            mapping.setdefault(p, "gyro")
+        left = [p for p in threes if p not in mapping]
+        if len(left) <= 1:
+            for p in left:
+                mapping[p] = "gyro"
+        else:
+            # Two or more candidates and no magnitude tells them apart. The
+            # gyroscope is the one whose size follows how fast the orientation
+            # is actually turning; nothing else in the message does.
+            best, best_score = None, None
+            for p in left:
+                score = self._rate_track.get(p)
+                if score is None:
+                    continue
+                if best_score is None or score < best_score:
+                    best, best_score = p, score
+            for p in left:
+                mapping[p] = "gyro" if p == (best or left[0]) else "unknown"
         self.mapping = mapping
 
     # -- reporting ---------------------------------------------------------
@@ -596,7 +708,9 @@ class ProtobufImu:
                     "protobuf_decoded": self.n_decoded}
         names = {"quat": "orientation", "accel": "acceleration (m/s^2)",
                  "accel_g": "acceleration (g)", "gyro": "turn rate",
-                 "mag": "magnetic field"}
+                 "mag": "magnetic field",
+                 "euler": "the orientation again, as angles (not used)",
+                 "unknown": "not identified — not used"}
         out_extra = {}
         if self.partial:
             out_extra["protobuf_partial"] = (
