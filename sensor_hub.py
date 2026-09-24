@@ -289,16 +289,16 @@ def install_defaults(hub: SensorHub | None = None) -> SensorHub:
                        "tier rather than two, with nothing to cross-check it "
                        "against.")
     hub.declare(id="cam_depth", label="Depth camera", modality="vision_depth",
-                units="m", rate_hz=30.0, frame="camera", vendor="Intel D435i",
+                units="m", rate_hz=30.0, frame="camera", vendor="Intel D435",
                 transport="USB", role="application",
                 fields=["depth", "intrinsics"])
     hub.declare(id="cam_color", label="Colour camera", modality="vision_rgb",
                 units="8-bit BGR", rate_hz=30.0, frame="camera",
-                vendor="Intel D435i", transport="USB", role="application",
+                vendor="Intel D435", transport="USB", role="application",
                 fields=["color"])
     hub.declare(id="cam_ir", label="Infrared stereo pair",
                 modality="vision_rgb", units="8-bit mono", rate_hz=30.0,
-                frame="camera", vendor="Intel D435i", transport="USB",
+                frame="camera", vendor="Intel D435", transport="USB",
                 role="application", fields=["ir_left", "ir_right"])
     # Not here yet, and deliberately visible.
     hub.declare(id="eddy0", label="Eddy current probe", modality="eddy_current",

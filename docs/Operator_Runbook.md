@@ -145,15 +145,55 @@ integration is never on the critical path.
   - *turn rate read as degrees/s* — the units the source uses are **decided**
     from its own data, not assumed. If the sensor also reports orientation,
     the decision is made by comparing the two, which is conclusive.
-  - *sensor vs our own estimate* — an independent orientation estimate run
-    alongside the sensor's own. Agreement under a degree or two means both are
-    working. A large number means one of them is not, and it has caught a
-    wrongly configured output frame more than once.
+  - *sensor and our own estimate agree on which way is down* — an independent
+    orientation estimate is run alongside the sensor's own and the two are
+    differenced. Agreement under a degree or two means both are working; a
+    large number means one of them is not, and it has caught a wrongly
+    configured output frame more than once. Only the **gravity direction** is
+    compared, and deliberately: our estimate has no compass, so its heading
+    starts at zero and stays arbitrary, while the sensor fuses a magnetometer
+    and reports a real one. Differencing the whole rotation reported that
+    heading offset — routinely over a hundred degrees — as though it were an
+    error, which read as a broken sensor and was nothing of the kind.
+  - *the sensor's own clock jumped* — a timestamp that went backwards or
+    leapt. The readings are still good; their spacing is taken from arrival
+    time instead. One such jump used to freeze the update rate at 0 Hz while
+    data was plainly arriving.
   - *drift correction* — the gyroscope bias learned while the unit is still.
     A consumer part routinely shows 1-2 °/s; uncorrected, that is 60-120° of
     pure fiction over a minute.
 - **Re-level** — hold the unit still and press it. Clears the learned bias and
   re-seeds the orientation from gravity.
+- **Every reading, live** — one card per measurement (Euler angles,
+  accelerometer, gyroscope, magnetometer, quaternion, linear acceleration,
+  environment), each with its own chart, all on screen together. They are read
+  *against* each other: a spike in the accelerometer with no matching spike in
+  the gyroscope is a knock; one that has a match is the arm turning; one in the
+  magnetometer alone is something ferrous moving nearby. A card whose sensor
+  does not provide that channel says so rather than showing an empty chart.
+- **Move the robot** — the jog dock, bottom right of every page. The board, the
+  charts and the arm are one job, so the control travels with you instead of
+  living on the Robot page. It is the same jog path: one velocity, one
+  host-side 20 Hz loop, one watchdog. Collapsing it also stops the arm.
+
+### Getting the readings out
+
+Two different things, and the difference matters.
+
+- **Record every sample to a file** writes each reading to a CSV as it
+  arrives, for as long as you leave it running, at the sensor's own rate. This
+  is the one to use for an experiment. Files land in `imu_logs/` next to the
+  agent, one row per sample with a fixed column set — columns a unit does not
+  provide are present and empty, which is a statement, where a missing column
+  is a question.
+- **Save what is on screen** writes out only what is still in memory: a few
+  thousand readings per sensor, around forty seconds at 100 Hz. Use it when
+  something has just happened and you want *that*. **Download as a
+  spreadsheet** then puts a second copy on the machine you are sitting at,
+  which is not always the machine the agent runs on.
+
+The charts are drawn about twenty times a second, which is a picture of the
+sensor rather than all of it. The recorded file has every reading.
 
 ### Every measurement channel
 
@@ -175,10 +215,21 @@ error that grows with standoff and rotates with the tool. At 300 mm standoff,
 2° puts a point 10 mm out — in a *different direction* at every viewpoint,
 which is exactly what stops several views from fusing into one surface.
 
+0. **Set the colour stream high enough first.** The board is detected in the
+   colour image and the corner detector needs roughly 15 pixels between
+   corners. A 7.5 mm square at 400 mm standoff lands on about 11 px at
+   640×360 and about 23 px at 1280×720 — which is the difference between a
+   board that is found and one reported as absent while it sits plainly in
+   shot, in focus and well lit. 1280×720 is now the default; if you lowered
+   it, put it back on the Camera page before calibrating. The live view
+   reports the measured square pitch on every successful detection, so you can
+   watch the margin fall as the arm backs away.
 1. Fix a chessboard where the camera can see it and the arm can move around
    it. Enter the **inner corner** counts — a board of 10×7 squares is 9×6
    inner. Getting this wrong is the commonest way to end up with a
-   calibration that looks fine and is wrong.
+   calibration that looks fine and is wrong. If the count is wrong, the
+   console searches the nearby sizes and offers the one it actually found as
+   a button: press it and the counts are corrected for you.
 2. Press **Start**.
 3. Move the arm, check the live view says the board was found, press **Capture
    this pose**. Repeat about a dozen times. **Rotate the tool 30-60° about all

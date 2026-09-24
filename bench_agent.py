@@ -146,6 +146,22 @@ class ImuHub:
         self._last_rate_calc: dict[str, tuple[float, int]] = {}
         self._trackers: dict = {}
         self._tlock = threading.Lock()
+        # Anything that wants every sample as it arrives, rather than the
+        # latest one when it happens to look. The continuous logger is the
+        # only subscriber today; the point of the hook is that a logger does
+        # not have to poll, because a poller loses samples between polls and
+        # a benchmark capture that quietly loses samples is worthless.
+        self._sinks: list = []
+
+    def subscribe(self, fn) -> None:
+        with self._lock:
+            if fn not in self._sinks:
+                self._sinks.append(fn)
+
+    def unsubscribe(self, fn) -> None:
+        with self._lock:
+            if fn in self._sinks:
+                self._sinks.remove(fn)
 
     def tracker(self, unit: str):
         """
@@ -201,6 +217,15 @@ class ImuHub:
                 dn = self._counts[unit] - last[1]
                 self._rates[unit] = dn / (t_master - last[0])
                 self._last_rate_calc[unit] = (t_master, self._counts[unit])
+            sinks = list(self._sinks)
+        # Sinks run OUTSIDE the lock. A logger that blocks on a disk write
+        # while holding the hub lock stalls every inertial link feeding it,
+        # and a stalled link drops packets at the socket.
+        for fn in sinks:
+            try:
+                fn(unit, t_master, rec)
+            except Exception as e:      # noqa: BLE001
+                log.debug("imu sink failed: %s", e)
 
     def latest(self) -> dict:
         with self._lock:
@@ -226,6 +251,250 @@ class ImuHub:
 
 
 HUB = ImuHub()
+
+
+# ============================================================
+# Getting the inertial data OUT
+# ============================================================
+
+# One row per sample, one column per number, in a fixed order. A fixed order
+# matters more than it looks: these files are read months later by a script
+# nobody has opened since, and a column set that varies with whichever
+# channels the sensor happened to be publishing that day is a file that has
+# to be re-discovered every time it is read. Columns a unit does not provide
+# are present and empty, which is a statement ("this unit has no
+# magnetometer"), where a missing column is a question.
+IMU_COLUMNS = [
+    ("t_s", lambda r: None),                    # filled by the writer
+    ("unit", lambda r: None),                   # filled by the writer
+    ("quat_w", lambda r: _at(r, "quat", 0)),
+    ("quat_x", lambda r: _at(r, "quat", 1)),
+    ("quat_y", lambda r: _at(r, "quat", 2)),
+    ("quat_z", lambda r: _at(r, "quat", 3)),
+    ("roll_deg", lambda r: _at(r, "euler_deg", 0)),
+    ("pitch_deg", lambda r: _at(r, "euler_deg", 1)),
+    ("yaw_deg", lambda r: _at(r, "euler_deg", 2)),
+    ("gyro_x_rad_s", lambda r: _at(r, "gyro", 0)),
+    ("gyro_y_rad_s", lambda r: _at(r, "gyro", 1)),
+    ("gyro_z_rad_s", lambda r: _at(r, "gyro", 2)),
+    ("accel_x_m_s2", lambda r: _at(r, "accel", 0)),
+    ("accel_y_m_s2", lambda r: _at(r, "accel", 1)),
+    ("accel_z_m_s2", lambda r: _at(r, "accel", 2)),
+    ("lin_accel_x_m_s2", lambda r: _at(r, "linear_accel", 0)),
+    ("lin_accel_y_m_s2", lambda r: _at(r, "linear_accel", 1)),
+    ("lin_accel_z_m_s2", lambda r: _at(r, "linear_accel", 2)),
+    ("mag_x", lambda r: _at(r, "mag", 0)),
+    ("mag_y", lambda r: _at(r, "mag", 1)),
+    ("mag_z", lambda r: _at(r, "mag", 2)),
+    ("accel_norm_m_s2", lambda r: r.get("accel_norm")),
+    ("gyro_norm_deg_s", lambda r: r.get("gyro_norm_deg_s")),
+    ("tilt_roll_deg", lambda r: _at(r, "tilt_deg", 0)),
+    ("tilt_pitch_deg", lambda r: _at(r, "tilt_deg", 1)),
+    ("quat_source", lambda r: r.get("quat_source")),
+    ("still", lambda r: int(bool(r.get("still"))) if "still" in r else None),
+    ("rate_hz", lambda r: r.get("rate_hz")),
+    ("bias_x_deg_s", lambda r: _at(r, "gyro_bias_deg_s", 0)),
+    ("bias_y_deg_s", lambda r: _at(r, "gyro_bias_deg_s", 1)),
+    ("bias_z_deg_s", lambda r: _at(r, "gyro_bias_deg_s", 2)),
+    ("filter_disagreement_deg", lambda r: r.get("filter_disagreement_deg")),
+    ("device_vs_estimate_tilt_deg", lambda r: r.get("device_vs_estimate_tilt_deg")),
+    ("temp_c", lambda r: r.get("temp_c")),
+    ("pressure_hpa", lambda r: r.get("pressure_hpa")),
+    ("humidity_pct", lambda r: r.get("humidity_pct")),
+]
+
+IMU_HEADER = [c[0] for c in IMU_COLUMNS]
+
+
+def _at(rec, key, i):
+    v = rec.get(key)
+    try:
+        return v[i]
+    except Exception:
+        return None
+
+
+def _cell(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return f"{v:.6g}"
+    return str(v)
+
+
+def imu_row(unit: str, t: float, rec: dict) -> list[str]:
+    row = [f"{t:.6f}", unit]
+    for name, get in IMU_COLUMNS[2:]:
+        row.append(_cell(get(rec)))
+    return row
+
+
+class ImuLogger:
+    """
+    Writes every inertial sample to a CSV as it arrives, for as long as it is
+    running.
+
+    This exists because the hub's ring buffer holds 4096 samples per unit --
+    forty seconds at 100 Hz, twelve at 350 -- and "export the IMU data" means
+    the whole capture, not the tail of it. Subscribing to the hub rather than
+    polling it is the whole point: a poller at any rate loses whatever arrived
+    between two polls, and a gap in an inertial record is not recoverable and
+    not always visible.
+
+    Buffered and flushed on a timer rather than per row: at 350 Hz a flush per
+    sample is 350 syscalls a second competing with the camera for the same
+    disk, and an unflushed buffer costs at most one second of data if the
+    process is killed, against a capture that stutters the whole time it runs.
+    """
+
+    FLUSH_EVERY_S = 1.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._fh = None
+        self.path: Path | None = None
+        self.units: set[str] | None = None
+        self.rows = 0
+        self.dropped = 0
+        self.started_at: float | None = None
+        self._last_flush = 0.0
+        self.error = ""
+
+    def running(self) -> bool:
+        return self._fh is not None
+
+    def start(self, path=None, units=None) -> dict:
+        self.stop()
+        folder = Path("imu_logs")
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except Exception as e:      # noqa: BLE001
+            return {"ok": False, "error": f"could not create {folder}: {e}"}
+        name = path or f"imu_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        target = Path(name)
+        if not target.is_absolute() and target.parent == Path("."):
+            target = folder / target
+        try:
+            fh = open(target, "w", newline="", encoding="utf-8")
+            fh.write(",".join(IMU_HEADER) + "\n")
+        except Exception as e:      # noqa: BLE001
+            return {"ok": False, "error": f"could not open {target}: {e}"}
+        with self._lock:
+            self._fh = fh
+            self.path = target
+            self.units = set(units) if units else None
+            self.rows = 0
+            self.dropped = 0
+            self.started_at = time.monotonic()
+            self._last_flush = self.started_at
+            self.error = ""
+        HUB.subscribe(self._on_sample)
+        log.info("imu logging to %s", target)
+        return {"ok": True, **self.status()}
+
+    def _on_sample(self, unit: str, t: float, rec: dict) -> None:
+        with self._lock:
+            fh = self._fh
+            if fh is None:
+                return
+            if self.units is not None and unit not in self.units:
+                return
+            try:
+                fh.write(",".join(imu_row(unit, t, rec)) + "\n")
+                self.rows += 1
+            except Exception as e:      # noqa: BLE001
+                self.dropped += 1
+                self.error = str(e)
+                return
+            now = time.monotonic()
+            if now - self._last_flush >= self.FLUSH_EVERY_S:
+                self._last_flush = now
+                try:
+                    fh.flush()
+                except Exception:
+                    pass
+
+    def stop(self) -> dict:
+        HUB.unsubscribe(self._on_sample)
+        with self._lock:
+            fh, path, rows = self._fh, self.path, self.rows
+            dur = (time.monotonic() - self.started_at) if self.started_at else 0.0
+            self._fh = None
+        if fh is None:
+            return {"ok": False, "error": "nothing was being logged",
+                    "running": False}
+        try:
+            fh.flush()
+            fh.close()
+        except Exception:
+            pass
+        size = path.stat().st_size if path and path.exists() else 0
+        log.info("imu log closed: %s rows=%d", path, rows)
+        return {"ok": True, "running": False, "path": str(path.resolve()),
+                "rows": rows, "bytes": size, "seconds": round(dur, 1),
+                "dropped": self.dropped,
+                "note": (f"{rows} samples written to {path}. This is the "
+                         "complete record for the period it was running, not "
+                         "a sample of it.")}
+
+    def status(self) -> dict:
+        with self._lock:
+            dur = (time.monotonic() - self.started_at) if self.started_at else 0.0
+            return {"running": self._fh is not None,
+                    "path": str(self.path.resolve()) if self.path else None,
+                    "rows": self.rows, "dropped": self.dropped,
+                    "seconds": round(dur, 1),
+                    "units": sorted(self.units) if self.units else "all",
+                    "error": self.error}
+
+
+LOGGER = ImuLogger()
+
+
+def export_ring(units=None, path=None) -> dict:
+    """
+    Everything still in memory, written out now.
+
+    The companion to the logger, for the operator who has just seen something
+    happen and wants that, without having remembered to start a log first. It
+    is bounded by the ring -- a few thousand samples per unit -- and it says
+    so, because an export that silently holds the last forty seconds of a ten
+    minute run is a trap.
+    """
+    names = list(units) if units else sorted(HUB._rings)     # noqa: SLF001
+    rows = []
+    for unit in names:
+        for t, rec in HUB.ring(unit):
+            rows.append((t, unit, rec))
+    if not rows:
+        return {"ok": False, "error": "no inertial samples are in memory yet "
+                                      "— connect a sensor first"}
+    rows.sort(key=lambda r: r[0])
+    folder = Path("imu_logs")
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"could not create {folder}: {e}"}
+    target = Path(path) if path else folder / f"imu_snapshot_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+    if not target.is_absolute() and target.parent == Path("."):
+        target = folder / target
+    lines = [",".join(IMU_HEADER)]
+    for t, unit, rec in rows:
+        lines.append(",".join(imu_row(unit, t, rec)))
+    text = "\n".join(lines) + "\n"
+    try:
+        target.write_text(text, encoding="utf-8")
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"could not write {target}: {e}"}
+    span = rows[-1][0] - rows[0][0]
+    return {"ok": True, "path": str(target.resolve()), "rows": len(rows),
+            "units": names, "seconds": round(span, 2),
+            "csv": text if len(text) < 4_000_000 else None,
+            "note": (f"{len(rows)} samples covering {span:.1f} s — everything "
+                     "held in memory. Memory holds a few thousand samples per "
+                     "sensor, so for a longer capture start the continuous "
+                     "log instead.")}
+
 
 
 # ============================================================
@@ -665,6 +934,7 @@ def status() -> dict:
         "links": LINKS.status(),
         "attitude": HUB.tracker_status(),
         "recorder": RECORDER.status(),
+        "imu_log": LOGGER.status(),
         "bench_available": _HAS_BENCH,
         "transports": sorted(imu_link.TRANSPORTS) if _HAS_LINK else [],
         "transport_error": "" if _HAS_LINK else _LINK_ERR,
@@ -769,6 +1039,19 @@ def handle_message(data: dict) -> dict | None:
             D435I.stop()
             ok = True
         return {"type": "imu_d435i_res", "ok": ok, **D435I.status()}
+
+    # ---- getting the data out -----------------------------------------
+    if mtype == "imu_export":
+        return {"type": "imu_export_res",
+                **export_ring(data.get("units"), data.get("path"))}
+    if mtype == "imu_log_start":
+        return {"type": "imu_log_res", "cmd": "start",
+                **LOGGER.start(data.get("path"), data.get("units"))}
+    if mtype == "imu_log_stop":
+        return {"type": "imu_log_res", "cmd": "stop", **LOGGER.stop()}
+    if mtype == "imu_log_status":
+        return {"type": "imu_log_res", "cmd": "status", "ok": True,
+                **LOGGER.status()}
 
     if mtype == "bench_offset":
         MASTER.set_offset(data.get("channel", ""), data.get("offset_s", 0.0),

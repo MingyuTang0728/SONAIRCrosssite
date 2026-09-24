@@ -172,7 +172,18 @@ _FIELD_HINTS = [
     (("roll",), ("euler", 0)),
     (("pitch",), ("euler", 1)),
     (("yaw", "heading"), ("euler", 2)),
+    # Environment, when the unit reports it. Not inertial and not scored, but
+    # a unit whose temperature climbs 20 degrees over a run has a gyro bias
+    # that climbs with it, and that is a real term in the error budget rather
+    # than a curiosity. Scalars, so they carry no axis index.
+    (("temperature", "temp_c", "tempc", "temp"), ("temp_c", 0)),
+    (("pressure", "pressure_hpa", "baro"), ("pressure_hpa", 0)),
+    (("humidity", "humidity_pct", "rh"), ("humidity_pct", 0)),
 ]
+
+# The environment names above are scalars; everything else in the table is one
+# axis of a vector. Kept as a set so the parser does not have to infer it.
+_SCALAR_FIELDS = {"temp_c", "pressure_hpa", "humidity_pct"}
 
 _TIME_HINTS = ("timestamp", "time", "ts", "t", "sampletimefine", "host_time",
                "time_s", "utc", "packetcounter")
@@ -805,6 +816,10 @@ def _row_to_record(row: dict, gyro_units: str = "auto"):
         vec = acc.get(name)
         if vec and all(v is not None for v in vec[:3]):
             rec[name] = [float(v) for v in vec[:3]]
+    for name in _SCALAR_FIELDS:
+        vec = acc.get(name)
+        if vec and vec[0] is not None:
+            rec[name] = float(vec[0])
     if "gyro" in rec:
         rec["gyro"] = _to_rad_s(rec["gyro"], gyro_units)
     return t_src, rec

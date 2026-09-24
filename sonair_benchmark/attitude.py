@@ -31,8 +31,16 @@ BMI055 sitting on a bench routinely shows 1-2 deg/s of bias; integrated over a
 from __future__ import annotations
 
 import math
+import time
+from collections import deque
 
 GRAVITY = 9.80665
+
+# The largest integration step that is taken at face value. At 100 Hz a real
+# gap is 10 ms; 200 ms is twenty missed packets, which is a dropout worth
+# knowing about and still small enough that integrating across it is sane.
+# Anything beyond it is a clock fault, not a gap.
+MAX_STEP_S = 0.20
 
 
 # ---------------------------------------------------------------------------
@@ -297,9 +305,17 @@ class AttitudeTracker:
         self.est_quat = [1.0, 0.0, 0.0, 0.0]
         self.disagreement_deg = 0.0
         self.device_vs_est_deg = 0.0
+        self.device_vs_est_tilt_deg = 0.0
         self.rate_hz = 0.0
-        self._rate_t0: float | None = None
-        self._rate_n0 = 0
+        # The rate is measured on the HOST clock, not on the sensor's own
+        # timestamp. A sensor clock only has to hiccup once -- one packet
+        # whose time field reads far in the future -- for a window anchored to
+        # it to stop closing, and the symptom is an update rate frozen at 0 Hz
+        # while data is plainly arriving. The host clock cannot do that, and
+        # "how fast is it arriving" is the question the number answers anyway.
+        self._arrivals: deque = deque(maxlen=256)
+        self.sensor_clock_ok = True
+        self.n_clock_jumps = 0
 
     def update(self, t: float, rec: dict) -> dict:
         """
@@ -316,17 +332,31 @@ class AttitudeTracker:
         if rec.get("_units_pending"):
             gyro = None
 
+        # Integration step, from the sensor clock, GUARDED. An unguarded dt
+        # is the one input that can destroy the estimate outright: a single
+        # packet carrying a stale or bogus timestamp yields a dt of hours,
+        # and Madgwick integrates the gyroscope over all of it in one step.
+        # Outside the plausible band the step is dropped rather than trusted,
+        # and the fact is counted and reported rather than hidden.
         dt = 0.0
         if self.t_last is not None:
-            dt = t - self.t_last
+            raw_dt = t - self.t_last
+            if 0.0 < raw_dt <= MAX_STEP_S:
+                dt = raw_dt
+            else:
+                self.n_clock_jumps += 1
+                self.sensor_clock_ok = False
         self.t_last = t
         self.n += 1
 
-        if self._rate_t0 is None:
-            self._rate_t0, self._rate_n0 = t, self.n
-        elif t - self._rate_t0 >= 1.0:
-            self.rate_hz = (self.n - self._rate_n0) / (t - self._rate_t0)
-            self._rate_t0, self._rate_n0 = t, self.n
+        # Arrival rate over a sliding window of the last few hundred packets,
+        # on the host clock.
+        now_host = time.monotonic()
+        self._arrivals.append(now_host)
+        if len(self._arrivals) >= 2:
+            span = self._arrivals[-1] - self._arrivals[0]
+            if span > 0.05:
+                self.rate_hz = (len(self._arrivals) - 1) / span
 
         if accel and gyro:
             self.bias.update(accel, gyro, dt)
@@ -345,6 +375,19 @@ class AttitudeTracker:
             self.quat_source = "device"
             if self.seeded:
                 self.device_vs_est_deg = q_angle_deg(self.quat, self.est_quat)
+                # The whole-rotation difference is NOT a fair comparison here.
+                # The estimator runs on gyroscope and accelerometer only, so
+                # its heading has no reference and starts at zero; the device
+                # fuses a magnetometer and reports a real heading. Differencing
+                # the two whole rotations therefore reports the heading offset
+                # -- routinely over a hundred degrees -- as if it were an
+                # error, which reads as a broken sensor and is not one.
+                # What both CAN see is the direction of gravity, so that is
+                # what is compared.
+                ga = gravity_from_quat(self.quat)
+                gb = gravity_from_quat(self.est_quat)
+                dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(ga, gb))))
+                self.device_vs_est_tilt_deg = math.degrees(math.acos(dot))
         elif self.seeded:
             self.quat = list(self.est_quat)
             self.quat_source = "estimated"
@@ -357,10 +400,22 @@ class AttitudeTracker:
             "yaw_observable": bool(dev_q) or bool(rec.get("mag")),
             "rate_hz": round(self.rate_hz, 1),
         }
+        if not self.sensor_clock_ok:
+            out["clock_jumps"] = self.n_clock_jumps
         if accel:
             out["tilt_deg"] = [round(v, 3) for v in tilt_from_accel(accel)]
             out["accel_norm"] = round(
                 math.sqrt(sum(float(v) * float(v) for v in accel)), 4)
+            # What is left of the acceleration once gravity is taken out: the
+            # part that comes from the arm actually moving. It is the channel
+            # the benchmark scores against a simulated trajectory, because a
+            # simulator reproduces motion and does not reproduce the 9.81 a
+            # stationary sensor reads.
+            g = gravity_from_quat(self.quat)
+            lin = [float(accel[i]) - g[i] * GRAVITY for i in range(3)]
+            out["linear_accel"] = [round(v, 4) for v in lin]
+            out["linear_accel_norm"] = round(
+                math.sqrt(sum(v * v for v in lin)), 4)
         if gyro:
             out["gyro_norm_deg_s"] = round(math.degrees(
                 math.sqrt(sum(float(v) * float(v) for v in gyro))), 3)
@@ -371,10 +426,14 @@ class AttitudeTracker:
                                       for b in self.bias.bias]
         if dev_q and self.seeded:
             out["device_vs_estimate_deg"] = round(self.device_vs_est_deg, 3)
+            out["device_vs_estimate_tilt_deg"] = round(
+                self.device_vs_est_tilt_deg, 3)
         return out
 
     def status(self) -> dict:
         return {"unit": self.unit, "samples": self.n,
                 "rate_hz": round(self.rate_hz, 1),
                 "quat_source": self.quat_source,
+                "sensor_clock_ok": self.sensor_clock_ok,
+                "clock_jumps": self.n_clock_jumps,
                 "seeded": self.seeded, **self.bias.status()}

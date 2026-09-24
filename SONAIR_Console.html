@@ -38,9 +38,12 @@ header.top{display:flex;align-items:center;gap:20px;padding:10px 18px;
 header.top .brand{display:flex;align-items:baseline;gap:10px}
 header.top h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.01em}
 header.top .sub{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em}
-.lamps{display:flex;gap:8px;margin-left:auto}
+.lamps{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
 .lamp{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:7px;
   background:var(--surface-2);border:1px solid var(--line);min-width:150px}
+@media(max-width:700px){header.top{flex-wrap:wrap;gap:10px}
+  .lamps{margin-left:0;width:100%;justify-content:flex-start}
+  .lamp{min-width:0;flex:1 1 130px;padding:6px 10px}}
 .lamp i{width:10px;height:10px;border-radius:50%;background:var(--idle);flex:none;
   box-shadow:0 0 0 3px rgba(110,127,144,.15)}
 .lamp.ok i{background:var(--ok);box-shadow:0 0 0 3px var(--ok-bg)}
@@ -89,6 +92,12 @@ section.block > h3 .tag{margin-left:auto;font-size:10px;padding:2px 8px;
 .g3{grid-template-columns:repeat(3,1fr)}
 .g4{grid-template-columns:repeat(4,1fr)}
 @media(max-width:1100px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+/* A two-across tile grid still does not fit a phone: the tiles have a fixed
+   minimum of their own, so the row keeps its width and the whole page scrolls
+   sideways instead. One column, and a minimum of zero so a long value wraps
+   inside its tile rather than pushing the tile wider than the screen. */
+@media(max-width:560px){.g2,.g3,.g4{grid-template-columns:1fr}}
+.grid>*{min-width:0}
 
 /* ---------- readouts ---------- */
 .tile{background:var(--surface-2);border:1px solid var(--line);
@@ -170,6 +179,88 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .legend i.dot{width:9px;height:9px;border-radius:50%}
 
 /* ---------- jog ---------- */
+/* ---- the jog dock: the arm, reachable from any page ------------------
+   Watching a sensor while moving the arm is one task, and it was split
+   across two pages: the operator had to leave the readings to press a
+   button, then come back to see what it did. The dock is the same jog
+   machinery -- the same pads writing the same vector, the same host-side
+   20 Hz loop -- rendered in a panel that floats over whatever page is
+   open. It is collapsed by default so it never covers a page nobody
+   wanted it on. ------------------------------------------------------ */
+.dock{position:fixed;right:16px;bottom:16px;z-index:60;width:min(360px,calc(100vw - 32px));
+  background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;
+  box-shadow:0 18px 44px rgba(0,0,0,.45);overflow:hidden}
+.dock.min{width:auto}
+.dockbar{display:flex;align-items:center;gap:9px;padding:9px 11px;cursor:pointer;
+  background:var(--panel-2);border-bottom:1px solid var(--line)}
+.dock.min .dockbar{border-bottom:none}
+.dockbar .t{font-weight:650;font-size:12.5px;letter-spacing:.01em}
+.dockbar .sp{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--text-3)}
+.dockbody{padding:11px}
+.dockpads{display:flex;gap:12px;justify-content:center}
+.dockpads .pad .disc{width:104px;height:104px}
+.dockpads .pad .knob{width:34px;height:34px}
+.dockxyz{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;
+  font-family:var(--mono);font-size:11px;color:var(--text-2)}
+.dockxyz div{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;
+  padding:4px 6px;text-align:center}
+@media(max-width:700px){.dock{right:8px;bottom:8px;left:8px;width:auto}}
+/* An open dock is anchored to the bottom-right of the VIEWPORT, so it sits
+   over whatever happens to be under it no matter where the page is scrolled.
+   Rather than leave a corner of every page permanently unreadable, opening it
+   reserves the space: the page gets a right gutter wide enough for it on a
+   desk screen, and room underneath on a narrow one. Nothing is ever hidden,
+   and closing the dock gives the width straight back. */
+body.dockopen main.page{padding-right:392px}
+@media(max-width:900px){body.dockopen main.page{padding-right:24px;padding-bottom:400px}}
+
+/* ---- the reading cards ------------------------------------------------
+   Two columns at desk width, one on a narrow screen. Each card is one
+   measurement: its live numbers on top, its history underneath, so the
+   eye reads value-then-trend without moving between panels. --------- */
+/* The live view and the step column, side by side while there is room for
+   both and stacked when there is not. The jog dock takes almost 400 px out of
+   the page when it is open, which is enough to squeeze the step column down
+   to a strip of single words, so its threshold accounts for that. */
+.calgrid{display:grid;grid-template-columns:1.25fr minmax(330px,1fr);gap:16px}
+/* Once the two columns stack, a 4:3 view at full page width is taller than
+   the screen and pushes the board settings -- the very controls the view is
+   there to check -- below the fold. Capped, and centred, so both stay in
+   sight at once. */
+.calgrid .viewport{max-height:52vh;margin-inline:auto;width:100%}
+.calgrid .viewport canvas{width:100%;height:100%;display:block;object-fit:contain}
+@media(max-width:1180px){.calgrid{grid-template-columns:1fr}}
+body.dockopen .calgrid{grid-template-columns:1fr}
+@media(min-width:1400px){body.dockopen .calgrid{grid-template-columns:1.25fr minmax(330px,1fr)}}
+.cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;margin-top:12px}
+@media(max-width:1100px){.cards{grid-template-columns:1fr}}
+body.dockopen .cards{grid-template-columns:1fr}
+@media(min-width:1400px){body.dockopen .cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+  padding:11px 12px 12px;min-width:0}
+.card header{display:flex;align-items:baseline;gap:9px;margin-bottom:9px}
+.card h4{margin:0;font-size:12.5px;font-weight:650;letter-spacing:.01em}
+.card .cu{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--text-3);
+  text-transform:none}
+.card .chart{width:100%;height:150px;display:block;border-radius:7px;
+  background:var(--panel);border:1px solid var(--line)}
+.card .hint{margin-top:8px}
+.vals{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.vals .vv{flex:1 1 0;min-width:74px;background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;padding:5px 8px}
+.vals .vv .n{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--text-3);font-weight:650;display:flex;align-items:center;gap:5px}
+.vals .vv .n i{width:7px;height:7px;border-radius:2px;display:inline-block}
+.vals .vv .q{font-family:var(--mono);font-size:15px;font-weight:600;
+  font-variant-numeric:tabular-nums;margin-top:2px}
+.kv{display:flex;flex-direction:column;gap:5px}
+.kvr{display:flex;gap:10px;align-items:baseline;font-size:12px;
+  border-bottom:1px dashed var(--line);padding-bottom:4px}
+.kvr span{color:var(--text-3);flex:0 0 46%}
+.kvr b{font-family:var(--mono);font-weight:600;word-break:break-word}
+.card.off{opacity:.55}
+.card.off .chart{filter:grayscale(1)}
+
 .jogwrap{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
 @media(max-width:980px){.jogwrap{grid-template-columns:1fr}}
 .pads{display:flex;gap:16px;flex-wrap:wrap}
@@ -257,7 +348,9 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 .stream .sempty{position:absolute;inset:0;display:flex;align-items:center;
   justify-content:center;text-align:center;padding:16px;color:var(--text-3);
   font-size:12px;line-height:1.5}
-.att{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:center}
+.att{display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;align-items:center}
+@media(max-width:700px){.att{grid-template-columns:1fr}
+  .att canvas{width:100%;max-width:260px;margin:0 auto}}
 .att canvas{width:200px;height:170px;background:var(--surface-2);
   border:1px solid var(--line);border-radius:9px}
 .strip{width:100%;height:76px;background:var(--surface-2);
@@ -952,18 +1045,112 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
           <div class="tile"><div class="k">Update rate</div><div class="v" id="attHz">&mdash;<span class="u">Hz</span></div></div>
         </div>
         <div class="chips" id="attChips"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" id="btnImuZero">Re-level (hold it still)</button>
+          <button class="btn" id="btnImuFreeze">Pause the charts</button>
+          <div class="seg" id="spanSeg" style="margin-left:auto">
+            <button class="segb" data-span="200">10 s</button>
+            <button class="segb on" data-span="600">30 s</button>
+            <button class="segb" data-span="1200">60 s</button>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="row" style="margin-top:13px">
-      <button class="btn" id="btnImuZero">Re-level (hold it still)</button>
-      <div class="seg" id="stripSeg" style="margin-left:auto">
-        <button class="segb on" data-ch="gyro">Turning</button>
-        <button class="segb" data-ch="accel">Acceleration</button>
-        <button class="segb" data-ch="euler">Angle</button>
-      </div>
-    </div>
-    <canvas class="strip" id="imuStrip" width="1200" height="152" style="margin-top:11px"></canvas>
     <div class="note info" id="attMsg">Waiting for data.</div>
+  </section>
+
+  <!-- =============== every channel, every chart, all at once ===============
+       One card per measurement, laid out together rather than one at a time
+       behind a selector. The reason is not neatness: the channels are read
+       AGAINST each other. A spike in the accelerometer that has no matching
+       spike in the gyroscope is a knock; one that does is the arm turning;
+       one in the magnetometer alone is something ferrous moving nearby. A
+       selector that shows one trace at a time hides exactly the comparison
+       that makes the readings mean anything. ============================= -->
+  <section class="block">
+    <h3>Every reading, live <span class="tag" id="imuCardsTag">waiting</span></h3>
+    <p class="hint" style="margin-top:0">The charts are drawn about twenty
+    times a second, which is a picture of the sensor rather than all of it.
+    The file written by <b>Record every sample to a file</b> below holds every
+    single reading at the sensor's own rate &mdash; that is the one to use for
+    measurements.</p>
+    <div class="cards" id="imuCards">
+
+      <article class="card" id="cardInfo">
+        <header><h4>Sensor information</h4><span class="tag" id="cInfoTag">&mdash;</span></header>
+        <div class="kv" id="cInfoBody"><div class="kvr"><span>&mdash;</span><b>not connected</b></div></div>
+      </article>
+
+      <article class="card" id="cardEuler">
+        <header><h4>Euler angles</h4><span class="cu">degrees</span></header>
+        <div class="vals" id="cEulerVals"></div>
+        <canvas class="chart" id="chEuler" width="760" height="150"></canvas>
+      </article>
+
+      <article class="card" id="cardAccel">
+        <header><h4>Accelerometer</h4><span class="cu">m/s&sup2;</span></header>
+        <div class="vals" id="cAccelVals"></div>
+        <canvas class="chart" id="chAccel" width="760" height="150"></canvas>
+      </article>
+
+      <article class="card" id="cardGyro">
+        <header><h4>Gyroscope</h4><span class="cu">degrees/s</span></header>
+        <div class="vals" id="cGyroVals"></div>
+        <canvas class="chart" id="chGyro" width="760" height="150"></canvas>
+      </article>
+
+      <article class="card" id="cardMag">
+        <header><h4>Magnetometer</h4><span class="cu">&micro;T</span></header>
+        <div class="vals" id="cMagVals"></div>
+        <canvas class="chart" id="chMag" width="760" height="150"></canvas>
+      </article>
+
+      <article class="card" id="cardQuat">
+        <header><h4>Quaternion</h4><span class="cu">unitless</span></header>
+        <div class="vals" id="cQuatVals"></div>
+        <canvas class="chart" id="chQuat" width="760" height="150"></canvas>
+      </article>
+
+      <article class="card" id="cardLin">
+        <header><h4>Linear acceleration</h4><span class="cu">m/s&sup2;</span></header>
+        <div class="vals" id="cLinVals"></div>
+        <canvas class="chart" id="chLin" width="760" height="150"></canvas>
+        <div class="hint">Acceleration with gravity taken out &mdash; what is
+        left is the arm actually moving. This is the channel the benchmark
+        scores, because a simulator reproduces motion and does not reproduce
+        the 9.81 a stationary sensor reads.</div>
+      </article>
+
+      <article class="card" id="cardEnv">
+        <header><h4>Environment</h4><span class="cu" id="cEnvUnit">&mdash;</span></header>
+        <div class="vals" id="cEnvVals"></div>
+        <canvas class="chart" id="chEnv" width="760" height="150"></canvas>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- =============== getting it out =============== -->
+  <section class="block">
+    <h3>Get the data out <span class="tag" id="imuLogTag">not recording</span></h3>
+    <p class="hint" style="margin-top:0">Two different things, and the
+    difference matters. <b>Record every sample</b> writes each reading to a
+    file as it arrives, for as long as you leave it running &mdash; use it for
+    an experiment. <b>Save what is on screen</b> writes out only what is still
+    in memory, a few thousand readings per sensor &mdash; use it when
+    something has just happened and you want that.</p>
+    <div class="row">
+      <button class="btn primary big" id="btnImuLogStart">Record every sample to a file</button>
+      <button class="btn danger" id="btnImuLogStop" disabled>Stop recording</button>
+      <button class="btn go" id="btnImuExport" style="margin-left:auto">Save what is on screen</button>
+      <button class="btn" id="btnImuDownload" disabled>Download as a spreadsheet</button>
+    </div>
+    <div class="grid g3" style="margin-top:12px">
+      <div class="tile"><div class="k">Readings written</div><div class="v" id="logRows">0</div></div>
+      <div class="tile"><div class="k">Recording for</div><div class="v" id="logSecs">&mdash;<span class="u">s</span></div></div>
+      <div class="tile"><div class="k">File</div><div class="v" id="logPath" style="font-size:12px;word-break:break-all">&mdash;</div></div>
+    </div>
+    <div class="note info" id="imuLogMsg">Nothing is being recorded.</div>
   </section>
 
   <section class="block">
@@ -999,7 +1186,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     <div class="fs"><b>4</b> Save</div>
   </div>
 
-  <div style="display:grid;grid-template-columns:1.25fr 1fr;gap:16px" id="calGrid">
+  <div class="calgrid" id="calGrid">
     <section class="block" style="margin:0">
       <h3>Live view <span class="tag" id="calSeenTag">looking&hellip;</span></h3>
       <div class="viewport" style="aspect-ratio:4/3">
@@ -1012,6 +1199,10 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       </div>
       <div class="note info" id="calLiveMsg">Hold the board so the whole of it is
       in view.</div>
+      <div class="row" style="margin-top:9px">
+        <button class="btn go" id="calFixSize" hidden>Use the size that was found</button>
+        <button class="btn" id="btnCalWhy">Why can it not see the board?</button>
+      </div>
     </section>
 
     <div style="display:flex;flex-direction:column;gap:16px">
@@ -1032,6 +1223,11 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
         not squares. A board of 10&times;7 squares has 9&times;6 inner corners.
         Getting this wrong is the commonest way to end up with a calibration
         that looks fine and is wrong.</div>
+        <div class="note info" style="margin-top:8px">A board with small
+        squares needs pixels to match. One square has to land on roughly
+        15 pixels or more, so for a 7.5&nbsp;mm board set the colour stream to
+        <b>1280&times;720</b> or higher on the Camera page and keep the board
+        filling most of the frame.</div>
         <button class="btn primary wide" id="btnCalBegin" style="margin-top:10px">Start</button>
       </section>
 
@@ -1114,6 +1310,45 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   </section>
 </main>
 </div></div>
+
+<!-- ==================== THE JOG DOCK ====================
+     Present on every page. The pads inside it write the SAME jog vector the
+     Robot page's pads write, so there is one place a velocity leaves this
+     console no matter which page the operator is looking at. -->
+<aside class="dock min" id="jogDock" aria-label="Move the robot">
+  <div class="dockbar" id="dockBar">
+    <i class="dot" id="dockDot" style="background:var(--text-3)"></i>
+    <span class="t">Move the robot</span>
+    <span class="sp" id="dockSpeedV">40 mm/s</span>
+    <span class="sp" id="dockCaret">&#9650;</span>
+  </div>
+  <div class="dockbody" id="dockBody" hidden>
+    <div class="row" style="margin-bottom:9px">
+      <div class="seg" id="dockFrameSeg">
+        <button class="segb on" data-frame="base">Table axes</button>
+        <button class="segb" data-frame="tool">Tool axes</button>
+      </div>
+      <button class="btn danger" id="dockStop" style="margin-left:auto">Stop</button>
+    </div>
+    <div class="dockpads">
+      <div class="pad"><div class="pname">Across the table</div>
+        <div class="disc" id="padXY2"><div class="knob"></div></div>
+        <div class="ax">left/right &middot; fwd/back</div></div>
+      <div class="pad"><div class="pname">Up &amp; rotate</div>
+        <div class="disc" id="padZR2"><div class="knob"></div></div>
+        <div class="ax">up/down &middot; turn</div></div>
+    </div>
+    <div class="speedrow" style="margin-top:10px">
+      <span style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.07em;font-weight:600">Speed</span>
+      <input type="range" id="dockSpeed" min="5" max="150" value="40"/>
+    </div>
+    <div class="dockxyz">
+      <div id="dockX">X &mdash;</div><div id="dockY">Y &mdash;</div><div id="dockZ">Z &mdash;</div>
+    </div>
+    <div class="hint" style="margin-top:8px">Same controls as the Robot page.
+    Keyboard control, when it is switched on there, works on every page too.</div>
+  </div>
+</aside>
 
 <script src="vendor/three/three.min.js"></script>
 <script src="vendor/three/OrbitControls.js"></script>

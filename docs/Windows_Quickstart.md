@@ -310,4 +310,4 @@ Window 1:  cd C:\SONAIR ;  .\start_agent.ps1
 Window 2:  cd C:\SONAIR ;  .\serve_console.ps1
 ```
 
-Then `http://localhost:8000/Remote_control_Benchmark.html`.
+Then `http://localhost:8000/SONAIR_Console.html`.

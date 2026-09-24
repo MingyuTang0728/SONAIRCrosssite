@@ -36,7 +36,7 @@ The badge next to it should read `LINK ACTIVE`.
 In the terminal running `multimodal_bridge.py`, look for:
 
 ```
-RealSense D435i started  serial=...  stereo=640x480@30  rgb=640x360@30
+RealSense D435i started  serial=...  stereo=640x480@30  rgb=1280x720@30
 depth intrinsics fx=... fy=... cx=... cy=... scale=0.001
 D435i IMU started (accel 63 Hz, gyro 200 Hz)
 ```
@@ -91,7 +91,7 @@ lies about what the data was captured at.
 | Setting | Value | Why |
 |---|---|---|
 | Stereo | 640×480 @ 30 | the sweet spot for depth quality against bandwidth |
-| RGB | 640×360 @ 30 | anything higher just fills the socket |
+| RGB | 1280×720 @ 30 | **do not lower this if you calibrate.** The board is detected in the colour image, and the detector needs about 15 pixels between corners. A 7.5 mm square at 400 mm lands on ~11 px at 640×360 and ~23 px at 1280×720 — the difference between a board that is found and one that is reported as absent while it is plainly in shot |
 | Emitter | Laser | needed for depth on low-texture surfaces — a machined metal face has almost no texture |
 | Auto exposure | on | until you have a controlled lighting setup |
 | Post-processing | on | spatial + temporal + hole fill, already wired in the agent |

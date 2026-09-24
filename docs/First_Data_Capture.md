@@ -142,7 +142,7 @@ symptom.
 ```bash
 cd /path/to/SONAIRCrosssite
 python -m http.server 8000
-# then open http://localhost:8000/Remote_control_Benchmark.html
+# then open http://localhost:8000/SONAIR_Console.html
 ```
 
 `file://` blocks `fetch` of the vendored scripts under most browsers' CORS rules.
@@ -224,8 +224,8 @@ temperatures; it does not carry IO bits, program state or speed scaling.
 python -m http.server 8000
 ```
 
-Open `http://localhost:8000/Remote_control_Benchmark.html` → **Robot & 3D scan**
-→ Connect bridge → Start UR service.
+Open `http://localhost:8000/SONAIR_Console.html` → step **1 Connect**
+→ Connect, then step **2 Robot** → Start the robot link.
 
 You should see the force card reading, joints populating, and the inertial table
 showing `ind0` at ~200 Hz.

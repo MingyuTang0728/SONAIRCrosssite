@@ -210,6 +210,7 @@ global_rgb_frame   = None
 global_depth_frame = None   # D435i aligned depth (colormap, for display)
 global_depth_raw   = None   # D435i aligned depth, RAW uint16 — metric, for scan3d
 global_depth_intr  = None   # CameraIntrinsics read FROM the camera, never guessed
+global_color_intr  = None   # same grid: depth is aligned to colour before use
 _CAMERA_NOTES      = []     # mode substitutions the negotiator had to make
 _CAMERA_LAST_ERROR = ""     # last startup failure, already explained
 global_ir1_frame   = None   # D435i left IR
@@ -243,7 +244,13 @@ _rs_config       = {
     "post_proc":    True,
     "colormap":     2,
     "depth_units":  0.001,
-    "rgb_res":      "640x360",
+    # 1280x720, not 640x360. The colour stream is what the calibration board
+    # is detected in, and detection needs enough pixels across one square: a
+    # 7.5 mm square at 400 mm standoff lands about 11 px across at 640x360 and
+    # about 23 px at 1280x720. Below roughly 15 px the corner detector stops
+    # finding dense boards at all, which presents as "board not detected" with
+    # a board that is plainly in shot and perfectly in focus.
+    "rgb_res":      "1280x720",
     "rgb_fps":      30,
     "rgb_en":       True,
     "rgb_ae":       True,
@@ -502,7 +509,7 @@ def camera_thread():
     if not _HAS_VISION:
         return
     global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame
-    global global_depth_raw, global_depth_intr, global_frame_meta
+    global global_depth_raw, global_depth_intr, global_color_intr, global_frame_meta
 
     while True:  # outer loop: restart pipeline on config change
         _rs_restart_evt.clear()
@@ -591,15 +598,34 @@ def camera_thread():
             try:
                 depth_sensor_for_scale = dev.first_depth_sensor()
                 _scale = depth_sensor_for_scale.get_depth_scale()
-                _vsp = profile.get_stream(rs.stream.depth).as_video_stream_profile()
+                # THE COLOUR intrinsics, not the depth ones.
+                #
+                # Every depth frame here is passed through align(stream.color)
+                # before anything touches it, so the array called "depth" is
+                # on the COLOUR image grid and carries the COLOUR intrinsics.
+                # Reading the unaligned depth profile instead gave fx from a
+                # 640x480 depth stream for pixels measured on a 1280x720
+                # colour image -- roughly half the true focal length -- which
+                # scales every deprojected point, every board pose and the
+                # hand-eye answer that follows from them by that same factor,
+                # consistently enough that nothing ever looks wrong.
+                _csp = profile.get_stream(rs.stream.color).as_video_stream_profile() \
+                    if cfg_snap["rgb_en"] else None
+                _dsp = profile.get_stream(rs.stream.depth).as_video_stream_profile() \
+                    if cfg_snap["depth_en"] else None
+                _vsp = _csp or _dsp
                 _i = _vsp.get_intrinsics()
                 if _HAS_EXT:
                     from scan3d import CameraIntrinsics
                     global_depth_intr = CameraIntrinsics.from_realsense(_i, _scale)
-                    log.info("depth intrinsics fx=%.1f fy=%.1f cx=%.1f cy=%.1f "
-                             "scale=%.6f", _i.fx, _i.fy, _i.ppx, _i.ppy, _scale)
+                    global_color_intr = global_depth_intr
+                    log.info("intrinsics (%s, aligned grid) fx=%.1f fy=%.1f "
+                             "cx=%.1f cy=%.1f %dx%d scale=%.6f",
+                             "colour" if _csp else "depth",
+                             _i.fx, _i.fy, _i.ppx, _i.ppy,
+                             _i.width, _i.height, _scale)
             except Exception as e:
-                log.warning("could not read depth intrinsics: %s — "
+                log.warning("could not read intrinsics: %s — "
                             "3D reconstruction will refuse to start", e)
             log.info("RealSense D435i started  serial=%s  stereo=%dx%d@%d  rgb=%dx%d@%d",
                      serial, sw, sh, sfps, rw, rh, rfps)
@@ -983,7 +1009,7 @@ def _handle_inspect(data: dict):
 # a browser, and are needed by the NEXT step, so serialising them out and back
 # would be pure cost. What crosses the socket is numbers and decisions.
 # ============================================================
-_HE = {"session": None}
+_HE = {"session": None, "last_deep": 0.0}
 _MV = {"session": None, "region": None, "plan": None}
 
 
@@ -1054,7 +1080,19 @@ def _handle_handeye(data: dict):
         spec = (sess.spec if sess else handeye.TargetSpec(
             **{k: v for k, v in (data.get("target") or {}).items()
                if k in handeye.TargetSpec.__dataclass_fields__}))
-        res = handeye.detect_target(color, spec, intr)
+        # Deep search — every presentation of the image, plus the hunt for
+        # what size the board actually is — costs several seconds on a dense
+        # board, and this runs three times a second. So it runs on a timer of
+        # its own: quick on every frame, deep once every few seconds while the
+        # board is not being found, and immediately when the operator asks.
+        # The operator still gets "it is a 24x17 board" without pressing
+        # anything, and the socket is never blocked waiting for it.
+        now = time.monotonic()
+        deep = bool(data.get("deep")) or (now - _HE.get("last_deep", 0.0) > 5.0)
+        res = handeye.detect_target(color, spec, intr,
+                                    effort="full" if deep else "quick")
+        if deep and not res.get("ok"):
+            _HE["last_deep"] = now
         # The corner list is for drawing only; cap it so a 9x14 board does not
         # push a 500-point array through the socket 10 times a second.
         if res.get("corners") and len(res["corners"]) > 200:
@@ -1111,6 +1149,9 @@ def _handle_handeye(data: dict):
         with camera_lock:
             color = global_rgb_frame
             intr = global_depth_intr
+        # A capture happens once, with the arm stopped and the operator
+        # waiting. Nothing is saved by searching less hard here, and a pose
+        # lost to a quick search costs a whole move.
         return {"type": "handeye_capture_res",
                 **sess.add(color, _tcp_now(), intr)}
     if mtype == "handeye_undo":

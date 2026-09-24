@@ -468,6 +468,10 @@
     // on every reading, so anything appended to it survives about 50 ms.
     att.units = (l.gyro_units && l.gyro_units !== "deciding")
       ? { units: l.gyro_units, basis: l.gyro_units_basis || "" } : null;
+    // The whole health block, kept for the Sensor information card. It comes
+    // from a different message than the readings do, so it is held rather
+    // than looked up when the card is drawn.
+    linkHealth = l;
 
     // A binary stream with no field names has had its channels worked out
     // from the readings themselves. Show what that came to: a wrong guess is
@@ -566,54 +570,231 @@
     ctx.fillText("down", cx, cy + s * 1.3 + 13);
   }
 
-  /* ---- live traces ---------------------------------------------------- */
-  var strip = { ch: "gyro", buf: [], max: 420 };
-  seg("stripSeg", "ch", function (c) { strip.ch = c; strip.buf = []; drawStrip(); });
+  /* ---- every reading, all at once -------------------------------------
+     One card per measurement, each with its own chart, all drawn together.
 
-  function drawStrip() {
-    var cv = $("imuStrip"); if (!cv) return;
+     Drawing is decoupled from arrival deliberately. Readings land about
+     twenty times a second and there are seven charts; redrawing all seven on
+     every message means a hundred and forty canvas repaints a second on the
+     same main thread that decodes the camera frames and runs the 3D view,
+     and the page that results is slower than the robot it is meant to be
+     watching. Arrival appends to a buffer and nothing else; a single
+     animation frame draws whatever is in the buffers, at most fifteen times
+     a second, and only while this page is actually on screen.
+     --------------------------------------------------------------------- */
+  var SERIES4 = ["#3987e5", "#c96f3c", "#1f9b86", "#a072c8"];
+
+  var CHANNELS = [
+    { key: "euler", cv: "chEuler", vals: "cEulerVals", names: ["Roll", "Pitch", "Yaw"],
+      unit: "deg", card: "cardEuler", dp: 1,
+      read: function (u, a) { return a.euler; } },
+    { key: "accel", cv: "chAccel", vals: "cAccelVals", names: ["X", "Y", "Z"],
+      unit: "m/s²", card: "cardAccel", dp: 2,
+      read: function (u) { return u.accel || null; } },
+    { key: "gyro", cv: "chGyro", vals: "cGyroVals", names: ["X", "Y", "Z"],
+      unit: "deg/s", card: "cardGyro", dp: 2,
+      // Held canonically in radians per second, shown in degrees per second,
+      // because a teach pendant, a URScript speed and every datasheet the
+      // operator has in front of them are in degrees.
+      read: function (u) {
+        return u.gyro ? u.gyro.map(function (r) { return r * 180 / Math.PI; }) : null;
+      } },
+    { key: "mag", cv: "chMag", vals: "cMagVals", names: ["X", "Y", "Z"],
+      unit: "µT", card: "cardMag", dp: 1,
+      read: function (u) { return u.mag || null; } },
+    { key: "quat", cv: "chQuat", vals: "cQuatVals", names: ["W", "X", "Y", "Z"],
+      unit: "", card: "cardQuat", dp: 4,
+      read: function (u, a) { return a.quat; } },
+    { key: "lin", cv: "chLin", vals: "cLinVals", names: ["X", "Y", "Z"],
+      unit: "m/s²", card: "cardLin", dp: 2,
+      read: function (u) { return u.linear_accel || null; } },
+    { key: "env", cv: "chEnv", vals: "cEnvVals", names: [], unit: "",
+      card: "cardEnv", dp: 2,
+      read: function (u) {
+        var out = [], names = [];
+        if (u.temp_c != null) { out.push(u.temp_c); names.push("Temperature"); }
+        if (u.pressure_hpa != null) { out.push(u.pressure_hpa); names.push("Pressure"); }
+        if (u.humidity_pct != null) { out.push(u.humidity_pct); names.push("Humidity"); }
+        this.names = names;
+        this.unit = names.length === 1 && names[0] === "Temperature" ? "°C" : "";
+        return out.length ? out : null;
+      } }
+  ];
+
+  var charts = { span: 600, frozen: false, dirty: false, last: 0, buf: {}, seen: {} };
+  CHANNELS.forEach(function (c) { charts.buf[c.key] = []; });
+
+  seg("spanSeg", "span", function (v) {
+    charts.span = Number(v);
+    CHANNELS.forEach(function (c) {
+      var b = charts.buf[c.key];
+      while (b.length > charts.span) b.shift();
+    });
+    charts.dirty = true;
+  });
+
+  on("btnImuFreeze", "click", function () {
+    charts.frozen = !charts.frozen;
+    this.textContent = charts.frozen ? "Resume the charts" : "Pause the charts";
+    this.classList.toggle("primary", charts.frozen);
+    say("attMsg", charts.frozen
+      ? "Charts paused. The sensor is still being read and, if a recording is "
+        + "running, still being written to file — only the picture is held."
+      : "Readings are arriving.", charts.frozen ? "warn" : "ok");
+  });
+
+  function pushSample(u) {
+    if (charts.frozen) return;
+    CHANNELS.forEach(function (c) {
+      var v = c.read(u, att);
+      if (!v) return;
+      charts.seen[c.key] = true;
+      var b = charts.buf[c.key];
+      b.push(v.slice());
+      while (b.length > charts.span) b.shift();
+    });
+    charts.dirty = true;
+  }
+
+  /* One generic chart. Any number of series, autoscaled together so that the
+     axes mean the same thing across series — scaling each series to its own
+     range makes a 0.01 wobble and a 10 deg swing look identical, which is the
+     one thing a reader must never be shown. */
+  function drawChart(c) {
+    var cv = $(c.cv); if (!cv) return;
+    var card = $(c.card);
     var ctx = cv.getContext("2d"), W = cv.width, H = cv.height;
+    var b = charts.buf[c.key], n = b.length;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#1c232d"; ctx.fillRect(0, 0, W, H);
-    var pad = 30, n = strip.buf.length;
+    ctx.fillStyle = "#151b23"; ctx.fillRect(0, 0, W, H);
+
     if (n < 2) {
+      if (card) card.classList.toggle("off", !charts.seen[c.key]);
       ctx.fillStyle = "#6e7f90"; ctx.font = "12px system-ui"; ctx.textAlign = "center";
-      ctx.fillText("Waiting for readings", W / 2, H / 2);
+      ctx.fillText(charts.seen[c.key]
+        ? "Waiting for readings"
+        : (c.key === "env" ? "This sensor does not report temperature or pressure"
+           : c.key === "mag" ? "This sensor does not report a magnetic field"
+           : "No readings on this channel"), W / 2, H / 2);
       return;
     }
+    if (card) card.classList.remove("off");
+
+    var k = b[0].length, pad = 24;
     var lo = Infinity, hi = -Infinity;
-    strip.buf.forEach(function (s) {
-      for (var i = 0; i < 3; i++) { if (s[i] < lo) lo = s[i]; if (s[i] > hi) hi = s[i]; }
-    });
+    for (var i = 0; i < n; i++)
+      for (var a = 0; a < k; a++) {
+        var q = b[i][a];
+        if (q < lo) lo = q; if (q > hi) hi = q;
+      }
     if (!(hi > lo)) { hi = lo + 1; }
-    var span = hi - lo; lo -= span * 0.12; hi += span * 0.12;
+    var span = hi - lo; lo -= span * 0.14; hi += span * 0.14;
     var y = function (v) { return H - pad / 2 - (v - lo) / (hi - lo) * (H - pad); };
-    // zero line, when zero is in range — it is the reference every one of
-    // these channels is read against
+
     if (lo < 0 && hi > 0) {
       ctx.strokeStyle = "#2b3441"; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, y(0)); ctx.lineTo(W, y(0)); ctx.stroke();
     }
-    for (var a = 0; a < 3; a++) {
-      ctx.strokeStyle = SERIES[a]; ctx.lineWidth = 2; ctx.beginPath();
-      for (var i = 0; i < n; i++) {
-        var px = i / (strip.max - 1) * W, py = y(strip.buf[i][a]);
-        i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    for (var a2 = 0; a2 < k; a2++) {
+      ctx.strokeStyle = SERIES4[a2 % 4]; ctx.lineWidth = 2;
+      ctx.lineJoin = "round"; ctx.beginPath();
+      for (var j = 0; j < n; j++) {
+        var px = j / (charts.span - 1) * W, py = y(b[j][a2]);
+        j ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
       }
       ctx.stroke();
-      // direct label at the live end: identity never rests on colour alone
-      var last = strip.buf[n - 1][a];
-      var lx = Math.min(W - 6, (n - 1) / (strip.max - 1) * W + 6);
-      ctx.fillStyle = SERIES[a];
-      ctx.font = "bold 11px ui-monospace,monospace"; ctx.textAlign = "left";
-      ctx.fillText(AXIS_NAMES[a], lx, y(last) + 4);
+      // Direct label at the live end: identity never rests on colour alone.
+      var nm = (c.names[a2] || String(a2 + 1)).slice(0, 5);
+      var lx = Math.min(W - 4 - nm.length * 6, (n - 1) / (charts.span - 1) * W + 6);
+      ctx.fillStyle = SERIES4[a2 % 4];
+      ctx.font = "bold 10px ui-monospace,monospace"; ctx.textAlign = "left";
+      ctx.fillText(nm, lx, y(b[n - 1][a2]) + 3.5);
     }
-    ctx.fillStyle = "#6e7f90"; ctx.font = "10px ui-monospace,monospace";
+    ctx.fillStyle = "#6e7f90"; ctx.font = "9.5px ui-monospace,monospace";
     ctx.textAlign = "left";
-    ctx.fillText(fmt(hi, 2), 5, 12);
-    ctx.fillText(fmt(lo, 2), 5, H - 5);
-    var unit = strip.ch === "gyro" ? "deg/s" : strip.ch === "accel" ? "m/s²" : "deg";
-    ctx.textAlign = "right"; ctx.fillText(unit, W - 6, 12);
+    ctx.fillText(fmt(hi, c.dp), 4, 11);
+    ctx.fillText(fmt(lo, c.dp), 4, H - 4);
+    ctx.textAlign = "right";
+    ctx.fillText(Math.round(charts.span / 20) + " s window"
+      + (c.unit ? " · " + c.unit : ""), W - 5, 11);
+  }
+
+  function drawVals(c) {
+    var host = $(c.vals); if (!host) return;
+    var b = charts.buf[c.key];
+    if (!b.length) {
+      host.innerHTML = '<div class="vv"><div class="n">&mdash;</div>'
+        + '<div class="q">no data</div></div>';
+      return;
+    }
+    var last = b[b.length - 1];
+    host.innerHTML = last.map(function (v, i) {
+      return '<div class="vv"><div class="n"><i style="background:'
+        + SERIES4[i % 4] + '"></i>' + esc(c.names[i] || String(i + 1))
+        + '</div><div class="q">' + fmt(v, c.dp) + "</div></div>";
+    }).join("");
+  }
+
+  function drawCards() {
+    CHANNELS.forEach(function (c) { drawVals(c); drawChart(c); });
+  }
+
+  /* The single draw loop. Cheap when nothing changed, silent when the page is
+     not on screen, capped at 15 fps when it is. */
+  function chartTick() {
+    requestAnimationFrame(chartTick);
+    var p = $("page-sensors");
+    if (!p || p.hidden || !charts.dirty) return;
+    var now = performance.now();
+    if (now - charts.last < 66) return;
+    charts.last = now;
+    charts.dirty = false;
+    drawCube();
+    drawCards();
+  }
+  requestAnimationFrame(chartTick);
+
+  /* ---- the sensor-information card ------------------------------------ */
+  var linkHealth = null;
+
+  function renderInfo(u) {
+    var host = $("cInfoBody"); if (!host) return;
+    var l = linkHealth || {};
+    var rows = [];
+    function row(k, v) { if (v != null && v !== "") rows.push([k, v]); }
+    row("Sensor", $("imuUnit") ? $("imuUnit").selectedOptions[0].textContent : "—");
+    row("Connection", l.kind || "—");
+    row("Data format", l.format === "protobuf" ? "binary (Protocol Buffers)"
+      : l.format || "—");
+    row("Readings received", l.samples != null ? String(l.samples) : "—");
+    row("Unreadable packets", l.bad != null ? String(l.bad) : "—");
+    row("Arriving at", u && u.rate_hz != null ? fmt(u.rate_hz, 0) + " Hz" : "—");
+    row("Orientation from", u && u.quat_source === "device"
+      ? "the sensor's own fusion" : u && u.quat_source === "estimated"
+      ? "worked out here from gyro and gravity" : "—");
+    row("Turn rate units", att.units
+      ? (att.units.units === "deg" ? "degrees/s" : "radians/s") : "working it out");
+    row("Timestamps", l.protobuf_time_field
+      ? "field " + l.protobuf_time_field + ", " + (l.protobuf_time_unit || "?")
+      : "time of arrival");
+    if (u && u.clock_jumps) {
+      row("Clock faults", u.clock_jumps + " — the sensor's own timestamp "
+        + "jumped; readings are still good, their spacing is taken from "
+        + "arrival instead");
+    }
+    var m = l.protobuf_mapping;
+    if (m && typeof m === "object") {
+      Object.keys(m).forEach(function (kk) { row(kk, m[kk]); });
+    }
+    host.innerHTML = rows.map(function (r) {
+      return '<div class="kvr"><span>' + esc(r[0]) + "</span><b>"
+        + esc(String(r[1])) + "</b></div>";
+    }).join("");
+    if ($("cInfoTag")) {
+      $("cInfoTag").textContent = l.running ? "connected"
+        : l.kind ? "not running" : "—";
+      $("cInfoTag").className = "tag " + (l.running ? "ok" : "");
+    }
   }
 
   S.on("imu", function (d) {
@@ -647,9 +828,22 @@
       var wb = Math.max.apply(null, u.gyro_bias_deg_s.map(Math.abs));
       chips.push([wb > 2 ? "warn" : "ok", "drift correction " + fmt(wb, 2) + " °/s"]);
     }
-    if (u.device_vs_estimate_deg != null) {
-      chips.push([u.device_vs_estimate_deg > 3 ? "warn" : "ok",
-        "sensor vs our own estimate: " + fmt(u.device_vs_estimate_deg, 1) + "°"]);
+    // What the two orientations can honestly be compared on is the direction
+    // of gravity. Our own estimate has no compass — it runs on gyroscope and
+    // accelerometer alone — so its heading starts at zero and stays
+    // arbitrary, while the sensor fuses a magnetometer and reports a real
+    // one. Differencing the WHOLE rotation therefore reported the heading
+    // offset, routinely well over a hundred degrees, as if it were an error.
+    // It read as a broken sensor and was nothing of the kind.
+    if (u.device_vs_estimate_tilt_deg != null) {
+      chips.push([u.device_vs_estimate_tilt_deg > 3 ? "warn" : "ok",
+        "sensor and our own estimate agree on which way is down to "
+        + fmt(u.device_vs_estimate_tilt_deg, 1) + "°"]);
+    }
+    if (u.clock_jumps) {
+      chips.push(["warn", "the sensor's own clock jumped " + u.clock_jumps
+        + (u.clock_jumps === 1 ? " time" : " times")
+        + " — spacing taken from arrival instead"]);
     }
     if (u.filter_disagreement_deg != null && u.filter_disagreement_deg > 5) {
       chips.push(["warn", "the two estimators disagree — the data is noisy"]);
@@ -669,20 +863,20 @@
     }
 
     // Readings taken before the source settled what units its gyroscope uses
-    // are not plotted, and the trace is cleared when the verdict lands. One
+    // are not plotted, and the traces are cleared when the verdict lands. One
     // pre-verdict sample is a factor-of-57 spike that sets the whole y-axis,
     // which makes the several minutes of real data after it unreadable.
-    if (u._units_pending) { strip.pending = true; }
-    else if (strip.pending) { strip.pending = false; strip.buf = []; }
-    if (!u._units_pending) {
-      var v = strip.ch === "gyro"
-        ? (u.gyro || [0, 0, 0]).map(function (r) { return r * 180 / Math.PI; })
-        : strip.ch === "accel" ? (u.accel || [0, 0, 0]) : att.euler;
-      strip.buf.push(v);
-      while (strip.buf.length > strip.max) strip.buf.shift();
+    if (u._units_pending) { charts.pending = true; }
+    else if (charts.pending) {
+      charts.pending = false;
+      CHANNELS.forEach(function (c) { charts.buf[c.key] = []; });
     }
-
-    if ($("page-sensors") && !$("page-sensors").hidden) { drawCube(); drawStrip(); }
+    if (!u._units_pending) pushSample(u);
+    renderInfo(u);
+    if ($("imuCardsTag")) {
+      $("imuCardsTag").textContent = charts.frozen ? "paused" : "live";
+      $("imuCardsTag").className = "tag " + (charts.frozen ? "warn" : "ok");
+    }
     if (!att.msgDone) {
       att.msgDone = true;
       say("attMsg", "Readings are arriving.", "ok");
@@ -724,8 +918,83 @@
   });
 
   S.page("sensors", function () {
-    drawCube(); drawStrip();
-    if (S.connected()) { send({ type: "sensors_report" }); send({ type: "imu_transports" }); }
+    drawCube(); drawCards();
+    if (S.connected()) {
+      send({ type: "sensors_report" });
+      send({ type: "imu_transports" });
+      send({ type: "imu_log_status" });
+    }
+  });
+
+  /* ---- getting the data out ------------------------------------------- */
+  var lastExport = null;
+
+  on("btnImuLogStart", "click", function () {
+    if (!S.require("imuLogMsg")) return;
+    send({ type: "imu_log_start" });
+  });
+  on("btnImuLogStop", "click", function () { send({ type: "imu_log_stop" }); });
+  on("btnImuExport", "click", function () {
+    if (!S.require("imuLogMsg")) return;
+    say("imuLogMsg", "Writing out what is in memory…", "info");
+    send({ type: "imu_export" });
+  });
+
+  on("btnImuDownload", "click", function () {
+    if (!lastExport) return;
+    // The host has already written the file; this is a second copy for the
+    // operator's own machine, which is not always the machine the agent runs
+    // on. A Blob rather than a data: URL because a long capture is megabytes
+    // and a data: URL of that size is refused without saying so.
+    var blob = new Blob([lastExport.csv], { type: "text/csv" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (lastExport.path || "imu.csv").split(/[\\/]/).pop();
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  });
+
+  function renderLog(d) {
+    if ($("logRows")) $("logRows").textContent = d.rows != null ? d.rows : 0;
+    if ($("logSecs")) $("logSecs").innerHTML = (d.seconds != null ? fmt(d.seconds, 0) : "—")
+      + '<span class="u">s</span>';
+    if ($("logPath")) $("logPath").textContent = d.path || "—";
+    var run = !!d.running;
+    if ($("btnImuLogStart")) $("btnImuLogStart").disabled = run;
+    if ($("btnImuLogStop")) $("btnImuLogStop").disabled = !run;
+    if ($("imuLogTag")) {
+      $("imuLogTag").textContent = run ? "recording" : "not recording";
+      $("imuLogTag").className = "tag " + (run ? "ok" : "");
+    }
+  }
+
+  // The heartbeat already asks for bench_status once a second and the log's
+  // state rides along in it, so the panel stays current with no poll of its
+  // own and no stale "recording" left on screen after a stop from elsewhere.
+  S.on("bench_status", function (d) {
+    if (d && d.imu_log) renderLog(d.imu_log);
+  });
+
+  S.on("imu_log_res", function (d) {
+    renderLog(d);
+    if (d.cmd === "status") return;
+    if (!d.ok) { say("imuLogMsg", d.error || "Could not do that.", "bad"); return; }
+    if (d.cmd === "start") {
+      say("imuLogMsg", "Recording every reading to " + esc(d.path || "")
+        + ". It keeps going while you work — move the arm, run a scan, then "
+        + "come back and stop it.", "ok");
+    } else {
+      say("imuLogMsg", d.note || "Stopped.", "ok");
+    }
+  });
+
+  S.on("imu_export_res", function (d) {
+    if (!d.ok) { say("imuLogMsg", d.error || "Nothing to save.", "warn"); return; }
+    lastExport = d.csv ? d : null;
+    if ($("btnImuDownload")) $("btnImuDownload").disabled = !lastExport;
+    say("imuLogMsg", (d.note || "") + " Saved as " + esc(d.path)
+      + (lastExport ? " — “Download as a spreadsheet” puts a copy on this "
+        + "computer as well." : ""), "ok");
   });
 
   /* =======================================================================
@@ -808,6 +1077,24 @@
     if (cal.n >= 5) calFlow(2);
   }
 
+  on("calFixSize", "click", function () {
+    if (!cal.suggest) return;
+    $("calCols").value = cal.suggest[0];
+    $("calRows").value = cal.suggest[1];
+    this.hidden = true;
+    say("calLiveMsg", "Board size set to " + cal.suggest[0] + " across and "
+      + cal.suggest[1] + " down. If a calibration was already started, press "
+      + "Start again so the new size takes effect.", "ok");
+    if (cal.on) send({ type: "handeye_begin", target: calTarget() });
+    send({ type: "handeye_preview", target: calTarget(), deep: true });
+  });
+
+  on("btnCalWhy", "click", function () {
+    if (!S.require("calLiveMsg")) return;
+    say("calLiveMsg", "Looking at the picture properly — a few seconds.", "info");
+    send({ type: "handeye_preview", target: calTarget(), deep: true });
+  });
+
   S.on("handeye_capture_res", function (d) {
     if (!d.ok) { say("calAdvice", d.error || "Could not use that pose.", "bad"); return; }
     renderCalN(d);
@@ -829,12 +1116,34 @@
     if ($("calSeenTag")) {
       $("calSeenTag").textContent = d.ok
         ? "board found · " + (d.distance_mm || "?") + " mm" : "no board";
+      $("calSeenTag").className = "tag " + (d.ok ? "ok" : "warn");
+    }
+    // A size the detector actually found is not advice, it is an answer, so
+    // it comes with the button that applies it. Counting inner corners wrong
+    // is the commonest calibration mistake there is and it is the one that
+    // leaves the operator with nothing to try.
+    var fix = $("calFixSize");
+    if (fix) {
+      if (!d.ok && d.suggested_size) {
+        cal.suggest = d.suggested_size;
+        fix.hidden = false;
+        fix.textContent = "Use " + d.suggested_size[0] + " × "
+          + d.suggested_size[1] + " instead";
+      } else if (d.ok) { fix.hidden = true; }
     }
     if (!d.ok && d.error) say("calLiveMsg", d.error, "warn");
     else if (d.ok) {
-      say("calLiveMsg", "Board found, " + d.n_corners + " corners"
+      // The square pitch is the margin the detection had. Below about 15 px
+      // it stops working, and an operator watching it fall as the arm backs
+      // away knows why the next pose will fail before it does.
+      var tight = d.pitch_px != null && d.pitch_px < 15;
+      say("calLiveMsg", "Board found, " + (d.n_corners || 0) + " corners"
         + (d.reprojection_px != null ? ", accurate to " + fmt(d.reprojection_px, 2)
-          + " px" : "") + ". Move the arm and capture.", "ok");
+          + " px" : "")
+        + (d.pitch_px != null ? ", squares " + fmt(d.pitch_px, 0) + " px across"
+          + (tight ? " — that is close to the limit; move nearer or raise the "
+            + "colour resolution on the Camera page" : "") : "")
+        + ". Move the arm and capture.", tight ? "warn" : "ok");
     }
     drawCal();
   });

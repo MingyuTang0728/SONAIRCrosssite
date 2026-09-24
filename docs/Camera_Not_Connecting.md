@@ -120,7 +120,7 @@ The banner should now read:
 and shortly after:
 
 ```
-RealSense D435i started  serial=...  stereo=640x480@30  rgb=640x360@30
+RealSense D435i started  serial=...  stereo=640x480@30  rgb=1280x720@30
 depth intrinsics fx=... fy=... cx=... cy=... scale=0.001
 D435i IMU started (accel 63 Hz, gyro 200 Hz)
 ```
@@ -152,7 +152,7 @@ Use the server instead:
 python -m http.server 8000
 ```
 
-then <http://localhost:8000/Remote_control_Benchmark.html>.
+then <http://localhost:8000/SONAIR_Console.html>.
 
 ### Depth was switched off
 

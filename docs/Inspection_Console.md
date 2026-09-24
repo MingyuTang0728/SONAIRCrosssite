@@ -6,8 +6,14 @@ agent's log window where an engineer can read them.
 
 Open it at `http://localhost:8000/SONAIR_Console.html` (not `file://`).
 
-The old `Remote_control_Benchmark.html` is still there as the engineering
-console, for the benchmark CSV scorer and the raw panels.
+`Remote_control_Benchmark.html` and `Remote_control.html` are the pages this
+replaced. They are kept as the record of how the cell was driven before, and
+each now opens with a banner saying so. Do not run an experiment from them:
+the hand-eye calibration, the multi-view scan, the modality registry and the
+inertial logging exist only in the console, and two pages open at once means
+two clients issuing motion to the same arm through the same connection.
+
+**There is one page to drive: `SONAIR_Console.html`.**
 
 ---
 

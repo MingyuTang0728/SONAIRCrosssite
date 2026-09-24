@@ -142,7 +142,7 @@ Or use the **`2 - Start agent`** run configuration, which sets it for you.
 
 ## Step 5 — Open the console
 
-Browser: <http://localhost:8000/Remote_control_Benchmark.html>
+Browser: <http://localhost:8000/SONAIR_Console.html>
 
 **Do not use PyCharm's own "Open in Browser"** on the HTML file. It opens a
 `file://` URL, which blocks the browser from fetching `vendor/three/`. The 3D
@@ -218,5 +218,5 @@ Tab 3  (.venv) PS C:\SONAIR> _
        ← your working tab
 ```
 
-Browser on <http://localhost:8000/Remote_control_Benchmark.html>, in the
+Browser on <http://localhost:8000/SONAIR_Console.html>, in the
 **Robot & 3D scan** view.

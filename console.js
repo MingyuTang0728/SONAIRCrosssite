@@ -51,6 +51,7 @@
 
   /* -------------------------------------------------- navigation --------- */
   var PAGES = ["connect", "robot", "camera", "sensors", "calib", "inspect", "record"];
+  var dockOffered = false;
   document.querySelectorAll("nav.rail .step").forEach(function (b) {
     b.addEventListener("click", function () {
       document.querySelectorAll("nav.rail .step").forEach(function (o) {
@@ -61,6 +62,16 @@
       });
       if (b.dataset.page === "robot") resize3D();
       if (b.dataset.page === "inspect") drawInspect();
+      // The two pages whose whole job is watching something change while the
+      // arm moves get the jog dock opened for them, once. Opening it every
+      // time would fight an operator who closed it on purpose; never opening
+      // it leaves the control they need one page away, which is the problem
+      // it exists to solve.
+      if (/^(sensors|calib)$/.test(b.dataset.page) && !dockOffered) {
+        dockOffered = true;
+        var bar = $("dockBar"), body = $("dockBody");
+        if (bar && body && body.hidden) bar.click();
+      }
       if (API.onPage[b.dataset.page]) API.onPage[b.dataset.page]();
     });
   });
@@ -111,7 +122,7 @@
     switch (d.type) {
       case "ur_state": state.ur = d.s; state.urAge = performance.now(); renderRobot(d.s); break;
       case "state": state.urAge = performance.now(); break;
-      case "tcp_pose": state.urAge = performance.now(); break;
+      case "tcp_pose": state.urAge = performance.now(); dockPose(d.q); break;
       case "camera_frame": onFrame(d); break;
       case "imu": state.imuAge = performance.now(); onImu(d); break;
 
@@ -359,6 +370,8 @@
   $("jogSpeed").addEventListener("input", function () {
     state.jogSpeed = Number(this.value);
     $("jogSpeedV").textContent = state.jogSpeed + " mm/s";
+    var d = $("dockSpeed");
+    if (d) { d.value = this.value; $("dockSpeedV").textContent = state.jogSpeed + " mm/s"; }
   });
 
   function seg(id, attr, onPick) {
@@ -375,7 +388,13 @@
     $("jogStep").hidden = (m !== "step");
     if (m !== "cont") sendVel([0, 0, 0, 0, 0, 0]);
   });
-  seg("jogFrameSeg", "frame", function (f) { jog.frame = f; });
+  seg("jogFrameSeg", "frame", function (f) {
+    jog.frame = f;
+    var host = $("dockFrameSeg");
+    if (host) host.querySelectorAll(".segb").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.frame === f);
+    });
+  });
   seg("stepSeg", "step", function (v) { jog.step = Number(v); });
 
   /* ---- the single place a velocity leaves this page ---- */
@@ -472,6 +491,70 @@
   }
   bindPad("padXY", "xy");
   bindPad("padZR", "zr");
+
+  /* ---- the dock: the same pads, on every page -------------------------
+     Observing a sensor while moving the arm was two pages and no way to do
+     both, so the readings the operator wanted to watch were exactly the ones
+     they had to leave in order to press a button. The dock binds a second
+     pair of pads to the SAME jog.pad vector, so nothing about the control
+     path changes: one velocity, one host-side 20 Hz loop, one watchdog.
+     Two pads writing one key is safe because only one pointer can be on one
+     of them at a time, and releasing either zeroes the pair.
+     ------------------------------------------------------------------- */
+  /* Where the tool actually is, in the dock, so an operator jogging from the
+     Sensors page can see the arm respond without going back to the Robot
+     page to read a number. */
+  function dockPose(q) {
+    if (!q || q.length < 3) return;
+    var dock = $("jogDock");
+    if (!dock || dock.classList.contains("min")) return;
+    var ids = ["dockX", "dockY", "dockZ"], nm = ["X", "Y", "Z"];
+    for (var i = 0; i < 3; i++) {
+      var el = $(ids[i]);
+      if (el) el.textContent = nm[i] + " " + (q[i] * 1000).toFixed(1);
+    }
+  }
+  API.dockPose = dockPose;
+
+  bindPad("padXY2", "xy");
+  bindPad("padZR2", "zr");
+  seg("dockFrameSeg", "frame", function (f) {
+    jog.frame = f;
+    // Keep the Robot page's own selector honest: two controls for one
+    // setting that can disagree is worse than one control.
+    var host = $("jogFrameSeg");
+    if (host) host.querySelectorAll(".segb").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.frame === f);
+    });
+  });
+  (function dockWire() {
+    var bar = $("dockBar"), body = $("dockBody"), dock = $("jogDock");
+    if (!bar || !body || !dock) return;
+    bar.addEventListener("click", function () {
+      var open = body.hidden;
+      body.hidden = !open;
+      dock.classList.toggle("min", !open);
+      $("dockCaret").innerHTML = open ? "&#9660;" : "&#9650;";
+      document.body.classList.toggle("dockopen", open);
+      // Collapsing must also let go of the arm: a pad left deflected under a
+      // panel that is no longer on screen is a moving robot nobody is
+      // looking at.
+      if (!open) { jog.pad.xy = [0, 0]; jog.pad.zr = [0, 0]; sendVel([0,0,0,0,0,0]); }
+    });
+    var sp = $("dockSpeed");
+    if (sp) sp.addEventListener("input", function () {
+      state.jogSpeed = Number(this.value);
+      $("dockSpeedV").textContent = state.jogSpeed + " mm/s";
+      var other = $("jogSpeed");
+      if (other) { other.value = this.value; $("jogSpeedV").textContent = state.jogSpeed + " mm/s"; }
+    });
+    var stop = $("dockStop");
+    if (stop) stop.addEventListener("click", function () {
+      jog.pad.xy = [0, 0]; jog.pad.zr = [0, 0]; jog.keys = {};
+      sendVel([0, 0, 0, 0, 0, 0]);
+      send({ type: "jog_halt" });
+    });
+  })();
 
   /* ---- keyboard ---- */
   $("jogKeys").addEventListener("change", function () {
@@ -1365,6 +1448,18 @@
     if (!live) { lamp("lampImu", "lampImuV", "", "Not connected"); }
     else if (now - state.imuAge < 2000) { /* set by onImu */ }
     else { lamp("lampImu", "lampImuV", "warn", "No data"); }
+
+    // The dock floats over every page, so it carries its own state lamp:
+    // an operator jogging from the Sensors page has no rail lamp in view.
+    var dd = $("dockDot");
+    if (dd) {
+      var ok = live && (now - state.urAge < 2000);
+      dd.style.background = ok ? "var(--ok)" : live ? "var(--warn)" : "var(--text-3)";
+      var bar = $("dockBar");
+      if (bar) bar.title = ok ? "Robot data is live"
+        : live ? "Connected to the agent, but no robot data"
+        : "Not connected to the host agent";
+    }
 
     if (live) {
       send({ type: "bench_status" });

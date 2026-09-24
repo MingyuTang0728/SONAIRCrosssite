@@ -163,7 +163,8 @@ def available() -> tuple[bool, str]:
     return True, ""
 
 
-def detect_target(image, spec: TargetSpec, intrinsics=None) -> dict:
+def detect_target(image, spec: TargetSpec, intrinsics=None,
+                  effort: str = "full") -> dict:
     """
     Find the board in one image and, if intrinsics are given, its pose.
 
@@ -172,6 +173,15 @@ def detect_target(image, spec: TargetSpec, intrinsics=None) -> dict:
     pixel of corner error is roughly 0.1 deg of board rotation, and the
     hand-eye solve amplifies board rotation error directly into tool rotation
     error.
+
+    `effort` trades search depth against latency, and the two callers want
+    opposite things. The live preview runs three times a second and must come
+    back inside that budget, so it gets "quick": the two cheap presentations
+    of the image and a diagnosis that measures rather than searches. A capture
+    happens once, when the operator has stopped the arm and is waiting, so it
+    gets "full": every presentation, plus the search for what size the board
+    actually is. Running the full search on every preview frame is what turns
+    a board that is merely hard to see into a console that appears to hang.
     """
     ok, why = available()
     if not ok:
@@ -189,14 +199,23 @@ def detect_target(image, spec: TargetSpec, intrinsics=None) -> dict:
         found, corners = cv2.findCirclesGrid(
             gray, (spec.cols, spec.rows), cv2.CALIB_CB_ASYMMETRIC_GRID)
     else:
-        found, corners = _find_chessboard(gray, spec.cols, spec.rows)
+        found, corners = _find_chessboard(gray, spec.cols, spec.rows,
+                                          effort=effort)
 
     if not found:
-        return {"ok": False, **_why_not(gray, spec)}
+        return {"ok": False, **_why_not(gray, spec, effort=effort)}
 
     corners = _as_corner_array(corners)
     out = {"ok": True, "n_corners": int(len(corners)),
            "corners": _corner_list(corners)}
+    # Carry the measured square pitch on every success. It is the margin the
+    # detection had: 15 px is the edge, 40 px is comfortable, and an operator
+    # watching it fall as the arm backs away knows why the next pose fails
+    # before it does.
+    pitch = corner_pitch_px(corners, spec.cols, spec.rows)
+    if pitch is not None:
+        out["pitch_px"] = round(pitch, 1)
+    out["frame_px"] = [int(gray.shape[1]), int(gray.shape[0])]
     if intrinsics is not None:
         K, dist = _K_from(intrinsics)
         obj = spec.object_points()
@@ -249,7 +268,85 @@ def _detect_charuco(gray, spec: TargetSpec, intrinsics):
     return out
 
 
-def _find_chessboard(gray, cols, rows):
+def _sb_flags():
+    flags = 0
+    for name in ("CALIB_CB_EXHAUSTIVE", "CALIB_CB_ACCURACY",
+                 "CALIB_CB_NORMALIZE_IMAGE"):
+        flags |= getattr(cv2, name, 0)
+    return flags
+
+
+def _attempt(gray, cols, rows):
+    """One detector pass over one image. Returns corners or None."""
+    if hasattr(cv2, "findChessboardCornersSB"):
+        try:
+            ok, c = cv2.findChessboardCornersSB(gray, (cols, rows), _sb_flags())
+            if ok:
+                return c
+        except Exception:
+            pass
+    try:
+        ok, c = cv2.findChessboardCorners(
+            gray, (cols, rows),
+            cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
+    except Exception:
+        return None
+    if not ok:
+        return None
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+    return cv2.cornerSubPix(gray, _as_corner_array(c), (11, 11), (-1, -1), crit)
+
+
+def _variants(gray, effort="full"):
+    """
+    The same image, presented four ways, cheapest first.
+
+    Each addresses a different real failure of a fine-pitch board seen by a
+    wrist camera:
+
+      plain      — what the camera gave us.
+      contrast   — CLAHE. A board lit from one side has a bright half and a
+                   dark half; a global threshold loses one of them, and local
+                   equalisation does not.
+      upscaled   — 2x with cubic interpolation. The corner detector needs a
+                   minimum number of pixels between corners, and interpolating
+                   invents no detail but does give the sub-pixel fit room to
+                   work when the pitch is 8-12 px. Corners come back in the
+                   upscaled frame and are divided out again, so the caller
+                   never sees the difference.
+      both       — for the board that is both small in frame and unevenly lit,
+                   which is the normal case at the far end of a pose set.
+
+    Ordering matters more than the list does: the plain pass is the one that
+    succeeds almost always, and the rest cost nothing when it does.
+    """
+    yield gray, 1.0
+    try:
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        eq = clahe.apply(gray)
+    except Exception:
+        eq = None
+    if eq is not None:
+        yield eq, 1.0
+    if effort != "full":
+        return
+    h, w = gray.shape[:2]
+    if w * h <= 2_200_000:      # do not 2x a 1080p frame into 8 megapixels
+        try:
+            big = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+        except Exception:
+            big = None
+        if big is not None:
+            yield big, 2.0
+            if eq is not None:
+                try:
+                    yield cv2.resize(eq, (w * 2, h * 2),
+                                     interpolation=cv2.INTER_CUBIC), 2.0
+                except Exception:
+                    pass
+
+
+def _find_chessboard(gray, cols, rows, effort="full"):
     """
     Find the corners, preferring the detector built for dense boards.
 
@@ -263,36 +360,70 @@ def _find_chessboard(gray, cols, rows):
     CALIB_CB_FAST_CHECK is deliberately absent: it is a cheap early reject
     that gives up on exactly the marginal images worth trying harder on, and
     here a detection costs milliseconds while a missed one costs a pose.
+
+    Each detector is then run over several presentations of the image (see
+    `_variants`), because the difference between a board that is found and one
+    that is not is routinely contrast or scale rather than the board.
     """
-    if hasattr(cv2, "findChessboardCornersSB"):
-        flags = 0
-        for name in ("CALIB_CB_EXHAUSTIVE", "CALIB_CB_ACCURACY",
-                     "CALIB_CB_NORMALIZE_IMAGE"):
-            flags |= getattr(cv2, name, 0)
-        try:
-            ok, c = cv2.findChessboardCornersSB(gray, (cols, rows), flags)
-            if ok:
-                return True, c
-        except Exception:
-            pass
-    ok, c = cv2.findChessboardCorners(
-        gray, (cols, rows),
-        cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
-    if ok:
-        crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-        c = cv2.cornerSubPix(gray, _as_corner_array(c), (11, 11), (-1, -1), crit)
-    return ok, c
+    for img, scale in _variants(gray, effort):
+        c = _attempt(img, cols, rows)
+        if c is not None:
+            if scale != 1.0:
+                c = _as_corner_array(c) / float(scale)
+            return True, c
+    return False, None
 
 
-def probe_board_size(gray, cols, rows, span=2):
+def corner_pitch_px(corners, cols, rows):
+    """
+    The mean spacing between neighbouring corners along a row, in pixels.
+
+    This is the number that decides whether a detection was ever possible.
+    Reporting it turns "not detected" from a guess into a measurement, and it
+    is the same number the advice is derived from.
+    """
+    pts = np.asarray(corners, dtype=float).reshape(-1, 2)
+    if len(pts) < cols * rows:
+        return None
+    grid = pts.reshape(rows, cols, 2)
+    d = np.linalg.norm(np.diff(grid, axis=1), axis=2)
+    return float(np.median(d))
+
+
+def expected_pitch_px(spec, gray, intrinsics, distance_mm=None):
+    """
+    How many pixels one square WOULD span, from the optics — no detection
+    needed. Used to tell an operator facing a blank failure whether the board
+    can be resolved at all at this resolution and range.
+    """
+    if intrinsics is None:
+        return None
+    try:
+        K, _ = _K_from(intrinsics)
+        fx = float(K[0, 0])
+    except Exception:
+        return None
+    if distance_mm is None:
+        return None
+    if distance_mm <= 1.0:
+        return None
+    return fx * (spec.square_mm / distance_mm)
+
+
+def probe_board_size(gray, cols, rows, span=2, budget_s=2.5):
     """
     Nothing found at the declared size — what IS on the board?
 
     Tries the sizes around it and the swapped orientation. Miscounting the
     inner corners is the commonest calibration mistake there is, and "no
     25x18 board found" gives the operator nothing to act on, while "this is a
-    24x17 board" ends the problem. Bounded deliberately: this runs on a
-    failure, not on every frame.
+    24x17 board" ends the problem.
+
+    Time-bounded, and deliberately so. An exhaustive search over a dense board
+    costs tens of milliseconds per size, the candidate list is twenty-odd
+    sizes and the variants multiply it again; unbounded, this turns a live
+    preview into a page that appears to have hung. It stops at the budget and
+    says how far it got rather than running long.
     """
     tried = []
     for dc in range(-span, span + 1):
@@ -304,12 +435,20 @@ def probe_board_size(gray, cols, rows, span=2):
     tried.append((rows, cols))          # the axes the other way round
     # nearest first: a miscount is usually off by one
     tried.sort(key=lambda t: abs(t[0] - cols) + abs(t[1] - rows))
-    for c, r in tried[:14]:
+    t0 = time.monotonic()
+    n = 0
+    for c, r in tried:
+        if time.monotonic() - t0 > budget_s:
+            break
+        n += 1
         try:
-            ok, _ = _find_chessboard(gray, c, r)
+            # The plain image only. Probing every size against every variant
+            # is the cross product of two searches and blows the budget on the
+            # first three sizes; a size that is right is found plainly.
+            corners = _attempt(gray, c, r)
         except Exception:
             continue
-        if ok:
+        if corners is not None:
             return (c, r)
     return None
 
@@ -319,16 +458,17 @@ def _sharpness(gray):
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
-def _why_not(gray, spec) -> dict:
+def _why_not(gray, spec, effort: str = "full") -> dict:
     """
     Say what is wrong with THIS image, not what is usually wrong.
 
     A detector that only ever reports "not found" makes the operator guess
-    between the count, the focus, the lighting and the framing. Each of those
-    is measurable, so each is measured.
+    between the count, the focus, the lighting, the framing and the camera
+    resolution. Each of those is measurable, so each is measured.
     """
-    out = {"probed": True}
-    found = probe_board_size(gray, spec.cols, spec.rows)
+    h, w = gray.shape[:2]
+    out = {"probed": effort == "full", "frame_px": [int(w), int(h)]}
+    found = probe_board_size(gray, spec.cols, spec.rows) if effort == "full" else None
     if found:
         out["suggested_size"] = list(found)
         out["error"] = (f"No {spec.cols}x{spec.rows} board here, but a "
@@ -342,6 +482,35 @@ def _why_not(gray, spec) -> dict:
     mean = float(gray.mean())
     out["brightness"] = round(mean, 1)
     reasons = []
+
+    # Resolution first, because it is the one cause the operator cannot see.
+    # A board that is plainly in shot, plainly in focus and plainly lit still
+    # cannot be detected if its squares land on too few pixels, and nothing
+    # about the picture says so. The board's own geometry gives the bound:
+    # if the WHOLE board filled the frame edge to edge, each square would
+    # span this many pixels, and in practice it fills perhaps half of it.
+    if spec.cols > 1 and spec.rows > 1:
+        # The best the optics can do: the board filling the frame exactly,
+        # square on. It bounds every real view, and it is computed rather than
+        # assumed because it is the one cause an operator cannot see — a board
+        # plainly in shot, plainly in focus and plainly lit is still
+        # undetectable if its squares land on too few pixels.
+        best_pitch = min(w / float(spec.cols + 1), h / float(spec.rows + 1))
+        out["best_case_pitch_px"] = round(best_pitch, 1)
+        if best_pitch < 15.0:
+            reasons.append(
+                f"the squares cannot be resolved at this resolution — filling "
+                f"the frame edge to edge, one square of this board would span "
+                f"only {best_pitch:.0f} px at {w}x{h}, and the corner detector "
+                f"needs about 15. Raise the colour resolution on the Camera "
+                f"page to 1280x720 or higher")
+        elif best_pitch < 24.0:
+            reasons.append(
+                f"there is very little margin at this resolution — one square "
+                f"can span at most {best_pitch:.0f} px at {w}x{h}, so the "
+                f"board has to fill almost the whole frame to be read. Raising "
+                f"the colour resolution on the Camera page buys back the "
+                f"margin")
     if sharp < 60:
         reasons.append("the image is blurred — hold the arm still, and give "
                        "the camera a moment to settle after it moves")
@@ -351,11 +520,14 @@ def _why_not(gray, spec) -> dict:
     if mean > 215:
         reasons.append("the picture is washed out — less light, or lower the "
                        "colour exposure")
-    if not reasons:
-        reasons.append(f"no {spec.cols}x{spec.rows} grid was found and no "
-                       "nearby size matched either. Check the whole board is "
-                       "in frame with a clear white margin all round, that it "
-                       "is flat, and that the count is of INNER corners")
+    # Framing is always worth saying, because the detector needs EVERY inner
+    # corner: one row cropped by the edge of the frame fails the whole board,
+    # and at a steep angle the top row leaves the picture before the operator
+    # notices.
+    reasons.append("check the whole board is in frame with a clear pale "
+                   f"margin all round, that it is flat, and that "
+                   f"{spec.cols}x{spec.rows} is its count of INNER corners "
+                   "(a board of 26x19 squares has 25x18 inner corners)")
     out["error"] = ("Board not detected: " + "; ".join(reasons)
                     + f". (sharpness {sharp:.0f}, brightness {mean:.0f}/255)")
     return out
