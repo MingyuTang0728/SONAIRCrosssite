@@ -248,6 +248,15 @@ logging.basicConfig(
 )
 log = logging.getLogger("agent")
 
+try:
+    import automation
+    _HAS_AUTO = True
+    _AUTO_ERR = ""
+except Exception as e:      # noqa: BLE001
+    automation = None
+    _HAS_AUTO = False
+    _AUTO_ERR = str(e)
+
 
 def f5(val):
     """Format a float with no scientific notation — URScript can't parse 1e-5."""
@@ -1533,6 +1542,171 @@ def _encode_preview(frames: dict, width: int, quality: int) -> dict:
     return out
 
 
+# ============================================================
+# Automation — the cell runs the job
+# ============================================================
+
+class _CellContext:
+    """
+    Everything `automation` is allowed to touch, as plain callables.
+
+    The runner takes this rather than importing the bridge, which is what
+    lets the stop path and the failure path be exercised with no robot, no
+    camera and no sensors attached. A runner that has only ever been tried
+    against real hardware has never had its abort tested.
+    """
+
+    def robot_enabled(self) -> bool:
+        return bool(_HAS_EXT and ur_bridge_ext.UR.enabled)
+
+    def robot_state(self) -> dict:
+        return (ur_bridge_ext.UR.state() if _HAS_EXT else {}) or {}
+
+    def robot_health(self) -> dict:
+        st = (ur_bridge_ext.UR.status() if _HAS_EXT else {}) or {}
+        return st.get("health", {}) or {}
+
+    def robot_host(self) -> str:
+        return robot_host()
+
+    def tcp_pose(self):
+        with data_lock:
+            return list(global_tcp_pose) if global_tcp_pose else None
+
+    def camera_age_s(self):
+        if not _HAS_VISION:
+            return None
+        with camera_lock:
+            return 0.0 if global_rgb_frame is not None else None
+
+    def camera_info(self) -> dict:
+        with _rs_config_lock:
+            cfg = dict(_rs_config)
+        with camera_lock:
+            intr = global_color_intr or global_depth_intr
+        out = {"colour": cfg.get("rgb_res"), "depth": cfg.get("stereo_res"),
+               "emitter": cfg.get("emitter")}
+        if intr is not None:
+            for k in ("fx", "fy", "cx", "cy", "depth_scale"):
+                v = getattr(intr, k, None)
+                if v is not None:
+                    out[k] = round(float(v), 6)
+        return out
+
+    def calibration(self):
+        if not _HAS_HANDEYE:
+            return None
+        sess = _HE.get("session")
+        if sess is not None and sess.result and sess.result.get("ok"):
+            return sess.result
+        loaded = handeye.load()
+        return loaded if loaded.get("ok") else None
+
+    def imu_status(self) -> dict:
+        return bench_agent.HUB.status() if _HAS_BENCH else {}
+
+    def clock_status(self) -> dict:
+        return bench_agent.MASTER.status() if _HAS_BENCH else {}
+
+    def channel_registry(self):
+        if not _HAS_BENCH:
+            return []
+        try:
+            return sensor_hub.HUB.report().get("channels", [])
+        except Exception:
+            return []
+
+    def out_dir(self) -> str:
+        return str(Path("bench_runs").resolve().parent)
+
+    # -- actions ---------------------------------------------------------
+    def move_to(self, pose, speed):
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.movel(list(pose), a=0.5, v=float(speed))
+
+    def halt(self):
+        if _HAS_EXT and ur_bridge_ext.UR.jog is not None:
+            ur_bridge_ext.UR.jog.halt()
+
+    def is_recording(self) -> bool:
+        return bool(_HAS_BENCH and bench_agent.RECORDER.is_recording())
+
+    def record_start(self, args) -> dict:
+        return bench_agent.RECORDER.start(**args)
+
+    def record_stop(self) -> dict:
+        return bench_agent.RECORDER.stop()
+
+    def imu_logging(self) -> bool:
+        return bool(_HAS_BENCH and bench_agent.LOGGER.running())
+
+    def imu_log_start(self, path=None) -> dict:
+        return bench_agent.LOGGER.start(path)
+
+    def imu_log_stop(self) -> dict:
+        return bench_agent.LOGGER.stop()
+
+    def job_started_at(self) -> float:
+        return RUNNER.started_at if RUNNER else 0.0
+
+    def export_dataset(self, name) -> dict:
+        return automation.export_dataset(
+            name, out_root=Path("datasets"), runs_dir=Path("bench_runs"),
+            imu_dir=Path("imu_logs"), ctx=self)
+
+
+CELL = _CellContext()
+RUNNER = automation.Runner(CELL) if _HAS_AUTO else None
+
+
+def _handle_automation(data: dict):
+    mtype = data.get("type")
+    if not _HAS_AUTO:
+        return {"type": "auto_res", "ok": False,
+                "error": f"automation unavailable: {_AUTO_ERR}"}
+
+    if mtype == "auto_status":
+        return {"type": "auto_status_res", "ok": True, **RUNNER.status()}
+
+    if mtype == "auto_preflight":
+        return {"type": "auto_preflight_res", **automation.preflight(CELL)}
+
+    if mtype == "auto_jobs":
+        jobs = automation.builtin_jobs(CELL.tcp_pose())
+        return {"type": "auto_jobs_res", "ok": True,
+                "jobs": {k: v.as_dict() for k, v in jobs.items()}}
+
+    if mtype == "auto_start":
+        spec = data.get("job")
+        if isinstance(spec, str):
+            jobs = automation.builtin_jobs(CELL.tcp_pose())
+            job = jobs.get(spec)
+            if job is None:
+                return {"type": "auto_res", "ok": False,
+                        "error": f"no job called {spec!r}"}
+        elif isinstance(spec, dict):
+            job = automation.Job(
+                name=spec.get("name", "job"),
+                steps=spec.get("steps") or [],
+                repeats=int(spec.get("repeats", 1)),
+                sweep_key=spec.get("sweep_key", ""),
+                sweep_values=spec.get("sweep_values") or [],
+                notes=spec.get("notes", ""))
+        else:
+            return {"type": "auto_res", "ok": False, "error": "no job given"}
+        return {"type": "auto_res", "cmd": "start", **RUNNER.start(job)}
+
+    if mtype == "auto_stop":
+        return {"type": "auto_res", "cmd": "stop", **RUNNER.stop()}
+
+    if mtype == "auto_export":
+        return {"type": "auto_res", "cmd": "export",
+                **CELL.export_dataset(data.get("name") or "dataset")}
+
+    return None
+
+
 async def local_handler(websocket):
     log.info("local browser connected")
 
@@ -1550,6 +1724,7 @@ async def local_handler(websocket):
         errors = 0
         slow = 0
         period = 0.05
+        last_health = 0.0
         while True:
             try:
                 if _HAS_VISION and prefs["streams"]:
@@ -1603,6 +1778,32 @@ async def local_handler(websocket):
                                else {"type": "imu", "units": units})
                         msg["rec"] = bench_agent.RECORDER.status()["recording"]
                         await websocket.send(json.dumps(msg))
+                # A HEARTBEAT THAT DOES NOT DEPEND ON PICTURES.
+                #
+                # The lamps used to infer "camera alive" from the arrival of
+                # camera frames. Now that a page only gets the streams it
+                # displays, that inference says "no picture" on every page
+                # that is not showing one -- which is true and useless, and
+                # reads as a fault. Liveness is reported on its own, once a
+                # second, and costs a couple of hundred bytes.
+                now_h = time.monotonic()
+                if now_h - last_health >= 1.0:
+                    last_health = now_h
+                    with camera_lock:
+                        cam_ok = global_rgb_frame is not None
+                        cam_shape = (list(global_rgb_frame.shape[1::-1])
+                                     if cam_ok else None)
+                    await websocket.send(json.dumps({
+                        "type": "cell_health",
+                        "camera": {"available": _HAS_VISION, "live": cam_ok,
+                                   "size": cam_shape,
+                                   "error": "" if _HAS_VISION else _VISION_ERR},
+                        "robot": {"host": robot_host(),
+                                  "enabled": bool(_HAS_EXT and ur_bridge_ext.UR.enabled)},
+                        "streams": sorted(prefs["streams"]),
+                        "preview_fps": round(1.0 / period, 1),
+                    }))
+
                 if _HAS_EXT and ur_bridge_ext.UR.enabled:
                     # The full field set, at a tenth of the RTDE rate. The UI
                     # cannot use 125 Hz and sending it would spend the whole
@@ -1826,6 +2027,12 @@ async def _dispatch(websocket, data, mtype, prefs):
         if reply is not None:
             await websocket.send(json.dumps(reply))
         return
+    if str(mtype or "").startswith("auto_"):
+        reply = await asyncio.to_thread(_handle_automation, data)
+        if reply is not None:
+            await websocket.send(json.dumps(reply))
+        return
+
     if str(mtype or "").startswith("rs_"):
         reply = await asyncio.to_thread(_handle_rs, data)
         if reply is not None:

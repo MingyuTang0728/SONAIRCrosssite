@@ -2067,3 +2067,282 @@
     }
   });
 })();
+
+/* =========================================================================
+   5. AUTOMATION — the cell runs the job
+   =========================================================================
+   The console stops being a set of buttons somebody presses in order and
+   becomes a thing that executes a declared job. Everything here is a view of
+   state the agent owns: the page never tracks where a job has got to, it
+   renders what the agent says. A browser that reloads mid-campaign therefore
+   rejoins the running job rather than losing it.
+   ====================================================================== */
+(function () {
+  var S = window.SONAIR;
+  if (!S) return;
+  var $ = S.$, send = S.send, say = S.say, fmt = S.fmt, esc = S.esc, on = bindOn;
+
+  function bindOn(id, ev, fn) {
+    var el = $(id);
+    if (el) el.addEventListener(ev, fn);
+  }
+
+  var auto = { jobs: {}, pick: "", last: null, pollTimer: null };
+
+  /* ---- pre-flight ------------------------------------------------------ */
+  function renderPreflight(d) {
+    var box = $("pfList"); if (!box) return;
+    var checks = (d && d.checks) || [];
+    if (!checks.length) return;
+    box.innerHTML = checks.map(function (c) {
+      return '<div class="chk-row"><span class="s ' + esc(c.state) + '">'
+        + esc(c.state) + '</span><span class="l">' + esc(c.label)
+        + '</span><span class="d">' + esc(c.detail || "") + "</span></div>";
+    }).join("");
+    var tag = $("pfTag");
+    if (tag) {
+      tag.textContent = d.ok ? "ready" : (d.blocking || []).length + " blocking";
+      tag.className = "tag " + (d.ok ? "ok" : "bad");
+    }
+    say("pfMsg", d.summary || "", d.ok ? "ok" : "bad");
+    var run = $("btnJobRun");
+    if (run) run.disabled = !d.ok;
+  }
+
+  on("btnPreflight", "click", function () {
+    if (!S.require("pfMsg")) return;
+    say("pfMsg", "Checking…", "info");
+    send({ type: "auto_preflight" });
+  });
+  S.on("auto_preflight_res", renderPreflight);
+
+  /* ---- the job --------------------------------------------------------- */
+  S.on("auto_jobs_res", function (d) {
+    if (!d.ok) return;
+    auto.jobs = d.jobs || {};
+    var sel = $("jobPick"); if (!sel) return;
+    var keys = Object.keys(auto.jobs);
+    sel.innerHTML = keys.map(function (k) {
+      return '<option value="' + esc(k) + '">' + esc(k.replace(/_/g, " ")) + "</option>";
+    }).join("");
+    if (!auto.pick || keys.indexOf(auto.pick) < 0) auto.pick = keys[0] || "";
+    sel.value = auto.pick;
+    renderJob();
+  });
+
+  on("jobPick", "change", function () { auto.pick = this.value; renderJob(); });
+  ["jobRepeats", "jobSweep"].forEach(function (id) {
+    on(id, "input", renderPlanTag);
+  });
+
+  function sweepValues() {
+    return String(($("jobSweep") || {}).value || "")
+      .split(/[,\s]+/).map(parseFloat)
+      .filter(function (v) { return isFinite(v) && v > 0; });
+  }
+
+  function currentJob() {
+    var base = auto.jobs[auto.pick];
+    if (!base) return null;
+    var job = JSON.parse(JSON.stringify(base));
+    // Only a job that actually sweeps takes the sweep controls; applying them
+    // to a one-shot job would silently turn it into a campaign.
+    if (job.sweep_key) {
+      job.repeats = Math.max(1, Number(($("jobRepeats") || {}).value) || 1);
+      var sv = sweepValues();
+      if (sv.length) job.sweep_values = sv;
+    }
+    return job;
+  }
+
+  function planSize(job) {
+    if (!job) return 0;
+    var vals = (job.sweep_key && job.sweep_values.length) ? job.sweep_values.length : 1;
+    return vals * Math.max(1, job.repeats) * job.steps.length;
+  }
+
+  function renderPlanTag() {
+    var job = currentJob(), tag = $("jobPlanTag");
+    if (!tag) return;
+    if (!job) { tag.textContent = "—"; return; }
+    var vals = (job.sweep_key && job.sweep_values.length) ? job.sweep_values.length : 1;
+    var iters = vals * Math.max(1, job.repeats);
+    tag.textContent = iters + (iters === 1 ? " pass" : " passes") + " · "
+      + planSize(job) + " steps";
+  }
+
+  var STEP_WORDS = {
+    preflight: "check the cell is fit to run",
+    dwell: "wait for the arm to settle",
+    move: "go to one pose",
+    trajectory: "run the motion",
+    record_start: "start a run file",
+    record_stop: "close the run file",
+    imu_log_start: "start logging every inertial sample",
+    imu_log_stop: "close the inertial log",
+    "export": "write the dataset folder",
+    message: "note in the log"
+  };
+
+  function renderJob() {
+    var job = currentJob();
+    var box = $("jobSteps");
+    if (!job || !box) return;
+    say("jobNote", job.notes || "", "info");
+    box.innerHTML = job.steps.map(function (st, i) {
+      var extra = [];
+      if (st.seconds != null) extra.push(st.seconds + " s");
+      if (st.poses) extra.push(st.poses.length + " poses");
+      if (st.speed != null) extra.push(st.speed + " m/s");
+      if (st.text) extra.push(st.text);
+      return '<div class="stp" data-i="' + i + '"><span class="i">'
+        + (i + 1) + '</span><span class="k">' + esc(st.kind) + '</span>'
+        + '<span class="a">' + esc(STEP_WORDS[st.kind] || "")
+        + (extra.length ? " · " + esc(extra.join(" · ")) : "") + "</span></div>";
+    }).join("");
+    renderPlanTag();
+  }
+
+  on("btnJobRun", "click", function () {
+    if (!S.require("pfMsg")) return;
+    var job = currentJob();
+    if (!job) { say("pfMsg", "Pick a job first.", "warn"); return; }
+    say("pfMsg", "Starting " + job.name + "…", "info");
+    send({ type: "auto_start", job: job });
+  });
+
+  on("btnJobStop", "click", function () { send({ type: "auto_stop" }); });
+  on("rbStop", "click", function () { send({ type: "auto_stop" }); });
+
+  S.on("auto_res", function (d) {
+    if (d.cmd === "export") {
+      if (!d.ok) { say("dsMsg", d.error || "Export failed.", "bad"); return; }
+      renderDataset(d);
+      return;
+    }
+    if (!d.ok) {
+      say("pfMsg", d.error || "The job would not start.", "bad");
+      if (d.preflight) renderPreflight(d.preflight);
+      return;
+    }
+    renderRun(d);
+  });
+
+  /* ---- progress -------------------------------------------------------- */
+  function renderRun(d) {
+    auto.last = d;
+    var running = !!d.running;
+    var st = d.state || "idle";
+
+    if ($("runTag")) {
+      $("runTag").textContent = st;
+      $("runTag").className = "tag " + (st === "done" ? "ok"
+        : st === "failed" ? "bad" : running ? "warn" : "");
+    }
+    if ($("runStep")) $("runStep").textContent = d.steps ? d.step + " / " + d.steps : "—";
+    if ($("runTime")) $("runTime").innerHTML = fmt(d.seconds || 0, 0) + '<span class="u">s</span>';
+    if ($("runFiles")) $("runFiles").textContent = (d.produced || []).length;
+    if ($("btnJobStop")) $("btnJobStop").disabled = !running;
+    if ($("btnJobRun")) $("btnJobRun").disabled = running;
+
+    // the bar at the top of every page
+    var bar = $("runBar");
+    if (bar) {
+      bar.classList.toggle("live", running);
+      bar.classList.toggle("failed", st === "failed");
+    }
+    if ($("rbState")) $("rbState").textContent = running ? "running a job" : st;
+    if ($("rbJob")) $("rbJob").textContent = d.job || "—";
+    if ($("rbStep")) {
+      $("rbStep").textContent = d.steps
+        ? d.step + "/" + d.steps + (d.current ? " " + d.current : "") : "—";
+    }
+    if ($("rbTime")) $("rbTime").textContent = fmt(d.seconds || 0, 0) + "s";
+    if ($("rbFill")) {
+      $("rbFill").style.width = d.steps
+        ? Math.round(100 * d.step / d.steps) + "%" : "0%";
+    }
+    if ($("rbStop")) $("rbStop").hidden = !running;
+
+    // which step is live
+    var box = $("jobSteps");
+    if (box && d.steps) {
+      var perPass = (currentJob() || { steps: [] }).steps.length || 1;
+      var within = ((d.step - 1) % perPass + perPass) % perPass;
+      box.querySelectorAll(".stp").forEach(function (el, i) {
+        el.classList.toggle("now", running && i === within);
+        el.classList.toggle("done", running && i < within);
+      });
+    }
+
+    if ($("jobLog")) {
+      var lines = d.log || [];
+      $("jobLog").innerHTML = lines.length
+        ? lines.map(function (l) {
+            return '<span class="' + esc(l.level || "info") + '">' + esc(l.text) + "</span>";
+          }).join("\n")
+        : "Nothing has run yet.";
+      $("jobLog").scrollTop = $("jobLog").scrollHeight;
+    }
+
+    if ((d.produced || []).length && $("dsTag")) {
+      $("dsTag").textContent = d.produced.length + " files";
+    }
+    // While a job is running the page follows it closely; when it is not,
+    // the one-second heartbeat is plenty and this timer stands down.
+    if (running && !auto.pollTimer) {
+      auto.pollTimer = setInterval(function () {
+        if (S.connected()) send({ type: "auto_status" });
+      }, 700);
+    } else if (!running && auto.pollTimer) {
+      clearInterval(auto.pollTimer);
+      auto.pollTimer = null;
+    }
+  }
+  S.on("auto_status_res", renderRun);
+
+  /* ---- the dataset ----------------------------------------------------- */
+  on("btnExportDs", "click", function () {
+    if (!S.require("dsMsg")) return;
+    say("dsMsg", "Gathering the files…", "info");
+    send({ type: "auto_export", name: ($("dsName") || {}).value || "dataset" });
+  });
+
+  function renderDataset(d) {
+    var box = $("dsList");
+    if (box) {
+      box.innerHTML = [
+        ["Folder", d.path],
+        ["Run files", String(d.runs)],
+        ["Inertial logs", String(d.inertial)],
+        ["Size", (d.bytes / 1e6).toFixed(1) + " MB"]
+      ].map(function (r) {
+        return '<div class="kvr"><span>' + esc(r[0]) + "</span><b>"
+          + esc(r[1]) + "</b></div>";
+      }).join("");
+    }
+    if ($("dsTag")) { $("dsTag").textContent = "exported"; $("dsTag").className = "tag ok"; }
+    say("dsMsg", (d.note || "") + " It carries its own manifest and README, so "
+      + "it can be read without this console.", "ok");
+  }
+
+  /* ---- recording lamp on the run bar ----------------------------------- */
+  S.on("imu", function (d) {
+    if ($("rbRec")) {
+      var rec = !!d.rec;
+      $("rbRec").textContent = rec ? "yes" : "no";
+      $("rbRec").style.color = rec ? "var(--ok)" : "var(--text-2)";
+    }
+  });
+
+  S.page("auto", function () {
+    if (!S.connected()) return;
+    send({ type: "auto_jobs" });
+    send({ type: "auto_status" });
+    send({ type: "auto_preflight" });
+  });
+
+  S.on("close", function () {
+    if (auto.pollTimer) { clearInterval(auto.pollTimer); auto.pollTimer = null; }
+  });
+})();

@@ -204,7 +204,8 @@ table.data tbody tr:hover{background:var(--surface-2)}
   font-family:var(--mono);font-size:11px;color:var(--text-2)}
 .dockxyz div{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;
   padding:4px 6px;text-align:center}
-@media(max-width:700px){.dock{right:8px;bottom:8px;left:8px;width:auto}}
+@media(max-width:700px){.dock{right:8px;bottom:8px;left:8px;width:auto}
+  .dockbody{max-height:52vh;overflow-y:auto}}
 /* An open dock is anchored to the bottom-right of the VIEWPORT, so it sits
    over whatever happens to be under it no matter where the page is scrolled.
    Rather than leave a corner of every page permanently unreadable, opening it
@@ -260,6 +261,84 @@ body.dockopen .cards{grid-template-columns:1fr}
 .kvr b{font-family:var(--mono);font-weight:600;word-break:break-word}
 .card.off{opacity:.55}
 .card.off .chart{filter:grayscale(1)}
+
+/* ---- rail groups --------------------------------------------------- */
+.railgroup{font-size:9.5px;text-transform:uppercase;letter-spacing:.13em;
+  color:var(--text-3);font-weight:700;padding:12px 8px 5px;margin-top:4px;
+  border-top:1px solid var(--line)}
+.railgroup:first-child{border-top:none;margin-top:0;padding-top:4px}
+
+/* On a tablet at the machine the rail becomes a strip across the top. It has
+   to leave the bottom of the screen alone: the jog dock lives there, and a
+   full-width dock over a bottom-anchored rail means the operator cannot
+   change page at all while the dock is open. */
+@media(max-width:820px){
+  .body{flex-direction:column}
+  nav.rail{width:auto;flex-direction:row;overflow-x:auto;overflow-y:hidden;
+    border-right:none;border-bottom:1px solid var(--line);padding:8px;gap:6px;
+    display:flex;align-items:stretch;-webkit-overflow-scrolling:touch}
+  nav.rail .step{width:auto;flex:0 0 auto;white-space:nowrap;padding:7px 11px}
+  nav.rail .step small{display:none}
+  .railgroup{display:none}
+  nav.rail .estop{flex:0 0 auto;margin:0;padding:7px 14px;white-space:nowrap}
+  nav.rail > .hint{display:none}
+}
+
+/* ---- the run bar: cell state, always in view ------------------------
+   An industrial console answers "what is the cell doing right now" without
+   being asked and without a page change. This sits under the header on every
+   page and is the one thing readable from across the room. ------------- */
+.runbar{display:flex;align-items:center;gap:14px;padding:8px 18px;
+  background:var(--panel-2);border-bottom:1px solid var(--line-strong);
+  flex-wrap:wrap}
+.runbar .rb{display:flex;align-items:center;gap:7px;font-size:11.5px}
+.runbar .rb .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--text-3);font-weight:700}
+.runbar .rb .v{font-family:var(--mono);font-weight:600;font-size:12px}
+.runbar .bar{flex:1 1 180px;min-width:120px;height:6px;border-radius:3px;
+  background:var(--surface-2);overflow:hidden;position:relative}
+.runbar .bar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--accent);
+  transition:width .3s ease}
+.runbar.live{background:rgba(63,185,80,.10);border-bottom-color:var(--ok)}
+.runbar.live .bar i{background:var(--ok)}
+.runbar.failed{background:rgba(248,81,73,.10);border-bottom-color:var(--bad)}
+.runbar.failed .bar i{background:var(--bad)}
+
+/* ---- pre-flight ------------------------------------------------------ */
+.checks{display:flex;flex-direction:column;gap:1px;border:1px solid var(--line);
+  border-radius:9px;overflow:hidden;margin-top:11px}
+.chk-row{display:grid;grid-template-columns:104px 190px 1fr;gap:12px;
+  padding:9px 12px;background:var(--panel-2);align-items:baseline;font-size:12.5px}
+@media(max-width:760px){.chk-row{grid-template-columns:90px 1fr}
+  .chk-row .d{grid-column:1/-1}}
+.chk-row .s{font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.09em;padding:2px 8px;border-radius:5px;text-align:center}
+.chk-row .s.pass{background:var(--ok-bg);color:var(--ok)}
+.chk-row .s.warn{background:var(--warn-bg);color:var(--warn)}
+.chk-row .s.fail{background:var(--bad-bg);color:var(--bad)}
+.chk-row .s.unknown{background:var(--surface-2);color:var(--text-3)}
+.chk-row .l{font-weight:600}
+.chk-row .d{color:var(--text-2)}
+
+/* ---- job steps and log ---------------------------------------------- */
+.steps{display:flex;flex-direction:column;gap:5px;margin-top:10px;
+  max-height:260px;overflow-y:auto}
+.stp{display:grid;grid-template-columns:26px 120px 1fr;gap:10px;font-size:12px;
+  padding:6px 9px;border-radius:6px;background:var(--panel-2);
+  border:1px solid var(--line);align-items:baseline}
+.stp .i{font-family:var(--mono);color:var(--text-3);font-size:11px}
+.stp .k{font-weight:650;font-family:var(--mono);font-size:11.5px}
+.stp .a{color:var(--text-2);word-break:break-word}
+.stp.now{border-color:var(--accent);background:rgba(57,135,229,.12)}
+.stp.done{opacity:.55}
+.joblog{font-family:var(--mono);font-size:11.5px;line-height:1.55;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:8px;
+  padding:10px 12px;max-height:230px;overflow-y:auto;margin-top:11px;
+  white-space:pre-wrap;word-break:break-word}
+.joblog .ok{color:var(--ok)}
+.joblog .warn{color:var(--warn)}
+.joblog .bad{color:var(--bad)}
+.joblog .info{color:var(--text-2)}
 
 .jogwrap{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:start}
 @media(max-width:980px){.jogwrap{grid-template-columns:1fr}}
@@ -393,8 +472,24 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   </div>
 </header>
 
+<!-- ============ what the cell is doing, on every page ============ -->
+<div class="runbar" id="runBar">
+  <div class="rb"><span class="k">Cell</span><span class="v" id="rbState">idle</span></div>
+  <div class="rb"><span class="k">Job</span><span class="v" id="rbJob">&mdash;</span></div>
+  <div class="rb"><span class="k">Step</span><span class="v" id="rbStep">&mdash;</span></div>
+  <div class="bar"><i id="rbFill"></i></div>
+  <div class="rb"><span class="k">Elapsed</span><span class="v" id="rbTime">0s</span></div>
+  <div class="rb"><span class="k">Recording</span><span class="v" id="rbRec">no</span></div>
+  <button class="btn danger" id="rbStop" hidden>Stop the job</button>
+</div>
+
 <div class="body">
 <nav class="rail">
+  <!-- Two groups, because they are two different activities. Setting a cell
+       up is done once and involves judgement; operating it is done every day
+       and should not. Running them together as one seven-step wizard made
+       the daily job look like a seven-step job. -->
+  <div class="railgroup">Set up</div>
   <button class="step" data-page="connect" aria-current="true">
     <span class="n">1</span><span><span class="lbl">Connect</span><small>Link the cell</small></span></button>
   <button class="step" data-page="robot">
@@ -405,10 +500,15 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     <span class="n">4</span><span><span class="lbl">Sensors</span><small>Motion &amp; modalities</small></span></button>
   <button class="step" data-page="calib">
     <span class="n">5</span><span><span class="lbl">Calibrate</span><small>Camera on the tool</small></span></button>
+
+  <div class="railgroup">Operate</div>
+  <button class="step" data-page="auto">
+    <span class="n">&#9654;</span><span><span class="lbl">Automate</span><small>Run a campaign</small></span></button>
   <button class="step" data-page="inspect">
-    <span class="n">6</span><span><span class="lbl">Inspect</span><small>Scan &amp; find</small></span></button>
+    <span class="n">&#9673;</span><span><span class="lbl">Inspect</span><small>Scan &amp; find</small></span></button>
   <button class="step" data-page="record">
-    <span class="n">7</span><span><span class="lbl">Record</span><small>Capture a run</small></span></button>
+    <span class="n">&#9679;</span><span><span class="lbl">Record</span><small>Capture by hand</small></span></button>
+
   <button class="estop" id="btnEstop">STOP ROBOT</button>
   <div class="hint" style="padding:0 4px">Software stop only. The physical
   e-stop is the safety device.</div>
@@ -1311,6 +1411,86 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       </section>
     </div>
   </div>
+</main>
+
+
+<!-- ==================== AUTOMATE ==================== -->
+<main class="page" id="page-auto" hidden>
+  <h2>Run a campaign</h2>
+  <p class="lead">Declare the job once and let the cell execute it. The same
+  job run twice produces two captures that differ only where the job says they
+  differ &mdash; which is the whole basis on which two numbers from them can be
+  compared.</p>
+
+  <section class="block">
+    <h3>Is the cell fit to run? <span class="tag" id="pfTag">not checked</span></h3>
+    <p class="hint" style="margin-top:0">Checked before every job, and the job
+    is <b>refused</b> rather than warned if anything here fails. A campaign
+    that starts against a robot in local mode, or with no calibration loaded,
+    fills a folder with files that look exactly like good ones &mdash; and
+    that is not discovered until someone tries to use them.</p>
+    <div class="checks" id="pfList">
+      <div class="chk-row"><span class="s unknown">&mdash;</span>
+        <span class="l">Not checked yet</span>
+        <span class="d">Connect to the agent and press Check now.</span></div>
+    </div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn primary" id="btnPreflight">Check now</button>
+    </div>
+    <div class="note info" id="pfMsg">&mdash;</div>
+  </section>
+
+  <div class="grid g2" style="align-items:start">
+    <section class="block" style="margin:0">
+      <h3>The job</h3>
+      <div class="grid g2">
+        <div class="field"><label>Job</label>
+          <select id="jobPick"><option value="">Connect first</option></select></div>
+        <div class="field"><label>Repeats of each setting</label>
+          <input id="jobRepeats" type="number" value="3" min="1" step="1"/></div>
+      </div>
+      <div class="field" style="margin-top:12px"><label>Speeds to sweep (m/s, comma separated)</label>
+        <input id="jobSweep" value="0.05, 0.10, 0.20, 0.35"/></div>
+      <div class="note info" id="jobNote" style="margin-top:11px">&mdash;</div>
+      <div class="steps" id="jobSteps"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary big" id="btnJobRun">Run the job</button>
+        <button class="btn danger" id="btnJobStop" disabled>Stop</button>
+        <span class="tag" id="jobPlanTag" style="margin-left:auto">&mdash;</span>
+      </div>
+      <div class="note warn" style="margin-top:10px"><b>The arm moves on its
+      own.</b> Clear the cell, and keep the physical e-stop within reach. Stop
+      finishes the step it is on, closes any open recording and halts the arm.</div>
+    </section>
+
+    <section class="block" style="margin:0">
+      <h3>Progress <span class="tag" id="runTag">idle</span></h3>
+      <div class="grid g3">
+        <div class="tile"><div class="k">Step</div><div class="v" id="runStep">&mdash;</div></div>
+        <div class="tile"><div class="k">Elapsed</div><div class="v" id="runTime">&mdash;<span class="u">s</span></div></div>
+        <div class="tile"><div class="k">Files made</div><div class="v" id="runFiles">0</div></div>
+      </div>
+      <div class="joblog" id="jobLog">Nothing has run yet.</div>
+    </section>
+  </div>
+
+  <section class="block">
+    <h3>The dataset <span class="tag" id="dsTag">&mdash;</span></h3>
+    <p class="hint" style="margin-top:0">One self-describing folder: the run
+    files, every inertial sample, the hand-eye calibration these runs depend
+    on, the camera intrinsics, the clock the timestamps are on, and which
+    channels are scored. A dataset that needs the person who made it to
+    explain it is not a dataset.</p>
+    <div class="row">
+      <div class="field" style="flex:1;min-width:200px"><label>Name</label>
+        <input id="dsName" value="sonair_capture"/></div>
+      <button class="btn go big" id="btnExportDs" style="align-self:flex-end">Export everything from this job</button>
+    </div>
+    <div class="kv" id="dsList" style="margin-top:12px">
+      <div class="hint">Run a job, then export.</div>
+    </div>
+    <div class="note info" id="dsMsg">&mdash;</div>
+  </section>
 </main>
 
 <!-- ==================== 4. RECORD ==================== -->

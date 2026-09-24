@@ -215,7 +215,20 @@ error that grows with standoff and rotates with the tool. At 300 mm standoff,
 2° puts a point 10 mm out — in a *different direction* at every viewpoint,
 which is exactly what stops several views from fusing into one surface.
 
-0. **Set the colour stream high enough first.** The board is detected in the
+0. **Let the console read the board.** Press **Read the board for me** with
+   the board in view and it fills in the size itself. Counting inner corners
+   on a fine board is the single commonest way to get a calibration quietly
+   wrong, and it is a thing a machine does better. A calib.io board labelled
+   **18×25** has **24×17** inner corners — the label counts squares.
+
+   **Never enter a smaller size than the board really is.** A grid will still
+   be found: an arbitrary patch of the middle, sub-pixel accurate, with a
+   tiny reprojection error. But the patch lands somewhere different in every
+   shot, each shift moves the target origin by one square, and the solve then
+   fits a board that teleports between views — returning a plausible residual
+   that is centimetres wrong. The console refuses this case by name.
+
+0b. **Set the colour stream high enough.** The board is detected in the
    colour image and the corner detector needs roughly 15 pixels between
    corners. A 7.5 mm square at 400 mm standoff lands on about 11 px at
    640×360 and about 23 px at 1280×720 — which is the difference between a
@@ -255,6 +268,77 @@ reason.
    calibration version — put it on every run recorded from now on. Runs either
    side of a recalibration cannot be compared, and this is the only record of
    which side a run came from.
+
+---
+
+## ▶ Automate — run a campaign
+
+This is what the cell is for. Everything else on this console can be done one
+button at a time; that is right for bringing a cell up and wrong for building
+a dataset. A benchmark campaign is "the same motion at four speeds, three
+times each" — and twelve runs pressed by hand differ in every respect a
+person cannot hold still: the pause before the start, the pose the arm was
+left in, whether the log was running yet.
+
+### Pre-flight
+
+Checked before every job, and the job is **refused**, not warned:
+
+| Check | Why it blocks |
+|---|---|
+| Robot link | No link, no motion — and a job that starts anyway records an arm that never moved |
+| Robot powered | Brakes on is not a fault the run file records |
+| Safety state | A protective stop mid-campaign leaves half a dataset |
+| Camera | Only blocks steps that need a picture |
+| Camera position known | Without the hand-eye transform nothing the camera sees can be placed in the robot's frame, so every 3D number in the dataset is wrong together |
+| Motion sensors | The channel the benchmark is actually scored on |
+| Disk space | A job that fills the disk leaves a truncated file that looks complete |
+
+Remote Control cannot be read back from the controller, so it is always shown
+as a warning. If the first move does nothing, that is what it is.
+
+### Running
+
+Pick a job, set the repeats and the speeds to sweep, press **Run the job**.
+The arm moves on its own — clear the cell and keep the physical e-stop within
+reach. The bar across the top of *every* page shows what the cell is doing, so
+a campaign can be left running and checked on from whichever page you happen
+to be looking at.
+
+**Stop** finishes the step it is on, closes any open run file and inertial
+log, and halts the arm. It does not leave a half-written file behind: a
+truncated run in a dataset is worse than a missing one, because a missing one
+is visible.
+
+A step that fails stops the job there and says which step and why. It does
+not carry on.
+
+### The dataset
+
+**Export everything from this job** gathers the campaign into one
+self-describing folder:
+
+```
+sonair_capture_20260924_113818/
+  manifest.json      every parameter, the calibration, the clock, the channels
+  README.md          the same thing in sentences
+  runs/*.jsonl       one benchmark run each
+  inertial/*.csv     every inertial sample at the sensor's own rate
+```
+
+The manifest is the contract. Anything downstream — the scorer, the Isaac
+replay, whatever multimodal model gets trained on this — reads it and never
+has to guess at a column.
+
+Two things it is honest about, which matter more than they look:
+
+- **`clock.unaligned`** lists channels that have never been tied to the host
+  clock. Their timestamps are internally consistent and are *not* comparable
+  with another channel's. Measure the offset with the tap check on the Record
+  page before differencing them.
+- **`channels`** marks which are scored. Only `role: benchmark` counts toward
+  a GCR number. Scoring one of the others produces a number with nothing
+  behind it.
 
 ---
 

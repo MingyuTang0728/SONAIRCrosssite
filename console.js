@@ -50,7 +50,7 @@
   }
 
   /* -------------------------------------------------- navigation --------- */
-  var PAGES = ["connect", "robot", "camera", "sensors", "calib", "inspect", "record"];
+  var PAGES = ["connect", "robot", "camera", "sensors", "calib", "auto", "inspect", "record"];
   var dockOffered = false;
 
   function currentPage() {
@@ -60,7 +60,6 @@
     }
     return "connect";
   }
-  API.currentPage = currentPage;
   document.querySelectorAll("nav.rail .step").forEach(function (b) {
     b.addEventListener("click", function () {
       document.querySelectorAll("nav.rail .step").forEach(function (o) {
@@ -77,7 +76,11 @@
       // it leaves the control they need one page away, which is the problem
       // it exists to solve.
       declareStreams(b.dataset.page);
-      if (/^(sensors|calib)$/.test(b.dataset.page) && !dockOffered) {
+      // Offered only where there is room for it. On a tablet a fixed panel
+      // 400 px tall over an 844 px screen covers the page it is meant to
+      // help with, so there it stays closed until it is asked for.
+      if (/^(sensors|calib)$/.test(b.dataset.page) && !dockOffered
+          && window.innerWidth >= 900) {
         dockOffered = true;
         var bar = $("dockBar"), body = $("dockBody");
         if (bar && body && body.hidden) bar.click();
@@ -101,6 +104,7 @@
       send({ type: "agent_faults" });
       $("btnConnect").textContent = "Reconnect";
       send({ type: "auth", role: "host", site: "UoN" });
+      send({ type: "auto_status" });
       // Declare the streams before anything else asks for data: until this
       // arrives the agent sends no pictures at all, which is the right
       // default -- silence costs nothing, and the old default cost megabytes.
@@ -180,8 +184,6 @@
         + esc(f.error) + "</b></div>";
     }).join("");
   }
-  API.renderFaults = renderFaults;
-
   (function faultPanel() {
     var b = $("btnFaults");
     if (b) b.addEventListener("click", function () {
@@ -211,6 +213,21 @@
         + "select and copy it.", "warn");
     }
   })();
+
+  /* Camera liveness that does not depend on this page having asked for a
+     picture. Inferring it from frame arrival was right when every page got
+     every stream and became a permanent false alarm when they stopped. */
+  function onHealth(d) {
+    state.health = d;
+    if (d.camera) {
+      if (!d.camera.available) { state.camNoCamera = true; state.camError = d.camera.error || ""; }
+      else { state.camNoCamera = false; if (d.camera.live) state.camLive = performance.now(); }
+    }
+    var fs = $("faultStreams");
+    if (fs) fs.textContent = (d.streams && d.streams.length)
+      ? d.streams.join(", ") + " @ " + d.preview_fps + " fps" : "none";
+    if (d.robot && d.robot.host && $("faultHost")) $("faultHost").textContent = d.robot.host;
+  }
 
   function closeReason(ev) {
     var c = ev && ev.code;
@@ -255,6 +272,7 @@
         break;
       case "agent_faults_res": renderFaults(d); break;
       case "stream_prefs_res": break;
+      case "cell_health": onHealth(d); break;
       case "ur_state": state.ur = d.s; state.urAge = performance.now(); renderRobot(d.s); break;
       case "state": state.urAge = performance.now(); break;
       case "tcp_pose": state.urAge = performance.now(); dockPose(d.q); break;
@@ -353,6 +371,14 @@
     },
     connected: function () { return !!(ws && ws.readyState === WebSocket.OPEN); }
   };
+  // Exported here, AFTER API exists. Assigning onto it earlier in the file
+  // reads as harmless and is not: `var API` hoists as undefined, so the
+  // assignment threw and took the entire module down before a single control
+  // was bound. The page then rendered perfectly and did nothing at all.
+  API.currentPage = currentPage;
+  API.declareStreams = declareStreams;
+  API.renderFaults = renderFaults;
+  API.dockPose = dockPose;
   window.SONAIR = API;
 
   function plainCmdError(d) {
@@ -649,7 +675,6 @@
       if (el) el.textContent = nm[i] + " " + (q[i] * 1000).toFixed(1);
     }
   }
-  API.dockPose = dockPose;
 
   bindPad("padXY2", "xy");
   bindPad("padZR2", "zr");
@@ -781,6 +806,7 @@
     robot:   [],            // the cell view is driven by joint angles
     camera:  ["rgb", "depth", "ir1", "ir2"],
     sensors: [],
+    auto:    [],            // a campaign is numbers and a progress bar
     calib:   ["rgb"],       // the board is found in colour
     inspect: ["rgb", "depth"],
     record:  []
@@ -805,7 +831,6 @@
     send({ type: "stream_prefs", streams: want, width: width,
            quality: page === "camera" ? 62 : 52 });
   }
-  API.declareStreams = declareStreams;
   document.addEventListener("change", function (ev) {
     if (ev.target && ev.target.id === "cbIr") declareStreams(currentPage());
   });
@@ -1619,6 +1644,10 @@
     if (!live) { lamp("lampCam", "lampCamV", "", "Not connected"); }
     else if (state.camNoCamera) { lamp("lampCam", "lampCamV", "bad", "Not available"); }
     else if (now - state.camAge < 2000) { lamp("lampCam", "lampCamV", "ok", "Live picture"); }
+    else if (now - (state.camLive || 0) < 3000) {
+      // The camera is running; this page simply is not showing it.
+      lamp("lampCam", "lampCamV", "ok", "Running");
+    }
     else { lamp("lampCam", "lampCamV", "warn", "No picture"); }
 
     if (!live) { lamp("lampImu", "lampImuV", "", "Not connected"); }
@@ -1655,6 +1684,10 @@
       send({ type: "bench_status" });
       send({ type: "ur_service_status" });
       send({ type: "jog_status" });
+      // The run bar sits on every page, so it is fed from the heartbeat
+      // rather than from the Automate page. A campaign is a thing you walk
+      // away from; the state of it should be readable wherever you come back.
+      send({ type: "auto_status" });
     }
   }, 1000);
 
