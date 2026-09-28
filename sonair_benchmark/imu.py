@@ -76,8 +76,41 @@ _ACC_KEYS = (("ax", "ay", "az"), ("acc_x", "acc_y", "acc_z"),
 _TIME_KEYS = ("timestamp", "t", "time", "ts", "time_s", "host_time")
 
 
+# Unit suffixes a column name may carry. The console's own export writes
+# `gyro_x_rad_s` and `accel_x_m_s2` -- self-documenting, and worth keeping,
+# because a column called `gyro_x` leaves the reader guessing between degrees
+# and radians. The reader strips them instead, so a file is readable whether
+# or not whoever wrote it chose to say what the units were.
+_UNIT_SUFFIXES = ("_rad_s", "_deg_s", "_m_s2", "_mps2", "_uT", "_ut", "_g",
+                  "_rad", "_deg", "_s", "_hz", "_c", "_pct", "_hpa", "_mm",
+                  "_m", "_px")
+
+
+def _strip_units(key: str) -> str:
+    k = str(key).strip().lower()
+    for suffix in _UNIT_SUFFIXES:
+        if k.endswith(suffix) and len(k) > len(suffix):
+            return k[: -len(suffix)]
+    return k
+
+
+def _normalised(row: dict) -> dict:
+    """
+    The row keyed both as written and with any unit suffix removed.
+
+    Both, not just the stripped form: `t_s` strips to `t`, which is wanted,
+    but a file that already has a plain `t` must not be shadowed by it.
+    """
+    out = {}
+    for k, v in row.items():
+        out.setdefault(str(k).strip().lower(), v)
+    for k, v in row.items():
+        out.setdefault(_strip_units(k), v)
+    return out
+
+
 def _pick(row: dict, groups) -> list[float] | None:
-    lower = {str(k).strip().lower(): v for k, v in row.items()}
+    lower = _normalised(row)
     for keys in groups:
         if all(k in lower for k in keys):
             try:
@@ -95,7 +128,7 @@ def parse_fusionhub_row(row: dict) -> tuple[float | None, dict]:
     to push it through MasterClock.to_master() — this function deliberately
     does not pretend the two clocks agree.
     """
-    lower = {str(k).strip().lower(): v for k, v in row.items()}
+    lower = _normalised(row)
     t_src = None
     for k in _TIME_KEYS:
         if k in lower:
@@ -234,6 +267,14 @@ class NoiseFloor:
     gyro_bias: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     gyro_noise: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     accel_bias: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
+    # How far the measured gravity magnitude sits from 9.80665 while the unit
+    # is still: the accelerometer's scale error, in m/s^2. Its own field
+    # because it is its own quantity. It used to be appended to accel_bias as
+    # a fourth element -- "the unused 4th slot" -- which made a 3-vector
+    # sometimes four long, so anything that took its length got a different
+    # answer from anything that indexed it, and the value itself was never
+    # read by anything.
+    accel_scale_error: float = 0.0
     accel_noise: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     n_samples: int = 0
     duration_s: float = 0.0
@@ -280,8 +321,7 @@ def stationary_stats(samples: list[tuple[float, dict]], unit: str = "ind0",
         nf.accel_bias = per_axis(accel, statistics.fmean)
         nf.accel_noise = per_axis(accel, lambda c: statistics.pstdev(c) if len(c) > 1 else 0.0)
         norms = [math.sqrt(sum(v * v for v in a)) for a in accel]
-        # Store the scale error on the gravity norm in the unused 4th slot's place
-        nf.accel_bias = nf.accel_bias + [statistics.fmean(norms) - GRAVITY]
+        nf.accel_scale_error = statistics.fmean(norms) - GRAVITY
 
     if expected_hz and duration > 0:
         expected = expected_hz * duration

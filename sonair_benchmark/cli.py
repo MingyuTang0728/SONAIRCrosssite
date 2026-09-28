@@ -66,7 +66,8 @@ def cmd_budget(args) -> int:
                         gyro_bias=d.get("gyro_bias", [0, 0, 0]),
                         gyro_noise=d.get("gyro_noise", [0, 0, 0]),
                         accel_bias=d.get("accel_bias", [0, 0, 0]),
-                        accel_noise=d.get("accel_noise", [0, 0, 0]))
+                        accel_noise=d.get("accel_noise", [0, 0, 0]),
+                        accel_scale_error=d.get("accel_scale_error", 0.0))
     b = from_phase0(nf, tap_spread_s=args.tap_spread_ms / 1000.0,
                     tracker_distortion_mm=args.tracker_mm,
                     frame_fit_residual_mm=args.frame_fit_mm,
