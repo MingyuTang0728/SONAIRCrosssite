@@ -45,6 +45,12 @@ log = logging.getLogger("automation")
 # The step vocabulary. Small on purpose: every one of these is a thing an
 # operator can also do by hand on some page of the console, so a job that
 # misbehaves can be taken apart and each step tried on its own.
+# The joint acceleration every joint_move is commanded with, rad/s^2. It is a
+# module constant rather than a default buried in the move call because the
+# excursion a swept speed needs is DERIVED from it: reaching v and holding it
+# for T takes v^2/a + v*T radians. Change it here and the sweep resizes itself.
+JOINT_ACCEL = 1.2
+
 STEP_KINDS = (
     "preflight",        # run the checks; fail the job if any check fails
     "dwell",            # wait, so a move can settle before a capture
@@ -659,9 +665,68 @@ class Runner:
             if not 0 <= idx < 6:
                 return False, f"joint index {idx} is not in 0..5"
             speed = float(params.get("joint_vel", step.get("joint_vel", 0.4)))
-            amp = math.radians(float(step.get("amplitude_deg", 25.0)))
             if speed <= 0:
                 return False, "joint speed must be positive"
+
+            # HOW FAR THE JOINT HAS TO TRAVEL TO ACTUALLY REACH THAT SPEED.
+            #
+            # A fixed excursion is the wrong thing to hold constant across a
+            # speed sweep, and the cell's own data showed why. At 25 deg and
+            # this controller's 1.2 rad/s^2, the elbow held 0.2 rad/s for two
+            # full seconds, held 0.4 for under a second, never settled at 0.6 at
+            # all -- its rate profile ran 0.49, 0.51, 0.65, 0.56, 0.65, 0.47,
+            # ringing rather than cruising -- and at 0.9 could not have got
+            # there at any point, because a 25 deg move under that acceleration
+            # peaks at 0.72 rad/s and then has to start braking.
+            #
+            # So two of the campaign's four cells would have been labelled with
+            # a speed the arm never reached, and the third barely. The factor
+            # the whole design sweeps would not have spanned what its own cell
+            # keys claimed, Gate C would have been asked whether the gap varies
+            # with a condition that hardly varied, and nothing downstream could
+            # have detected any of it -- the runs look perfectly good.
+            #
+            # The excursion is therefore DERIVED from the speed so that every
+            # cell gets a cruise of the same duration: ramp up, hold for
+            # `plateau_s`, ramp down. What is held constant across the sweep is
+            # the thing that should be -- how long the joint spends at the speed
+            # the cell is named after.
+            accel = float(step.get("joint_accel", JOINT_ACCEL))
+            plateau = float(step.get("plateau_s", 1.0))
+            explicit = step.get("amplitude_deg")
+            if explicit is not None:
+                amp = math.radians(float(explicit))
+                held = (abs(amp) - speed * speed / accel) / speed
+                # 0.3 s, because the cell's own 0.6 rad/s runs computed to a
+                # 0.23 s cruise and were measured never to settle -- their rate
+                # profile rang between 0.47 and 0.65 rad/s instead of holding.
+                # Anything shorter is a ramp with a corner on it, not a cell.
+                if held < 0.3:
+                    reach = math.sqrt(accel * abs(amp))
+                    return False, (
+                        f"a {math.degrees(abs(amp)):.0f} deg move at "
+                        f"{accel:g} rad/s^2 cannot hold {speed:g} rad/s: it "
+                        + (f"only reaches {reach:.2f} rad/s before it has to "
+                           "brake" if reach < speed else
+                           f"holds it for {max(held, 0):.2f} s, which is not a "
+                           "cruise") +
+                        f". This run would be labelled {speed:g} rad/s and would "
+                        f"not be that. Use at least "
+                        f"{math.degrees(speed * speed / accel + speed * 0.5):.0f} "
+                        f"deg, or leave amplitude_deg out and let it be sized "
+                        f"from the speed.")
+            else:
+                amp = speed * speed / accel + speed * plateau
+                sign = 1.0 if float(step.get("direction", 1)) >= 0 else -1.0
+                amp *= sign
+            span = float(step.get("max_amplitude_deg", 150.0))
+            if abs(math.degrees(amp)) > span:
+                return False, (
+                    f"reaching {speed:g} rad/s for {plateau:g} s needs "
+                    f"{abs(math.degrees(amp)):.0f} deg of joint {idx + 1}, past "
+                    f"the {span:g} deg this step allows. Shorten plateau_s, drop "
+                    "the top speed from the sweep, or raise max_amplitude_deg "
+                    "once you have checked the arm has room.")
             # The cell clamps a speed it considers unsafe, silently. That is
             # correct for a jog and wrong for a swept factor: the run file
             # would record the speed that was ASKED for while the arm moved at
@@ -675,8 +740,11 @@ class Runner:
                                "recorded the higher figure, so the two would "
                                "disagree. Raise the limit deliberately or "
                                "sweep within it.")
-            self._say(f"Joint {idx + 1} through {math.degrees(amp):.0f} deg "
-                      f"at {speed:g} rad/s.")
+            held = (abs(amp) - speed * speed / accel) / speed
+            self._say(f"Joint {idx + 1} through {math.degrees(amp):.0f} deg at "
+                      f"{speed:g} rad/s — ramping for "
+                      f"{speed / accel:.2f} s each end and holding the speed "
+                      f"for {held:.2f} s.")
             for leg, delta in (("out", +amp), ("back", 0.0)):
                 if self._stop.is_set():
                     return True, ""
@@ -929,7 +997,7 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
                 {"kind": "record_start", "traj_type": "point_to_point",
                  "joint_vel": 0.4, "arm_config": arm_config},
                 {"kind": "dwell", "seconds": 1.5},
-                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": 25.0,
+                {"kind": "joint_move", "joint": ELBOW, "plateau_s": 1.0,
                  "joint_vel": 0.4},
                 {"kind": "dwell", "seconds": 1.5},
                 {"kind": "record_stop"},
@@ -951,7 +1019,13 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
                 {"kind": "record_start", "traj_type": "point_to_point",
                  "arm_config": arm_config},
                 {"kind": "dwell", "seconds": 1.5},
-                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": 25.0},
+                # No amplitude: it is sized from the swept speed so that every
+                # cell holds the speed it is named after for the same second.
+                # A fixed 25 deg gave the 0.2 cell a two second cruise, the 0.6
+                # cell none at all, and the 0.9 cell a speed the arm could not
+                # reach -- three cells that would have carried the same label
+                # scheme and not the same experiment.
+                {"kind": "joint_move", "joint": ELBOW, "plateau_s": 1.0},
                 {"kind": "dwell", "seconds": 1.5},
                 {"kind": "record_stop"},
                 {"kind": "imu_log_stop"},
@@ -960,9 +1034,11 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
         "scan_shaped": Job(
             name="scan_shaped",
             notes="A tool-space box, the shape a real inspection scan traces. "
-                  "Useful for the application case; it does NOT sweep the "
-                  "campaign's factor, so its runs are labelled at a fixed "
-                  "elbow speed.",
+                  "For the INSPECTION case, not the benchmark: measured on the "
+                  "real cell it turned the carrier 0.9 deg in 46 s and left "
+                  "linear acceleration flat on the sensor's own noise floor, "
+                  "so its inertial channels carry nothing to score. Record it "
+                  "for the application story; do not put it in a gap.",
             requires=["robot", "imu"],
             steps=[
                 {"kind": "preflight"},
@@ -1158,6 +1234,8 @@ def _audit_runs(runs_dir) -> dict:
         if not f.is_file() or f.suffix != ".jsonl":
             continue
         declared, ts, with_target = None, [], 0
+        labelled_vel, peak_qd, held = None, 0.0, 0.0
+        qd_hist = []
         try:
             with f.open(encoding="utf-8") as fh:
                 for i, line in enumerate(fh):
@@ -1170,12 +1248,27 @@ def _audit_runs(runs_dir) -> dict:
                         continue
                     if i == 0 and "_manifest" in row:
                         declared = row["_manifest"].get("sample_rate_hz")
+                        labelled_vel = row["_manifest"].get("joint_vel")
                         continue
                     t = row.get("t")
                     if isinstance(t, (int, float)):
                         ts.append(float(t))
                     if row.get("target_q"):
                         with_target += 1
+                    # DID THE RUN ACTUALLY REACH THE SPEED ITS CELL IS NAMED
+                    # AFTER? The commanded joint velocity is recorded, so this
+                    # is answerable from the file rather than assumed from the
+                    # command. On the real cell a fixed-excursion sweep produced
+                    # runs labelled 0.6 rad/s whose joint never settled there
+                    # and a 0.9 rad/s cell the arm could not reach at all -- a
+                    # mislabelled condition cell that nothing downstream can
+                    # detect, which is the one defect that silently invalidates
+                    # a whole campaign rather than one run.
+                    tqd = row.get("target_qd")
+                    if isinstance(tqd, list) and tqd and isinstance(t, (int, float)):
+                        w = max(abs(float(v)) for v in tqd)
+                        qd_hist.append((float(t), w))
+                        peak_qd = max(peak_qd, w)
         except Exception as e:               # noqa: BLE001
             out[f.name] = {"error": str(e)}
             continue
@@ -1208,6 +1301,33 @@ def _audit_runs(runs_dir) -> dict:
             notes.append(f"{n - with_target} samples carry no commanded joint "
                          f"trajectory, so those cannot be replayed in a "
                          f"simulator")
+
+        # How long the commanded joint velocity actually sat at the cell's label.
+        if labelled_vel and qd_hist:
+            want = float(labelled_vel)
+            at_speed = [t for t, w in qd_hist if w >= 0.95 * want]
+            held = 0.0
+            if len(at_speed) >= 2:
+                held = at_speed[-1] - at_speed[0]
+            block["labelled_joint_vel"] = want
+            block["peak_commanded_joint_vel"] = round(peak_qd, 4)
+            block["held_at_labelled_vel_s"] = round(held, 3)
+            if peak_qd < 0.95 * want:
+                notes.append(
+                    f"this run is labelled {want:g} rad/s but the joint was "
+                    f"never commanded above {peak_qd:.3f} rad/s. The cell key "
+                    f"names a speed that did not happen -- do not group results "
+                    f"by it")
+            elif held < 0.5:
+                # Summed over the whole run, so both legs of an out-and-back
+                # count -- a weaker bar than the pre-move check on purpose,
+                # catching only runs that plainly never cruised.
+                notes.append(
+                    f"labelled {want:g} rad/s but the joint only held that for "
+                    f"{held:.2f} s: the move is a ramp up and straight back "
+                    f"down, not a cruise, so this cell is not really distinct "
+                    f"from a slower one. Give the move room (plateau_s) and "
+                    f"re-record")
         block["notes"] = notes
         out[f.name] = block
     return out

@@ -54,15 +54,19 @@ assert car["ok"], car
 Q0 = [0.867, -1.621, 2.034, -1.953, -1.598, 3.203]
 class Cell:
     def __init__(self):
-        self.q = list(Q0); self.moving=False
+        self.q = list(Q0); self.qd = [0.0]*6; self.moving=False
         self.runs = root/'runs'; self.imu = root/'imu'
         bench_agent.RECORDER.out_dir = self.runs
         bench_agent.LOGGER.out_dir = self.imu
         bench_agent.RECORDER.state_fn = self.state
         self.t0 = time.time()
     def state(self):
-        return {"q": list(self.q), "tcp": self.tcp(), "qd":[0.0]*6,
-                "target_q": list(self.q), "target_qd":[0.0]*6, "speed_scaling":1.0}
+        # A real commanded joint velocity, so the export's cell-label audit has
+        # something to check. A stand-in that always reports zero would make
+        # every run look mislabelled, which is the opposite of useful.
+        return {"q": list(self.q), "tcp": self.tcp(), "qd": list(self.qd),
+                "target_q": list(self.q), "target_qd": list(self.qd),
+                "speed_scaling": 1.0}
     def tcp(self):
         # Forward kinematics from the same model the replay uses, when it is
         # available. A stand-in robot whose reported tool pose does not follow
@@ -92,16 +96,38 @@ class Cell:
     def out_dir(self): return str(root)
     def move_to(self,*a,**k): return True, ""
     def halt(self): return True, ""
-    def move_joints(self, target, speed):
-        # move there over the right amount of time, in small steps
-        start=list(self.q); d=[b-a for a,b in zip(start,target)]
-        span=max(abs(x) for x in d)/max(speed,1e-6)
-        t0=time.perf_counter()
+    def move_joints(self, target, speed, accel=1.2):
+        """A trapezoidal joint move: ramp to `speed`, cruise, ramp down."""
+        start = list(self.q)
+        d = [b - a for a, b in zip(start, target)]
+        dist = max(abs(x) for x in d)
+        if dist < 1e-9:
+            return True, ""
+        ramp = speed / accel
+        ramp_d = speed * speed / accel
+        cruise_t = max(0.0, (dist - ramp_d) / speed)
+        total = 2 * ramp + cruise_t
+        t0 = time.perf_counter()
         while True:
-            f=min(1.0,(time.perf_counter()-t0)/max(span,1e-6))
-            self.q=[a+f*x for a,x in zip(start,d)]
-            if f>=1.0: break
-            time.sleep(0.004)
+            e = time.perf_counter() - t0
+            if e >= total:
+                break
+            if e < ramp:
+                v = accel * e
+                travelled = 0.5 * accel * e * e
+            elif e < ramp + cruise_t:
+                v = speed
+                travelled = 0.5 * speed * ramp + speed * (e - ramp)
+            else:
+                td = total - e
+                v = accel * td
+                travelled = dist - 0.5 * accel * td * td
+            f = min(1.0, travelled / dist)
+            self.q = [a + f * x * (1 if dist else 0) for a, x in zip(start, d)]
+            self.qd = [v * (x / dist) for x in d]
+            time.sleep(0.003)
+        self.q = list(target)
+        self.qd = [0.0] * 6
         return True, ""
     def is_recording(self): return bench_agent.RECORDER.is_recording()
     def record_start(self, args): return bench_agent.RECORDER.start(**args)

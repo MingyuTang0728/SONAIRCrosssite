@@ -188,3 +188,95 @@ stop; the `.mcap` lands in FusionHub's recordings folder. Export the console's
 own data from Automate → Export. The two should agree channel for channel, and
 the console's Euler angles should match FusionHub's `euler` field to a
 fraction of a degree.
+
+---
+
+# What three real recordings showed about the campaign design
+
+On the afternoon of 28 September the operator ran `single_run`, `elbow_sweep`
+and `scan_shaped` on the cell and recorded each one from FusionHub's side.
+Those three files say something the console could not have told them, and it is
+about the experiment rather than the software.
+
+## The sensor is fit for the job
+
+From 26 s of the quiet stretch, with the arm holding still:
+
+| | measured |
+|---|---|
+| gyro bias | below 0.001 °/s on all three axes |
+| gyro noise (1σ) | 0.05 / 0.11 / 0.05 °/s |
+| accelerometer noise (1σ) | 0.008 / 0.010 / 0.008 m/s² |
+| orientation drift | 0.12° over 26 s |
+| arrival rate | 190.4 Hz, steady |
+
+That gives an **orientation measurement floor of roughly 0.2° over a ten second
+run**, and an acceleration floor of about 0.01 m/s² per sample. Any sim-to-real
+gap comfortably above those is a real gap. Gate A is not in doubt.
+
+One correctable finding: the accelerometer reads **|a| = 9.977 m/s² at rest
+against a true 9.807**, a **+1.73% scale error**. It is stable and it is in the
+sensor, not the pipeline. Left alone it puts a systematic 1.7% on every
+acceleration channel the benchmark scores.
+
+And a positive result worth keeping: where the motion was long enough to reach
+steady state, the **gyroscope tracked the commanded elbow rate to better than
+2%** — 0.2035 rad/s measured against 0.2 commanded, 0.3995 against 0.4. The
+sensor's scale factor is sound; there is no hidden 9% anywhere.
+
+## Two of the four campaign cells could not have been what they were called
+
+`elbow_sweep` was to sweep 0.2, 0.4, 0.6 and 0.9 rad/s at a fixed 25° of elbow
+travel. What the recording contains is three repeats each at 0.2, 0.4 and 0.6 —
+and nothing at 0.9.
+
+Measuring the rate profile within each move, rather than its peak:
+
+| commanded | profile over the move | sustained | verdict |
+|---|---|---|---|
+| 0.2 rad/s | flat for ~1.8 s | 0.2035 rad/s | a real cell |
+| 0.4 rad/s | flat for ~0.8 s | 0.3995 rad/s | a real cell |
+| 0.6 rad/s | 0.49 0.51 **0.65** 0.56 **0.65** 0.47 0.45 0.37 | never settles | **not a 0.6 cell** |
+| 0.9 rad/s | did not run | — | **missing** |
+
+At the controller's 1.2 rad/s² a 25° move spends v²/a of its travel on the
+ramps alone. That leaves a 2.0 s cruise at 0.2, a 0.8 s cruise at 0.4, a 0.23 s
+corner at 0.6, and at 0.9 **nothing at all** — 25° under that acceleration
+peaks at 0.72 rad/s and must start braking before it ever reaches 0.9.
+
+This is the defect that matters most, because it is invisible. The runs look
+perfectly good. They open cleanly, they plot correctly, their cell keys read
+`0.600|mid_workspace|point_to_point`. But the factor the campaign exists to
+sweep would not have spanned what its own labels claimed; the 0.6 and 0.9 cells
+would have held nearly the same motion as each other; and Gate C — *does the
+gap vary with condition?* — would have been asked about a condition that barely
+varied.
+
+**A fixed excursion is the wrong thing to hold constant across a speed sweep.**
+What should be held constant is how long the joint spends at the speed the cell
+is named after. The excursion is now derived from the speed:
+
+| speed | sized to | ramp each end | cruise |
+|---|---|---|---|
+| 0.2 rad/s | 13° | 0.17 s | 1.00 s |
+| 0.4 rad/s | 31° | 0.33 s | 1.00 s |
+| 0.6 rad/s | 52° | 0.50 s | 1.00 s |
+| 0.9 rad/s | 90° | 0.75 s | 1.00 s |
+
+A `joint_move` given an explicit `amplitude_deg` too small for its speed is now
+refused with the arithmetic, and the dataset export reads `target_qd` back out
+of each finished run and flags any run whose joint never reached, or never
+held, the speed its cell is named after.
+
+## `scan_shaped` carries nothing to score
+
+Over 46 seconds the carrier turned **0.9°** in total, and linear acceleration
+sat flat on the sensor's own noise floor at 0.17 m/s², with 27 samples out of
+8749 above 0.5 m/s². A tool-space box traced at 0.08 m/s with the tool
+orientation held constant is, to an inertial unit, indistinguishable from
+standing still.
+
+It is a fine demonstration of the inspection application. It is not a benchmark
+run: scored on orientation, angular rate and acceleration it would return a gap
+of about zero with an error bar larger than the gap, and averaging it in with
+real runs would dilute every number it touched. Its job note now says so.
