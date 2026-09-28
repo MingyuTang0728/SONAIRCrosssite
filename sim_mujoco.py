@@ -44,7 +44,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -253,9 +255,21 @@ def _quat_to_rotvec(q):
     return [x * k, y * k, z * k]
 
 
+def _no_display() -> str:
+    """Why the viewer cannot open here, or "" if it can."""
+    if sys.platform.startswith(("win", "darwin")):
+        return ""
+    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+        return ""
+    return ("this machine has no display (neither DISPLAY nor WAYLAND_DISPLAY "
+            "is set), and the graphics layer would stop the whole replay "
+            "rather than just the window")
+
+
 def replay(run, out_dir: Path, menagerie: Path, degrader=None,
            carrier_mass_kg: float | None = None, settle_s: float = 0.5,
-           tcp_offset=None, frame_tol_m: float = 0.05) -> dict:
+           tcp_offset=None, frame_tol_m: float = 0.05,
+           view: bool = False, speed: float = 1.0) -> dict:
     """
     One real run in, one simulated run out, same cell, same rate.
 
@@ -343,7 +357,41 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{man.run_id}.jsonl"
     n = 0
-    with RunWriter(path, sim) as w:
+
+    # Watching it and scoring it are THE SAME RUN.
+    #
+    # The obvious way to add a picture is a second loop that animates the
+    # recorded joint angles -- and it would show a beautiful arm tracing
+    # exactly the real trajectory, because it would be playing back the
+    # measurement rather than simulating anything. What has to be on screen is
+    # the simulated arm being driven by the commanded trajectory, diverging
+    # from the real one by however much it diverges, because that divergence is
+    # the entire measurement. So the viewer is attached to the loop below, not
+    # given a loop of its own, and closing the window only stops the drawing.
+    viewer = None
+    if view:
+        # Checked BEFORE launching, not caught afterwards. With no display,
+        # GLFW prints "could not initialize GLFW" and exits the PROCESS from C
+        # -- no Python handler runs, no run file is written, and the work is
+        # simply gone. A try/except around the launch looks like it covers this
+        # and does not. So the one condition that causes it is tested first.
+        why = _no_display()
+        if why:
+            print(f"WARNING: not opening the viewer -- {why}. Replaying "
+                  f"without it; the run is written and scored either way.",
+                  file=sys.stderr)
+        else:
+            try:
+                import mujoco.viewer as _mjv
+                viewer = _mjv.launch_passive(arm.m, arm.d)
+            except Exception as e:      # noqa: BLE001
+                print(f"WARNING: could not open the viewer ({e}); "
+                      f"replaying without it.", file=sys.stderr)
+
+    wall0 = time.perf_counter()
+    t_first = float(samples[0]["t"])
+    try:
+      with RunWriter(path, sim) as w:
         prev_t = samples[0]["t"]
         for s in samples:
             dt = float(s["t"]) - prev_t
@@ -373,6 +421,27 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
                 imu={"ind0": {"quat": quat, "gyro": gyro, "accel": acc}},
             ))
             n += 1
+
+            if viewer is not None:
+                if not viewer.is_running():
+                    viewer = None
+                    continue
+                viewer.sync()
+                # Paced against the run's own clock, so what is on screen moves
+                # at the speed the arm actually moved. Running it as fast as
+                # the solver goes makes a 0.2 rad/s sweep and a 0.9 rad/s sweep
+                # look identical, which defeats the point of looking.
+                if speed > 0:
+                    ahead = (float(s["t"]) - t_first) / speed - \
+                            (time.perf_counter() - wall0)
+                    if ahead > 0:
+                        time.sleep(min(ahead, 0.25))
+    finally:
+        if viewer is not None:
+            try:
+                viewer.close()
+            except Exception:
+                pass
     return {"ok": True, "path": str(path), "samples": n,
             "cell": sim.cell_key(), "repeat": sim.repeat_idx}
 
@@ -407,6 +476,14 @@ def main(argv=None) -> int:
                          "from each run's own manifest, which is where the "
                          "measured bracket + IMU mass is recorded; pass this "
                          "only to deliberately simulate a different payload")
+    ap.add_argument("--view", action="store_true",
+                    help="watch it: open the MuJoCo viewer and play the "
+                         "simulated arm at the speed the real one moved. It is "
+                         "the SAME simulation that gets written and scored, not "
+                         "a playback of the recording")
+    ap.add_argument("--speed", type=float, default=1.0,
+                    help="viewer playback speed multiplier (2 = twice as fast, "
+                         "0.25 = quarter speed, 0 = as fast as it will go)")
     ap.add_argument("--tcp-offset", default="",
                     help="the pendant's tool offset, x,y,z[,rx,ry,rz] in "
                          "metres and radians — read it off Installation > TCP")
@@ -450,7 +527,8 @@ def main(argv=None) -> int:
         res = replay(r, out, Path(args.menagerie), degrader=degrader,
                      carrier_mass_kg=args.carrier_mass_kg,
                      tcp_offset=tcp_offset,
-                     frame_tol_m=args.frame_tol_mm / 1000.0)
+                     frame_tol_m=args.frame_tol_mm / 1000.0,
+                     view=args.view, speed=args.speed)
         if res.get("ok"):
             done += 1
             print(f"  {r.manifest.run_id}  ->  {res['samples']} samples  "
