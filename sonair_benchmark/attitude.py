@@ -44,7 +44,17 @@ MAX_STEP_S = 0.20
 
 
 # ---------------------------------------------------------------------------
-# quaternion helpers  (w, x, y, z — Hamilton convention, same as FusionHub)
+# quaternion helpers
+#
+# Storage order is (w, x, y, z), Hamilton product, and the ROTATION SENSE
+# throughout this module is SENSOR->WORLD: q takes a vector expressed in the
+# sensor's own frame and gives it in the world frame.
+#
+# That sense is a choice, and devices do not agree on it. An LPMS-B2 through
+# FusionHub publishes the opposite one. Which way round a given unit is
+# publishing is therefore measured per unit on arrival -- see QuatConvention --
+# and everything below may assume it has already been normalised to the sense
+# stated here.
 # ---------------------------------------------------------------------------
 
 def q_normalise(q):
@@ -280,6 +290,125 @@ class ComplementaryAHRS:
         return list(self.q)
 
 
+# ---------------------------------------------------------------------------
+# which way round is the device's quaternion?
+# ---------------------------------------------------------------------------
+
+class QuatConvention:
+    """
+    Decide ONCE, per unit, whether the quaternion a device publishes rotates
+    SENSOR->WORLD (this module's convention) or WORLD->SENSOR (its inverse).
+
+    This is not pedantry. A quaternion handed over in the opposite sense is
+    still unit-length, still smooth, still tracks the motion, and still looks
+    perfectly healthy on a chart -- so nothing downstream complains. What it
+    silently does is:
+
+      * flip the sign of pitch and shift roll, so the reported Euler angles
+        disagree with the device's own display by ten degrees or more;
+      * point `gravity_from_quat` in the wrong direction, so subtracting
+        gravity from the accelerometer leaves most of gravity behind. An
+        eleven degree error leaves 9.81*sin(11) = 1.9 m/s^2 of pure fiction
+        in `linear_accel` while the arm is standing perfectly still -- on a
+        channel the benchmark is scored against.
+
+    Both failures were live in this console against an LPMS-B2 through
+    FusionHub, which publishes the world->sensor sense.
+
+    The test is decisive and needs no vendor knowledge. While the unit is
+    near-stationary the accelerometer IS the gravity direction in the sensor
+    frame, and so is `gravity_from_quat` -- under the correct sense. Compute
+    the angle between them both ways round; one of them is a fraction of a
+    degree and the other is not. Accumulate over a window rather than trusting
+    one sample, and use only samples whose acceleration magnitude is close to
+    1 g, because during a real acceleration the accelerometer is not gravity
+    and the comparison means nothing.
+
+    Until it has decided, the quaternion is passed through UNCHANGED and the
+    unit reports that the question is still open, rather than a guess.
+    """
+
+    DECIDE_AFTER = 30       # near-static samples of evidence before committing
+    STATIC_TOL = 0.08       # |a|/g within this of 1.0 counts as near-static
+    MARGIN_DEG = 2.0        # the two senses must differ by at least this much
+
+    def __init__(self, pinned: str = "auto"):
+        self.pinned = pinned if pinned in ("direct", "conjugate") else ""
+        self.decided = self.pinned or ""
+        self.n_evidence = 0
+        self._direct: deque = deque(maxlen=200)
+        self._conj: deque = deque(maxlen=200)
+        self.residual_deg = 0.0
+        self.rejected_deg = 0.0
+        self.basis = "pinned by the operator" if self.pinned else ""
+
+    @staticmethod
+    def _tilt_err_deg(q, accel) -> float | None:
+        n = math.sqrt(sum(float(v) * float(v) for v in accel))
+        if n < 1e-6:
+            return None
+        au = [float(v) / n for v in accel]
+        g = gravity_from_quat(q)
+        dot = max(-1.0, min(1.0, sum(a * b for a, b in zip(g, au))))
+        return math.degrees(math.acos(dot))
+
+    def feed(self, dev_q, accel) -> None:
+        """Accumulate evidence from one sample. Cheap; safe to call always."""
+        if self.decided or not dev_q or not accel:
+            return
+        n = math.sqrt(sum(float(v) * float(v) for v in accel)) / GRAVITY
+        if abs(n - 1.0) > self.STATIC_TOL:
+            return          # accelerating: it is not measuring gravity alone
+        a = self._tilt_err_deg(dev_q, accel)
+        b = self._tilt_err_deg(q_conjugate(dev_q), accel)
+        if a is None or b is None:
+            return
+        self._direct.append(a)
+        self._conj.append(b)
+        self.n_evidence += 1
+        if self.n_evidence < self.DECIDE_AFTER:
+            return
+        da = _median(self._direct)
+        db = _median(self._conj)
+        if abs(da - db) < self.MARGIN_DEG:
+            # Symmetric case: the unit is lying almost level, where the two
+            # senses agree to within the noise. Nothing to choose between
+            # them, and no harm either -- keep watching until the carrier is
+            # tilted enough to tell, instead of committing on a coin flip.
+            self.n_evidence = self.DECIDE_AFTER - 10
+            return
+        if db < da:
+            self.decided, self.residual_deg, self.rejected_deg = "conjugate", db, da
+            self.basis = (f"its quaternion disagreed with its own accelerometer "
+                          f"by {da:.1f} deg as published and {db:.1f} deg inverted, "
+                          f"so it is published world-to-sensor and is inverted on "
+                          f"the way in")
+        else:
+            self.decided, self.residual_deg, self.rejected_deg = "direct", da, db
+            self.basis = (f"its quaternion agrees with its own accelerometer to "
+                          f"{da:.1f} deg as published")
+
+    def apply(self, dev_q):
+        """The device quaternion in this module's sensor-to-world convention."""
+        if self.decided == "conjugate":
+            return q_conjugate(dev_q)
+        return dev_q
+
+    def status(self) -> dict:
+        return {"quat_convention": self.decided or "deciding",
+                "quat_convention_basis": self.basis,
+                "quat_gravity_residual_deg": round(self.residual_deg, 3)
+                if self.decided else None}
+
+
+def _median(vals):
+    s = sorted(vals)
+    n = len(s)
+    if not n:
+        return 0.0
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
 class AttitudeTracker:
     """
     One per inertial unit. Feed it whatever the unit reports; it fills in what
@@ -292,11 +421,19 @@ class AttitudeTracker:
     has caught a mis-set output frame more than once.
     """
 
-    def __init__(self, unit: str = "imu", beta: float = 0.04):
+    RATE_WINDOW_S = 1.0        # arrival-rate averaging window
+
+    def __init__(self, unit: str = "imu", beta: float = 0.04,
+                 quat_convention: str = "auto"):
         self.unit = unit
         self.madgwick = MadgwickAHRS(beta=beta)
         self.comp = ComplementaryAHRS()
         self.bias = GyroBias()
+        # Which way round the device publishes its quaternion is measured, not
+        # assumed. See QuatConvention: assuming it cost this console a ten
+        # degree orientation error and 1.9 m/s^2 of fictitious linear
+        # acceleration on a stationary arm.
+        self.convention = QuatConvention(quat_convention)
         self.seeded = False
         self.t_last: float | None = None
         self.n = 0
@@ -313,7 +450,7 @@ class AttitudeTracker:
         # it to stop closing, and the symptom is an update rate frozen at 0 Hz
         # while data is plainly arriving. The host clock cannot do that, and
         # "how fast is it arriving" is the question the number answers anyway.
-        self._arrivals: deque = deque(maxlen=256)
+        self._arrivals: deque = deque(maxlen=4096)
         self.sensor_clock_ok = True
         self.n_clock_jumps = 0
 
@@ -351,11 +488,20 @@ class AttitudeTracker:
 
         # Arrival rate over a sliding window of the last few hundred packets,
         # on the host clock.
-        now_host = time.monotonic()
+        now_host = time.perf_counter()      # 15.6 ms on Windows otherwise
         self._arrivals.append(now_host)
+        while len(self._arrivals) > 2 and now_host - self._arrivals[1] >= self.RATE_WINDOW_S:
+            self._arrivals.popleft()
         if len(self._arrivals) >= 2:
             span = self._arrivals[-1] - self._arrivals[0]
-            if span > 0.05:
+            # At least half a second, not at least fifty milliseconds. This
+            # link does not arrive evenly: FusionHub flushes a Bluetooth batch
+            # of packets in one millisecond and then goes quiet for a tenth of
+            # a second. Over a short window that reads as 2000 Hz one moment
+            # and 90 Hz the next -- both were in an exported log -- when the
+            # unit is steady at 190. Over half a second the batching averages
+            # out and the number means what the operator thinks it means.
+            if span >= self.RATE_WINDOW_S * 0.5:
                 self.rate_hz = (len(self._arrivals) - 1) / span
 
         if accel and gyro:
@@ -371,7 +517,8 @@ class AttitudeTracker:
             self.disagreement_deg = q_angle_deg(qm, qc)
 
         if dev_q:
-            self.quat = q_normalise(dev_q)
+            self.convention.feed(dev_q, accel)
+            self.quat = q_normalise(self.convention.apply(dev_q))
             self.quat_source = "device"
             if self.seeded:
                 self.device_vs_est_deg = q_angle_deg(self.quat, self.est_quat)
@@ -400,6 +547,8 @@ class AttitudeTracker:
             "yaw_observable": bool(dev_q) or bool(rec.get("mag")),
             "rate_hz": round(self.rate_hz, 1),
         }
+        if dev_q:
+            out["quat_convention"] = self.convention.decided or "deciding"
         if not self.sensor_clock_ok:
             out["clock_jumps"] = self.n_clock_jumps
         if accel:
@@ -436,4 +585,5 @@ class AttitudeTracker:
                 "quat_source": self.quat_source,
                 "sensor_clock_ok": self.sensor_clock_ok,
                 "clock_jumps": self.n_clock_jumps,
-                "seeded": self.seeded, **self.bias.status()}
+                "seeded": self.seeded,
+                **self.convention.status(), **self.bias.status()}

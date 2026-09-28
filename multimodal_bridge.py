@@ -1646,7 +1646,9 @@ class _CellContext:
         return loaded if loaded.get("ok") else None
 
     def imu_status(self) -> dict:
-        return bench_agent.HUB.status() if _HAS_BENCH else {}
+        # The merged per-unit row, not the hub's rate-only view: pre-flight has
+        # to know what a unit's numbers MEAN as well as how fast they arrive.
+        return bench_agent.unit_report() if _HAS_BENCH else {}
 
     def clock_status(self) -> dict:
         return bench_agent.MASTER.status() if _HAS_BENCH else {}
@@ -1825,6 +1827,7 @@ async def local_handler(websocket):
         slow = 0
         period = 0.05
         last_health = 0.0
+        now_h_meta = [None]      # when the per-unit meta block last rode along
         while True:
             try:
                 if _HAS_VISION and prefs["streams"]:
@@ -1877,6 +1880,19 @@ async def local_handler(websocket):
                         msg = (ur_bridge_ext.imu_message(units) if _HAS_EXT
                                else {"type": "imu", "units": units})
                         msg["rec"] = bench_agent.RECORDER.status()["recording"]
+                        # What each unit's numbers MEAN -- the gyroscope's
+                        # units, which way round the quaternion is published,
+                        # which clock the readings are timed by -- changes at
+                        # most once per session, so it rides along once a
+                        # second rather than on all twenty messages. The page
+                        # cannot present a reading honestly without it.
+                        if now_h_meta[0] is None or \
+                                time.monotonic() - now_h_meta[0] >= 1.0:
+                            now_h_meta[0] = time.monotonic()
+                            try:
+                                msg["meta"] = bench_agent.unit_report()
+                            except Exception as e:      # noqa: BLE001
+                                record_fault("imu_meta", e)
                         await websocket.send(json.dumps(msg))
                 # A HEARTBEAT THAT DOES NOT DEPEND ON PICTURES.
                 #

@@ -217,6 +217,76 @@ def preflight(ctx, requires=None) -> dict:
         checks.append(Check("imu", "Motion sensors", "pass",
                             f"{len(live)} streaming, slowest {worst:.0f} Hz."))
 
+    # --- do we know what the numbers MEAN? -----------------------------
+    #
+    # A unit can be streaming perfectly and still be unreadable. Two things
+    # about an inertial stream are not self-evident and are therefore measured
+    # from the data rather than assumed, and until each is settled that unit's
+    # angular rate and orientation must not be recorded:
+    #
+    #   the gyroscope's units    degrees and radians are the same numbers 57x
+    #                            apart, and an LPMS-B2 through FusionHub
+    #                            publishes degrees where this console's own
+    #                            columns say radians;
+    #   the quaternion's sense   published the other way round it still looks
+    #                            healthy, but pitch changes sign and taking
+    #                            gravity out of the accelerometer leaves 1.9
+    #                            m/s^2 of fiction behind on a still arm.
+    #
+    # Both are settled by MOVING THE ARM: a slow elbow sweep gives each test
+    # the rotation it needs. That is why this is a gate and not a note — the
+    # fix takes ten seconds before the campaign and is unrecoverable after it.
+    pending_units, pending_quat = [], []
+    for u, v in live.items():
+        if str(v.get("gyro_units") or "") not in ("deg", "rad"):
+            pending_units.append(u)
+        if v.get("quat") and str(v.get("quat_convention") or "") not in \
+                ("direct", "conjugate"):
+            pending_quat.append(u)
+    if pending_units or pending_quat:
+        bits = []
+        if pending_units:
+            bits.append("the gyroscope's units are not established on "
+                        + ", ".join(pending_units))
+        if pending_quat:
+            bits.append("which way round the quaternion is published is not "
+                        "established on " + ", ".join(pending_quat))
+        checks.append(Check("imu_units", "Sensor scales established", "fail",
+                            "; ".join(bits).capitalize()
+                            + ". Run the \"settle_sensors\" job — it sweeps "
+                              "the elbow twenty degrees and back, which is all "
+                              "either measurement needs — or jog the elbow by "
+                              "hand, then run pre-flight again. Recording "
+                              "before this is settled writes angular rates "
+                              "that may be 57x wrong and an orientation that "
+                              "may be inverted.",
+                            blocking="imu" in requires))
+    else:
+        detail = []
+        for u, v in live.items():
+            unit_word = ("degrees per second" if v.get("gyro_units") == "deg"
+                         else "radians per second")
+            detail.append(f"{u} publishes {unit_word}")
+        checks.append(Check("imu_units", "Sensor scales established", "pass",
+                            "; ".join(detail) + " — measured, not assumed."))
+
+    # --- is time real on every channel? --------------------------------
+    clk = ctx.clock_status() or {}
+    stalled = [c for c, b in (clk.get("channels") or {}).items()
+               if b.get("clock") == "stalled"]
+    if stalled:
+        checks.append(Check("clock", "Sample timing", "warn",
+                            "These channels publish a timestamp that never "
+                            "advances, so their samples are timed by arrival at "
+                            "the host: " + ", ".join(stalled)
+                            + ". The average rate is sound and every channel "
+                              "shares one timeline, but per-sample spacing "
+                              "carries the transport's jitter.",
+                            blocking=False))
+    else:
+        checks.append(Check("clock", "Sample timing", "pass",
+                            "Every channel's timing is usable."))
+
     # --- somewhere to put it -------------------------------------------
     try:
         free_gb = shutil.disk_usage(ctx.out_dir()).free / 1e9
@@ -631,8 +701,21 @@ class Runner:
             res = self.ctx.record_stop()
             if not res.get("ok"):
                 return False, res.get("error", "could not close the run file")
+            rate = res.get("achieved_rate_hz")
             self._say(f"Saved {res.get('n', 0)} samples to "
-                      f"{res.get('path', '')}.", "ok")
+                      f"{res.get('path', '')}"
+                      + (f" at {rate:.0f} a second." if rate else "."), "ok")
+            # A run that did not keep up is still a good run, but the person
+            # who will later generate its simulated twin has to be told at
+            # what rate, and the only moment they are certainly paying
+            # attention is now.
+            if res.get("rate_warning"):
+                self._say(res["rate_warning"], "warn")
+            if res.get("worst_gap_s", 0) > 0.25:
+                self._say(f"The longest gap between samples in that run was "
+                          f"{res['worst_gap_s']:.2f} s, over "
+                          f"{res.get('skipped_intervals', 0)} interruptions.",
+                          "warn")
             return True, ""
 
         if kind == "imu_log_start":
@@ -773,6 +856,37 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
                 {"kind": "message", "text": "Everything the cell needs is present."},
             ],
         ),
+        "settle_sensors": Job(
+            name="settle_sensors",
+            notes="Move the elbow gently so each inertial unit's scales can be "
+                  "measured. Records nothing. Run it once after connecting the "
+                  "sensors, before anything that records.",
+            # Deliberately does NOT require "imu" for its gate: this is the job
+            # whose whole purpose is to satisfy that gate, so gating it on the
+            # gate would be a lock with its key inside. It still needs the
+            # robot, because the measurement needs the arm to move.
+            requires=["robot"],
+            steps=[
+                {"kind": "preflight"},
+                {"kind": "message",
+                 "text": "Sweeping the elbow slowly. Two things are being "
+                         "measured from the data itself: whether each unit "
+                         "reports turn rate in degrees or radians, and which "
+                         "way round it publishes its orientation. Neither is "
+                         "printed on the sensor and both are wrong by a lot if "
+                         "assumed."},
+                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": 20.0,
+                 "joint_vel": 0.35},
+                {"kind": "dwell", "seconds": 0.5},
+                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": -20.0,
+                 "joint_vel": 0.35},
+                {"kind": "dwell", "seconds": 0.5},
+                {"kind": "message",
+                 "text": "Done. Run pre-flight again — Sensor scales "
+                         "established should now pass, and it will say what "
+                         "each unit was found to be reporting."},
+            ],
+        ),
         "single_run": Job(
             name="single_run",
             notes="One recorded pass at a single elbow speed, for checking a "
@@ -905,6 +1019,12 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
             "runs": copied_runs,
             "inertial": copied_imu,
         },
+        # Measured from the files, not copied from what was asked for. A run
+        # file's own manifest records the rate the recorder was ASKED for; if
+        # the cell could not keep up, that number is a claim the file does not
+        # support, and the simulated side generated to match it will be
+        # resampled against a grid the real side never used.
+        "measured": _audit_runs(folder / "runs"),
         "reading_it": {
             "runs/*.jsonl": (
                 "One benchmark run each. First line is the run manifest "
@@ -915,17 +1035,38 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
                 "reading, fixed column set. Columns a unit does not provide "
                 "are present and empty."),
             "timestamps": (
-                "Run files are stamped on the host monotonic clock (seconds "
-                "since the agent started). Inertial CSVs are stamped on the "
-                "SENSOR's own clock plus whatever offset has been measured "
-                "for it -- see `clock.aligned` and `clock.unaligned` in this "
-                "manifest. A channel listed under `unaligned` has NOT been "
-                "tied to the host clock, so its timestamps are internally "
-                "consistent and are NOT directly comparable with another "
-                "channel's. Align it, or difference it only against itself. "
+                "Every file in here is stamped on ONE clock: the host "
+                "monotonic clock, seconds since the agent started. "
+                "A channel is allowed to place its own samples using its own "
+                "timestamps only once those have been shown to advance AND an "
+                "offset onto the host clock has been measured for it; "
+                "otherwise its rows are stamped as they arrive at the host. "
+                "`clock.inertial_files_on` says, per channel, which of the two "
+                "happened and why, and `clock.arrival_timed` lists the "
+                "channels on arrival time. Arrival time is monotonic and "
+                "shared, so channels stay comparable; what it costs is "
+                "per-sample spacing, which carries the transport's jitter -- "
+                "over Bluetooth that is a burst of readings in one "
+                "millisecond and then a gap. Treat the average rate as sound "
+                "and individual gaps as approximate. "
+                "A channel listed under `clock.unaligned` additionally has no "
+                "measured offset of its own; that is fine while it is on "
+                "arrival time and matters the moment it is not. "
                 "Neither clock is wall time, deliberately: wall time can step "
                 "backwards under NTP correction, and a run containing a "
                 "backwards step is silently unusable."),
+            "units": (
+                "An inertial unit's scales are MEASURED on arrival, not taken "
+                "from a datasheet, and the verdict for each is in "
+                "`cell.inertial`. `gyro_units` says whether that unit "
+                "publishes degrees or radians per second -- the rig's LPMS-B2 "
+                "through FusionHub publishes degrees, and the two are the same "
+                "numbers a factor of 57.3 apart. `quat_convention` says which "
+                "way round it publishes its quaternion; `conjugate` means it "
+                "publishes world-to-sensor and was inverted on the way in. "
+                "Whatever those say, the columns in these files are always in "
+                "the units their headings name: radians per second, metres per "
+                "second squared, and a sensor-to-world quaternion."),
             "scored_channels": (
                 "Only channels marked role=benchmark in `channels` count "
                 "toward a GCR number. The rest are evidence for the "
@@ -954,6 +1095,79 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
                      f"definitions and the clock they are all on.")}
 
 
+def _audit_runs(runs_dir) -> dict:
+    """
+    Read back what was actually written, per run: how many samples, over what
+    span, at what rate, with what worst gap, and whether the commanded joint
+    trajectory is in there.
+
+    Written by reading the files rather than by remembering what was intended,
+    because the two differed: a smoke-test run declared 125 Hz in its own
+    manifest and held 43 Hz with a 1.5 s hole in it, and nothing said so.
+    """
+    out = {}
+    runs_dir = Path(runs_dir)
+    if not runs_dir.exists():
+        return out
+    for f in sorted(runs_dir.iterdir()):
+        if not f.is_file() or f.suffix != ".jsonl":
+            continue
+        declared, ts, with_target = None, [], 0
+        try:
+            with f.open(encoding="utf-8") as fh:
+                for i, line in enumerate(fh):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:       # noqa: BLE001
+                        continue
+                    if i == 0 and "_manifest" in row:
+                        declared = row["_manifest"].get("sample_rate_hz")
+                        continue
+                    t = row.get("t")
+                    if isinstance(t, (int, float)):
+                        ts.append(float(t))
+                    if row.get("target_q"):
+                        with_target += 1
+        except Exception as e:               # noqa: BLE001
+            out[f.name] = {"error": str(e)}
+            continue
+        n = len(ts)
+        span = (ts[-1] - ts[0]) if n >= 2 else 0.0
+        gaps = [b - a for a, b in zip(ts, ts[1:])] if n >= 2 else []
+        block = {
+            "samples": n,
+            "span_s": round(span, 3),
+            "declared_rate_hz": declared,
+            "achieved_rate_hz": round((n - 1) / span, 1) if span > 0 else None,
+            "worst_gap_s": round(max(gaps), 3) if gaps else None,
+            "monotonic": all(g > 0 for g in gaps) if gaps else True,
+            "distinct_timestamps": len(set(ts)),
+            "with_commanded_trajectory": with_target,
+        }
+        notes = []
+        if declared and block["achieved_rate_hz"] and \
+                block["achieved_rate_hz"] < 0.8 * float(declared):
+            notes.append(f"held {block['achieved_rate_hz']:.0f} Hz of the "
+                         f"{float(declared):.0f} Hz its manifest declares; "
+                         f"generate or resample the simulated side at the "
+                         f"achieved rate, not the declared one")
+        if n and block["distinct_timestamps"] < n:
+            notes.append(f"{n - block['distinct_timestamps']} samples share a "
+                         f"timestamp with another sample")
+        if not block["monotonic"]:
+            notes.append("time does not increase monotonically through this file")
+        if n and with_target < n:
+            notes.append(f"{n - with_target} samples carry no commanded joint "
+                         f"trajectory, so those cannot be replayed in a "
+                         f"simulator")
+        block["notes"] = notes
+        out[f.name] = block
+    return out
+
+
 def _clock_block(ctx) -> dict:
     """
     What is actually known about time in this dataset, including what is not.
@@ -966,21 +1180,40 @@ def _clock_block(ctx) -> dict:
     """
     st = ctx.clock_status() or {}
     offsets = st.get("offsets_ms", {}) or {}
+    chans = st.get("channels", {}) or {}
     units = list((ctx.imu_status() or {}).keys())
     aligned = sorted(k for k in offsets)
     unaligned = sorted(u for u in units if u not in offsets)
+    # Which timebase each channel's rows were actually written on, in its own
+    # words. A dataset that says "each sensor's own clock" while one sensor's
+    # clock never advanced is a dataset that will be differenced wrongly by
+    # whoever reads it next -- including its author, months later.
+    timebase = {c: b.get("why", "") for c, b in chans.items()}
+    stalled = sorted(c for c, b in chans.items() if b.get("clock") == "stalled")
+    notes = []
+    if unaligned:
+        notes.append("These channels have no measured offset to the host clock: "
+                     + ", ".join(unaligned)
+                     + ". Do not difference them against another channel until "
+                       "one is measured — the tap check on the Record page is "
+                       "what measures it.")
+    if stalled:
+        notes.append("These channels publish a timestamp that never advances, so "
+                     "their rows are timed by arrival at the host instead: "
+                     + ", ".join(stalled)
+                     + ". Arrival time is monotonic and shared with every other "
+                       "channel, but it carries the transport's jitter — for the "
+                       "LPMS-B2 over Bluetooth that is a burst of packets in one "
+                       "millisecond and then a gap, so treat per-sample spacing "
+                       "as approximate and the average rate as sound.")
     return {
         **st,
         "run_files_on": "host monotonic, seconds since the agent started",
-        "inertial_files_on": "each sensor's own clock, plus its measured offset",
+        "inertial_files_on": timebase or "host monotonic",
         "aligned": aligned,
         "unaligned": unaligned,
-        "warning": ("" if not unaligned else
-                    "These channels have no measured offset to the host clock: "
-                    + ", ".join(unaligned)
-                    + ". Do not difference them against another channel until "
-                      "one is measured — the tap check on the Record page is "
-                      "what measures it."),
+        "arrival_timed": sorted(st.get("arrival_timed", []) or []),
+        "warning": " ".join(notes),
     }
 
 

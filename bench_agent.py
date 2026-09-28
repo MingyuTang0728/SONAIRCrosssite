@@ -73,6 +73,95 @@ except Exception as e:      # noqa: BLE001
 # Time master
 # ============================================================
 
+class SourceClock:
+    """
+    What one channel's own timestamps are worth, decided from the stream.
+
+    A source clock is a claim, not a fact, and this rig has a channel whose
+    claim is false: an LPMS-B2 through FusionHub publishes `timecode` and
+    `timestamp` fields that are BIT-IDENTICAL on every packet -- verified
+    against FusionHub's own MCAP recording, 4280 messages, one distinct
+    timestamp between them. Taken at face value that produced an export whose
+    1425 rows all carried the same instant, an integration step of exactly
+    zero for every orientation filter, and a channel age computed against a
+    clock that never moved.
+
+    So each channel is classified as it arrives:
+
+      ok        its timestamps advance by plausible amounts
+      stalled   they do not advance at all
+      jumpy     they advance by implausible amounts
+      unfitted  they advance fine, but no measured offset maps them onto the
+                master clock, so their zero is somewhere else entirely
+
+    Only `ok` AND fitted earns a channel the right to place its own samples on
+    the master timeline. Everything else is placed by arrival time at the host,
+    which is jittery by a packet or two but monotonic, shared with every other
+    channel, and never a lie.
+
+    The classification is made once, from the first few hundred samples, and
+    then held. Switching timebases part-way through a recording would put two
+    incompatible timelines in one file, which is worse than either.
+    """
+
+    DECIDE_AFTER = 200
+    MIN_STEP = 1e-5             # 100 kHz; below this it is not advancing
+    MAX_STEP = 2.0              # a bigger step than this is a fault, not a gap
+
+    def __init__(self, channel: str):
+        self.channel = channel
+        self.verdict = ""               # "" until decided
+        self.n = 0
+        self.n_stalled = 0
+        self.n_jumpy = 0
+        self.n_ok = 0
+        self.fitted = False
+        self._last: float | None = None
+
+    def observe(self, t_src: float) -> None:
+        if self._last is not None:
+            step = t_src - self._last
+            if abs(step) < self.MIN_STEP:
+                self.n_stalled += 1
+            elif step < 0 or step > self.MAX_STEP:
+                self.n_jumpy += 1
+            else:
+                self.n_ok += 1
+        self._last = t_src
+        self.n += 1
+        if self.verdict or self.n < self.DECIDE_AFTER:
+            return
+        total = max(1, self.n_ok + self.n_stalled + self.n_jumpy)
+        if self.n_stalled / total > 0.5:
+            self.verdict = "stalled"
+        elif self.n_jumpy / total > 0.1:
+            self.verdict = "jumpy"
+        else:
+            self.verdict = "ok"
+
+    def usable(self) -> bool:
+        return self.verdict == "ok" and self.fitted
+
+    def why(self) -> str:
+        if self.usable():
+            return "the channel's own clock, mapped onto the master by a measured offset"
+        if not self.verdict:
+            return "arrival time at the host while the channel's own clock is still being assessed"
+        if self.verdict == "stalled":
+            return "arrival time at the host -- the channel's own timestamp does not advance"
+        if self.verdict == "jumpy":
+            return (f"arrival time at the host -- the channel's own timestamp "
+                    f"stepped implausibly on {self.n_jumpy} of {self.n} packets")
+        return ("arrival time at the host -- the channel's clock advances, but no "
+                "offset onto the master clock has been measured for it yet")
+
+    def status(self) -> dict:
+        return {"clock": self.verdict or "assessing", "fitted": self.fitted,
+                "timebase": "own" if self.usable() else "arrival",
+                "why": self.why(), "samples": self.n,
+                "stalled": self.n_stalled, "jumpy": self.n_jumpy}
+
+
 class TimeMaster:
     """
     The host's monotonic clock stands in for the Teensy until the Teensy is
@@ -83,17 +172,45 @@ class TimeMaster:
     Using a MONOTONIC clock rather than wall time is not a detail. Wall time
     can step backwards mid-run under NTP correction, and a run containing a
     backwards time step is silently unusable.
+
+    `to_master` used to be `t_src + offset`, with the offset defaulting to
+    zero. That default is the mistake this class exists to avoid: it takes a
+    number from someone else's clock, adds nothing to it, and returns it as
+    master time. Two things then go wrong at once, and both were live. An
+    epoch-scale sensor timestamp came back as master time, so a channel's age
+    -- master now, minus that -- read minus 1.79 billion seconds and no
+    staleness check could ever fire. And a sensor whose clock does not advance
+    at all put every sample in a recording at the same instant.
+
+    A channel's own clock is now used only once it has been shown to advance
+    AND an offset onto the master has actually been fitted from a shared
+    event. Until then, arrival time at the host -- which is what `now()`
+    returns -- stands in, and which channels are on which basis is reported
+    rather than assumed.
     """
 
     def __init__(self):
-        self._t0 = time.monotonic()
+        self._t0 = time.perf_counter()
         self._wall0 = time.time()
         self.offsets: dict[str, float] = {}
         self.residuals: dict[str, float] = {}
+        self.clocks: dict[str, SourceClock] = {}
         self.source = "host-monotonic"
+        self._lock = threading.Lock()
 
     def now(self) -> float:
-        return time.monotonic() - self._t0
+        # perf_counter, NOT monotonic. On Windows time.monotonic() is
+        # GetTickCount64, whose resolution is the 15.6 ms scheduler tick, and
+        # this is the clock every recorded sample is stamped with. A smoke-test
+        # run showed it plainly: every interval in the file was a multiple of
+        # 15.6 ms, 108 of 303 samples shared a timestamp with a neighbour, a
+        # loop asked for 125 Hz delivered 43, and the file reported time
+        # standing still between consecutive samples. perf_counter is
+        # QueryPerformanceCounter, sub-microsecond, and monotonic in practice
+        # on every platform this runs on. A 190 Hz sensor has a 5.3 ms period,
+        # so a 15.6 ms clock cannot even order its samples correctly, let alone
+        # measure a sim-to-real gap with them.
+        return time.perf_counter() - self._t0
 
     def wall_of(self, t: float) -> float:
         return self._wall0 + t
@@ -101,12 +218,46 @@ class TimeMaster:
     def set_offset(self, channel: str, offset_s: float, residual_s: float = 0.0) -> None:
         self.offsets[channel] = float(offset_s)
         self.residuals[channel] = float(residual_s)
+        with self._lock:
+            ch = self.clocks.get(channel)
+            if ch is None:
+                ch = self.clocks[channel] = SourceClock(channel)
+            ch.fitted = True
+
+    def clock_of(self, channel: str) -> SourceClock:
+        with self._lock:
+            ch = self.clocks.get(channel)
+            if ch is None:
+                ch = self.clocks[channel] = SourceClock(channel)
+            return ch
 
     def to_master(self, channel: str, t_src: float) -> float:
-        return float(t_src) + self.offsets.get(channel, 0.0)
+        """
+        Place one sample on the master timeline.
+
+        Returns arrival time unless this channel has earned the right to place
+        its own samples -- see SourceClock. Callers do not need to know which
+        happened; `clock_report()` says, for the run manifest and the console.
+        """
+        ch = self.clock_of(channel)
+        try:
+            ch.observe(float(t_src))
+        except (TypeError, ValueError):
+            return self.now()
+        if ch.usable():
+            return float(t_src) + self.offsets.get(channel, 0.0)
+        return self.now()
 
     def measured_channels(self) -> list[str]:
         return sorted(self.offsets)
+
+    def arrival_timed_channels(self) -> list[str]:
+        with self._lock:
+            return sorted(c for c, ch in self.clocks.items() if not ch.usable())
+
+    def clock_report(self) -> dict:
+        with self._lock:
+            return {c: ch.status() for c, ch in self.clocks.items()}
 
     def status(self) -> dict:
         return {
@@ -115,6 +266,8 @@ class TimeMaster:
             "offsets_ms": {k: round(v * 1000.0, 3) for k, v in self.offsets.items()},
             "residuals_ms": {k: round(v * 1000.0, 3) for k, v in self.residuals.items()},
             "worst_residual_ms": round(max(self.residuals.values(), default=0.0) * 1000.0, 3),
+            "channels": self.clock_report(),
+            "arrival_timed": self.arrival_timed_channels(),
         }
 
 
@@ -787,6 +940,8 @@ class BenchRecorder:
         self._lock = threading.Lock()
         self.current: dict | None = None
         self.last: dict | None = None
+        self._skips = 0
+        self._worst_gap = 0.0
         self.state_fn = None  # set by the bridge: () -> (q, tcp_pose)
 
     def is_recording(self) -> bool:
@@ -862,17 +1017,39 @@ class BenchRecorder:
     def _loop(self, rate_hz: float) -> None:
         period = 1.0 / max(1.0, rate_hz)
         next_t = MASTER.now()
+        self._skips = 0
+        self._worst_gap = 0.0
         n = 0
         while not self._stop.is_set():
             now = MASTER.now()
             if now < next_t:
-                time.sleep(min(period, max(0.0, next_t - now)))
+                # Sleep the bulk of the wait, then spin the last millisecond.
+                # A bare sleep of the whole remainder overshoots: the OS is
+                # free to return late, and on Windows it historically returned
+                # a whole 15.6 ms scheduler tick late, which is most of an
+                # interval at 125 Hz. Spinning a millisecond costs a little
+                # CPU and buys a sample grid that is actually the declared one.
+                wait = next_t - now
+                if wait > 0.0015:
+                    time.sleep(wait - 0.001)
+                while MASTER.now() < next_t and not self._stop.is_set():
+                    pass
                 continue
             next_t += period
             # If we fall far behind (a GC pause, a disk hiccup), resynchronise
             # rather than sprinting to catch up — a burst of samples all
             # stamped microseconds apart is worse than a visible gap.
-            if MASTER.now() - next_t > 0.25:
+            #
+            # But resynchronising SILENTLY is how a run ends up carrying a
+            # manifest that says 125 Hz over a file holding 43 Hz, with a 1.5 s
+            # hole in the middle. Phase 4 generates the simulated side at the
+            # declared rate, so a declared rate the real side never achieved is
+            # a resampling error charged to the sim-to-real gap. Every skip is
+            # counted and the worst one measured, and both go in the manifest.
+            behind = MASTER.now() - next_t
+            if behind > 0.25:
+                self._skips += 1
+                self._worst_gap = max(self._worst_gap, behind + period)
                 next_t = MASTER.now()
 
             st = {}
@@ -933,9 +1110,28 @@ class BenchRecorder:
                 self._writer.close()
             self._writer = None
         cur = self.current or {}
-        self.last = {**cur, "n": n, "stopped": MASTER.now()}
+        stopped = MASTER.now()
+        span = max(1e-6, stopped - float(cur.get("started") or stopped))
+        achieved = n / span
+        asked = float(cur.get("rate_hz") or 0.0)
+        self.last = {**cur, "n": n, "stopped": stopped,
+                     "achieved_rate_hz": round(achieved, 1),
+                     "skipped_intervals": int(getattr(self, "_skips", 0)),
+                     "worst_gap_s": round(float(getattr(self, "_worst_gap", 0.0)), 3)}
+        if asked and achieved < 0.8 * asked:
+            # Said plainly, on the run that is affected, while the operator is
+            # still standing at the cell and can do something about it.
+            self.last["rate_warning"] = (
+                f"This run was asked for {asked:.0f} samples a second and "
+                f"managed {achieved:.0f}. The samples it holds are correctly "
+                f"timed, so the run is usable — but the simulated side must be "
+                f"generated at {achieved:.0f} Hz to match it, or resampled, and "
+                f"a resampling this large is error charged to the gap. Close "
+                f"the live camera views while recording, or record at "
+                f"{achieved:.0f} Hz.")
         self.current = None
-        log.info("run %s finished: %d samples", self.last.get("run_id"), n)
+        log.info("run %s finished: %d samples, %.1f Hz achieved of %.0f asked",
+                 self.last.get("run_id"), n, achieved, asked)
         return {"ok": True, **self.last}
 
     def status(self) -> dict:
@@ -966,11 +1162,52 @@ def start_sources(*, d435i: bool = True, fusionhub: bool = True,
     return out
 
 
+def unit_report() -> dict:
+    """
+    One row per inertial unit, merging everything known about it: how fast it
+    is arriving (the hub), what its numbers mean (the link's unit verdict),
+    how its orientation is being interpreted (the attitude tracker), and what
+    its own clock is worth (the time master).
+
+    Three separate objects each hold a piece of this, and pre-flight has to
+    answer one question -- "is this unit fit to record?" -- which needs all
+    four. Assembling it here rather than in the gate keeps the gate testable
+    and keeps the console and the gate reading the same row.
+    """
+    hub = HUB.status()
+    links = LINKS.status() or {}
+    trackers = HUB.tracker_status() or {}
+    latest = HUB.latest()
+    clocks = MASTER.clock_report()
+    out = {}
+    for u in set(hub) | set(links) | set(trackers):
+        row = dict(hub.get(u, {}))
+        lk = links.get(u) or {}
+        for k in ("gyro_units", "gyro_units_basis", "gyro_units_revised",
+                  "gyro_units_evidence", "gyro_peak_raw", "running", "format"):
+            if k in lk:
+                row[k] = lk[k]
+        if u == D435I.UNIT and D435I.status().get("running"):
+            row.setdefault("running", True)
+        tr = trackers.get(u) or {}
+        for k in ("quat_convention", "quat_convention_basis",
+                  "quat_gravity_residual_deg", "quat_source", "sensor_clock_ok",
+                  "clock_jumps"):
+            if k in tr:
+                row[k] = tr[k]
+        rec = latest.get(u) or {}
+        row["quat"] = rec.get("quat")
+        row["units_pending"] = bool(rec.get("_units_pending"))
+        row["clock"] = clocks.get(u, {})
+        out[u] = row
+    return out
+
+
 def status() -> dict:
     """One blob the browser polls to render the acquisition panel."""
     return {
         "clock": MASTER.status(),
-        "units": HUB.status(),
+        "units": unit_report(),
         "sources": {"d435i": D435I.status(), "fusionhub": FUSIONHUB.status()},
         "links": LINKS.status(),
         "attitude": HUB.tracker_status(),

@@ -846,7 +846,7 @@ class GyroUnits:
     matters: a tool moving slowly reads 5 deg/s, which is also a plausible
     5 rad/s, so a per-sample rule flips back and forth mid-run and the
     recorded rates are a mixture of two unit systems. That is not a small
-    error — it is a factor of 57 on an unknown subset of the rows.
+    error -- it is a factor of 57 on an unknown subset of the rows.
 
     Two sources of evidence, in order of strength:
 
@@ -856,75 +856,189 @@ class GyroUnits:
       the reported gyro magnitude is then either about 1 (radians) or about
       57 (degrees), and nothing else. This is decisive, so it is used first.
 
-      MAGNITUDE. With no orientation to compare against, the peak magnitude
-      over the first few seconds is all there is: a unit on a moving arm that
-      never exceeds 7 is reporting radians, because 7 rad/s is 400 deg/s.
+      It needs a clock, and NOT necessarily the sensor's own: an LPMS-B2
+      through FusionHub publishes a timestamp field that never advances, which
+      starved this test of every sample it had and left the weak fallback
+      below to decide -- wrongly -- that a unit publishing deg/s was
+      publishing rad/s. So when the timestamp handed in is not advancing
+      plausibly, arrival time on the host is used for this comparison instead.
+      Arrival time is jittery, which is fine: the verdict only has to separate
+      a ratio of 1 from a ratio of 57.
+
+      MAGNITUDE. With no usable orientation to compare against, the peak
+      magnitude is all there is, and it is only conclusive at the extremes.
+      A peak above 7 can only be degrees (7 rad/s is 400 deg/s). A peak below
+      LOW_PEAK means the unit has barely moved, where both readings are
+      entirely plausible -- so nothing is decided and the link says so,
+      rather than committing on a still sensor and being wrong by 57x for
+      the whole campaign.
 
     Until it has decided, the raw value is passed through unscaled and the
     link REPORTS that it is undecided, rather than silently applying a guess.
+
+    One safety net on top: a reading that is impossible under the verdict
+    overturns it. A unit decided "rad" that later reports 24 (1400 deg/s, on a
+    UR5e) was decided wrong; that is caught, corrected, and counted, because
+    a loud correction beats a quiet factor of 57.
     """
 
-    DECIDE_AFTER = 40          # samples of evidence before committing
-    RATIO_DEG = 20.0           # anything above this is degrees, not radians
+    DECIDE_AFTER = 400         # samples before the weak fallback may commit
+    RATIO_DEG = 20.0           # ratio above this is degrees, not radians
+    WINDOW_S = 0.30            # length of one orientation-vs-gyro comparison
+    MIN_TURN_DEG = 4.0         # rotation in a window that counts as real motion
+    RATIO_N = 5                # windows agreeing before committing
+    HIGH_PEAK = 7.0            # above this, radians is physically impossible
+    LOW_PEAK = 0.35            # below this, the unit has not really moved
 
     def __init__(self, pinned: str = "auto"):
         self.pinned = pinned if pinned in ("deg", "rad") else ""
         self.decided = self.pinned or ""
         self.evidence = 0
-        self.ratio_sum = 0.0
-        self.ratio_n = 0
+        self.ratios: list[float] = []
         self.peak = 0.0
-        self._prev = None      # (t, quat)
+        self.n_revised = 0
+        self.clock_used = ""
+        self._last_src: float | None = None
+        self._last_ratio_t: float | None = None
+        self._win: deque = deque()      # (t, quat, gyro_mag) inside the window
         self.basis = "pinned by the operator" if self.pinned else ""
 
-    def feed(self, rec: dict, t: float | None) -> dict:
+    @property
+    def ratio_n(self) -> int:
+        return len(self.ratios)
+
+    def _ratio_window(self, t_use, quat, mag):
+        """
+        One comparison of the unit's own rotation against its own gyroscope,
+        integrated over WINDOW_S rather than taken between two samples.
+
+        Two samples are not enough here. This link arrives in Bluetooth
+        bursts: several packets land in the same millisecond and then nothing
+        for a tenth of a second. Dividing a sample-to-sample quaternion change
+        by a sample-to-sample dt of 30 microseconds turns quaternion rounding
+        noise into hundreds of degrees per second, and the ratio it produces
+        says "radians" on a unit publishing degrees. Over a window the elapsed
+        time is right even when the individual gaps are not, and the two
+        angles being compared are both real rotations.
+
+        Returns gyro_angle / orientation_angle: about 1 for radians, about 57
+        for degrees, and nothing in between.
+        """
+        self._win.append((t_use, list(quat), mag))
+        # Drop from the front only while doing so still leaves a full window.
+        # Trimming to "no longer than WINDOW_S" and then requiring "at least
+        # WINDOW_S" is a window that is never ready, which is how this test
+        # managed to produce no evidence at all on a link that was moving.
+        while len(self._win) > 4 and t_use - self._win[1][0] >= self.WINDOW_S:
+            self._win.popleft()
+        span = t_use - self._win[0][0]
+        if span < self.WINDOW_S or len(self._win) < 4:
+            return None
+        q0, q1 = self._win[0][1], quat
+        d = abs(sum(a * b for a, b in zip(q0, q1)))
+        turn = 2.0 * math.acos(max(-1.0, min(1.0, d)))      # rad, from orientation
+        if math.degrees(turn) < self.MIN_TURN_DEG:
+            return None                 # not moving enough to say anything
+        # Integrate the reported rate over the same window, in its own units.
+        gyro_angle = 0.0
+        for (ta, _, ma), (tb, _, _) in zip(self._win, list(self._win)[1:]):
+            gyro_angle += ma * max(0.0, tb - ta)
+        if gyro_angle <= 0.0:
+            return None
+        # Windows are allowed to overlap, spaced a third of a window apart.
+        # Real motion on this rig is scarce -- a single elbow sweep is half a
+        # second in a twenty second log -- so insisting on disjoint windows
+        # means never collecting enough of them to decide.
+        if self._last_ratio_t is not None and \
+                t_use - self._last_ratio_t < self.WINDOW_S / 3.0:
+            return None
+        self._last_ratio_t = t_use
+        return gyro_angle / turn
+
+    def feed(self, rec: dict, t: float | None,
+             t_arrival: float | None = None) -> dict:
         gyro = rec.get("gyro")
         if not gyro:
             return rec
         mag = math.sqrt(sum(float(v) * float(v) for v in gyro))
         self.peak = max(self.peak, mag)
         quat = rec.get("quat")
+        if t_arrival is None:
+            t_arrival = time.perf_counter()
 
-        if not self.decided:
-            if quat and t is not None:
-                if self._prev is not None:
-                    pt, pq = self._prev
-                    dt = t - pt
-                    if 1e-4 < dt < 0.5 and mag > 1e-3:
-                        d = abs(sum(a * b for a, b in zip(pq, quat)))
-                        d = max(-1.0, min(1.0, d))
-                        w = 2.0 * math.acos(d) / dt      # rad/s, from orientation
-                        if w > 1e-3:
-                            self.ratio_sum += mag / w
-                            self.ratio_n += 1
-                self._prev = (t, quat)
+        # A source timestamp is only used for the window if it is advancing.
+        # Otherwise the host's arrival clock stands in -- see the class note.
+        t_use, clock = float(t_arrival), "arrival time at the host"
+        if t is not None and self._last_src is not None:
+            if 1e-4 < float(t) - self._last_src < 0.5:
+                t_use, clock = float(t), "the unit's own timestamp"
+        if t is not None:
+            self._last_src = float(t)
+
+        if not self.decided and not self.pinned:
             self.evidence += 1
-            if self.ratio_n >= 12:
-                r = self.ratio_sum / self.ratio_n
+            if quat:
+                r = self._ratio_window(t_use, quat, mag)
+                if r is not None:
+                    self.ratios.append(r)
+                    self.clock_used = clock
+            if len(self.ratios) >= self.RATIO_N:
+                r = sorted(self.ratios)[len(self.ratios) // 2]   # median
                 self.decided = "deg" if r > self.RATIO_DEG else "rad"
-                self.basis = (f"compared against the unit's own orientation "
-                              f"(ratio {r:.1f})")
-            elif self.evidence >= self.DECIDE_AFTER:
-                self.decided = "deg" if self.peak > 7.0 else "rad"
-                self.basis = (f"from the peak reading of {self.peak:.1f} over "
-                              f"{self.evidence} samples")
+                self.basis = (f"its gyroscope integrated over {self.RATIO_N} "
+                              f"windows against its own orientation change "
+                              f"(ratio {r:.1f}, timed by {self.clock_used})")
+            elif self.peak > self.HIGH_PEAK:
+                self.decided = "deg"
+                self.basis = (f"a peak reading of {self.peak:.1f} can only be "
+                              f"degrees per second on this machine")
+            elif (not quat and self.evidence >= self.DECIDE_AFTER
+                    and self.peak >= self.LOW_PEAK):
+                # The magnitude fallback is for units that publish NO
+                # orientation, and only for them. On a unit that does publish
+                # one, waiting for it to move is strictly better than guessing:
+                # the wait costs a still sensor's gyro rows, a wrong guess
+                # costs the whole campaign a factor of 57.
+                self.decided = "rad"
+                self.basis = (f"no orientation output to compare against and a "
+                              f"peak of only {self.peak:.2f} over "
+                              f"{self.evidence} samples -- WEAK, pin the units "
+                              f"if this is wrong")
+        elif self.decided == "rad" and self.peak > self.HIGH_PEAK:
+            # Impossible under the standing verdict, so the verdict was wrong.
+            self.decided = "deg"
+            self.n_revised += 1
+            self.basis = (f"CORRECTED to degrees: a reading of {self.peak:.1f} "
+                          f"is {math.degrees(self.peak):.0f} deg/s, which this "
+                          f"machine cannot do -- rows before this correction "
+                          f"are 57x too large")
 
         if self.decided == "deg":
             rec = dict(rec)
             rec["gyro"] = [float(v) * DEG for v in gyro]
         elif not self.decided:
-            # Mark the rows taken before the verdict. Downstream orientation
-            # estimators must not integrate a rate whose units are still
-            # unknown: being wrong by 57x for the first second throws the
-            # filter so far off that it takes tens of seconds to recover, and
-            # the operator sees a wildly wrong attitude with no explanation.
+            # Before the verdict the reading is a number without a unit, so it
+            # is moved out of `gyro` and kept as `gyro_raw`.
+            #
+            # Leaving it in `gyro` was the whole of this bug. Downstream
+            # everything treats `gyro` as rad/s: the orientation filters
+            # integrate it, and the CSV writes it into a column called
+            # `gyro_x_rad_s`. A unit publishing degrees therefore exported
+            # angular rates 57x too large under a column heading asserting
+            # otherwise -- 1400 deg/s on a UR5e elbow -- and nothing in the
+            # file said so. An empty cell is a statement that can be read
+            # later; a wrong number in the right-looking column cannot.
             rec = dict(rec)
+            rec["gyro_raw"] = list(gyro)
+            rec.pop("gyro", None)
             rec["_units_pending"] = [1.0]
         return rec
 
     def status(self) -> dict:
         return {"gyro_units": self.decided or "deciding",
                 "gyro_units_basis": self.basis,
+                "gyro_units_revised": self.n_revised,
+                "gyro_units_evidence": self.ratio_n,
                 "gyro_peak_raw": round(self.peak, 3)}
 
 
@@ -1153,9 +1267,15 @@ class _Base:
             t_src = time.time()
             rec = dict(rec)
             rec["_arrival_time_used"] = [1.0]
-        now = time.monotonic()
+        # perf_counter: this is the arrival stamp a sample may be RECORDED
+        # with, and on Windows time.monotonic() only resolves 15.6 ms -- three
+        # times coarser than this sensor's own 5.3 ms sample period.
+        now = time.perf_counter()
         # Units are decided per link, from accumulated evidence, not per row.
-        rec = self.units.feed(rec, float(t_src))
+        # Arrival time is handed in explicitly so the decisive orientation
+        # comparison still works when the unit's own timestamp does not
+        # advance -- which is what an LPMS-B2 through FusionHub delivers.
+        rec = self.units.feed(rec, float(t_src), now)
         if self.t_first is None:
             self.t_first = now
         self.t_last = now
@@ -1174,7 +1294,7 @@ class _Base:
         return (len(self._recent) - 1) / span if span > 0 else 0.0
 
     def health(self) -> dict:
-        age = (time.monotonic() - self.t_last) if self.t_last else None
+        age = (time.perf_counter() - self.t_last) if self.t_last else None
         return {"unit": self.unit, "kind": self.kind, "running": self.running(),
                 "samples": self.n, "bad": self.n_bad,
                 "rate_hz": round(self.rate_hz(), 1),

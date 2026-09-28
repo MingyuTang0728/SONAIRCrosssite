@@ -772,15 +772,23 @@
     row("Orientation from", u && u.quat_source === "device"
       ? "the sensor's own fusion" : u && u.quat_source === "estimated"
       ? "worked out here from gyro and gravity" : "—");
-    row("Turn rate units", att.units
-      ? (att.units.units === "deg" ? "degrees/s" : "radians/s") : "working it out");
-    row("Timestamps", l.protobuf_time_field
-      ? "field " + l.protobuf_time_field + ", " + (l.protobuf_time_unit || "?")
-      : "time of arrival");
-    if (u && u.clock_jumps) {
-      row("Clock faults", u.clock_jumps + " — the sensor's own timestamp "
-        + "jumped; readings are still good, their spacing is taken from "
-        + "arrival instead");
+    row("Turn rate units", (u && (u.gyro_units === "deg" || u.gyro_units === "rad"))
+      ? (u.gyro_units === "deg" ? "degrees/s" : "radians/s") : "working it out");
+    if (u && u.gyro_units_basis) row("How that was decided", u.gyro_units_basis);
+    row("Orientation sense", !u || !u.quat ? "—"
+      : u.quat_convention === "conjugate" ? "published back-to-front, turned "
+        + "the right way round here"
+      : u.quat_convention === "direct" ? "published the usual way round"
+      : "working it out");
+    if (u && u.quat_gravity_residual_deg != null) {
+      row("Orientation cross-check", "agrees with this sensor's own gravity "
+        + "reading to " + fmt(u.quat_gravity_residual_deg, 2) + "°");
+    }
+    row("Readings timed by", u && u.clock && u.clock.why
+      ? u.clock.why : "time of arrival");
+    if (u && u.gyro_units_revised) {
+      row("Units corrected mid-run", u.gyro_units_revised + " — readings before "
+        + "the correction are 57× too large, re-record this session");
     }
     var m = l.protobuf_mapping;
     if (m && typeof m === "object") {
@@ -797,11 +805,22 @@
     }
   }
 
+  // What each unit's numbers mean rides along once a second, not on every
+  // message, so it is remembered here and merged into each reading. Without
+  // it a reading cannot be labelled: the same three numbers are degrees or
+  // radians depending on a verdict that lives on the agent side.
+  var unitMeta = {};
+
   S.on("imu", function (d) {
     var units = d.units || {};
+    if (d.meta) unitMeta = d.meta;
     var unit = ($("imuUnit") || {}).value || "ind0";
-    var u = units[unit] || units[d.unit] || units[Object.keys(units)[0]];
+    var key = units[unit] ? unit : (units[d.unit] ? d.unit : Object.keys(units)[0]);
+    var u = units[key];
     if (!u) return;
+    if (unitMeta[key]) {
+      u = Object.assign({}, unitMeta[key], u);
+    }
     if (u.quat) { att.quat = u.quat; att.have = true; }
     if (u.euler_deg) att.euler = u.euler_deg;
     att.src = u.quat_source || "";
@@ -840,7 +859,17 @@
         "sensor and our own estimate agree on which way is down to "
         + fmt(u.device_vs_estimate_tilt_deg, 1) + "°"]);
     }
-    if (u.clock_jumps) {
+    // The LPMS-B2 through FusionHub publishes a timestamp field that never
+    // advances — verified against FusionHub's own recording, 4280 messages,
+    // one distinct timestamp between them. That is not a fault developing, it
+    // is what this sensor does, and reading it as "the clock jumped 8192
+    // times" told the operator to go looking for a problem that is not there.
+    // What matters to them is which clock the readings are timed by.
+    if (u.clock && u.clock.clock === "stalled") {
+      chips.push(["ok", "this sensor sends no clock of its own, so readings "
+        + "are timed as they arrive — the average rate is right, the gap "
+        + "between individual readings is approximate"]);
+    } else if (u.clock_jumps) {
       chips.push(["warn", "the sensor's own clock jumped " + u.clock_jumps
         + (u.clock_jumps === 1 ? " time" : " times")
         + " — spacing taken from arrival instead"]);
@@ -849,11 +878,23 @@
       chips.push(["warn", "the two estimators disagree — the data is noisy"]);
     }
     if (u._units_pending) {
-      chips.push(["warn", "working out whether the turn rate is in degrees "
-        + "or radians — hold on"]);
-    } else if (att.units) {
-      chips.push(["ok", "turn rate read as " + (att.units.units === "deg"
-        ? "degrees/s" : "radians/s")]);
+      chips.push(["warn", "still working out whether this sensor's turn rate "
+        + "is in degrees or radians — move the arm slowly to settle it"]);
+    } else if (u.gyro_units === "deg" || u.gyro_units === "rad") {
+      chips.push(["ok", "this sensor reports turn rate in "
+        + (u.gyro_units === "deg" ? "degrees/s" : "radians/s")
+        + " — measured, not assumed"]);
+    }
+    // Which way round a sensor publishes its quaternion is not printed on the
+    // box and is not visible on a chart: the wrong way round still looks
+    // healthy, but pitch changes sign and taking gravity out of the
+    // accelerometer leaves most of a g behind. So it is measured, and said.
+    if (u.quat && u.quat_convention === "deciding") {
+      chips.push(["warn", "still checking which way round this sensor's "
+        + "orientation is published — move the arm slowly to settle it"]);
+    } else if (u.quat_convention === "conjugate") {
+      chips.push(["ok", "orientation published back-to-front by this sensor, "
+        + "and turned the right way round here"]);
     }
     if (att.pb) chips.push(["ok", "binary stream, channels identified"]);
     if ($("attChips")) {

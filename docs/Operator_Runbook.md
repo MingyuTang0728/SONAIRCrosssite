@@ -316,10 +316,37 @@ Checked before every job, and the job is **refused**, not warned:
 | Camera | Only blocks steps that need a picture |
 | Camera position known | Without the hand-eye transform nothing the camera sees can be placed in the robot's frame, so every 3D number in the dataset is wrong together |
 | Motion sensors | The channel the benchmark is actually scored on |
+| Sensor scales established | A sensor can stream perfectly and still be unreadable — see below |
+| Sample timing | A warning, not a block: says which channels are timed by arrival rather than by their own clock |
 | Disk space | A job that fills the disk leaves a truncated file that looks complete |
 
 Remote Control cannot be read back from the controller, so it is always shown
 as a warning. If the first move does nothing, that is what it is.
+
+### Settle the sensors first — run `settle_sensors` once per session
+
+Two things about an inertial stream are not printed on the sensor and are not
+visible on a chart, so this console **measures** both from the data:
+
+* **whether the turn rate is in degrees or radians.** The same numbers, a
+  factor of 57.3 apart. The LPMS-B2 through FusionHub publishes degrees.
+* **which way round the orientation is published.** The wrong way round it
+  still looks perfectly healthy — but pitch changes sign, and taking gravity
+  out of the accelerometer leaves 1.9 m/s² behind on an arm that is standing
+  still, on a channel the benchmark is scored against.
+
+Both measurements need the arm to **move**. A stationary sensor cannot settle
+either one, so pre-flight refuses a recording job until both are settled, and
+says which unit it is waiting on.
+
+Run the **`settle_sensors`** job. It sweeps the elbow 20° each way, records
+nothing, and takes a few seconds. Then run pre-flight again: *Sensor scales
+established* will pass and will say what each unit was found to be reporting.
+Do it once after connecting the sensors, before anything that records.
+
+The cost of skipping it is not a warning in a log. It is a campaign of angular
+rates 57× too large and an inverted orientation, discovered afterwards, with
+the arm time already spent.
 
 ### Running
 
@@ -336,6 +363,12 @@ is visible.
 
 A step that fails stops the job there and says which step and why. It does
 not carry on.
+
+When a run closes, the log says the rate it actually achieved. If that is well
+short of the rate it was asked for, it says so and says what to do about it:
+the simulated side has to be generated at the achieved rate, or resampled, and
+a large resampling is error charged to the sim-to-real gap. The commonest cause
+is the live camera views — close them while recording.
 
 ### The dataset
 
