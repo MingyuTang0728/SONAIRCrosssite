@@ -2214,6 +2214,60 @@
   });
   S.on("auto_preflight_res", renderPreflight);
 
+  /* ---- what is on the flange ------------------------------------------ */
+  // Entered in millimetres and stored in metres. Millimetres because that is
+  // what a person reads off a ruler, metres because that is what every other
+  // length in a run file is in, and converting at the boundary means the two
+  // can never be confused in between. The 500 mm sanity check on the agent
+  // side exists because entering millimetres into a metres field is the
+  // mistake this arrangement is designed to prevent.
+  function carrierFields(c) {
+    if (!c) return;
+    var com = c.carrier_com_m || [0, 0, 0];
+    if ($("carId")) $("carId").value = c.carrier_id || "carrier-v1";
+    if ($("carMass")) $("carMass").value = c.carrier_mass_kg != null
+      ? c.carrier_mass_kg : 0;
+    if ($("carComX")) $("carComX").value = Math.round((com[0] || 0) * 1000);
+    if ($("carComY")) $("carComY").value = Math.round((com[1] || 0) * 1000);
+    if ($("carComZ")) $("carComZ").value = Math.round((com[2] || 0) * 1000);
+    if ($("carNote")) $("carNote").value = c.note || "";
+  }
+
+  function numOf(id) {
+    var v = parseFloat((($(id) || {}).value) || "0");
+    return isFinite(v) ? v : 0;
+  }
+
+  on("btnCarSave", "click", function () {
+    if (!S.require("carMsg")) return;
+    say("carMsg", "Saving…", "info");
+    send({ type: "carrier_set", carrier: {
+      carrier_id: (($("carId") || {}).value || "carrier-v1").trim(),
+      carrier_mass_kg: numOf("carMass"),
+      carrier_com_m: [numOf("carComX") / 1000, numOf("carComY") / 1000,
+                      numOf("carComZ") / 1000],
+      note: (($("carNote") || {}).value || "")
+    }});
+  });
+
+  S.on("carrier_res", function (d) {
+    if (d.cmd === "get" && !d.ok && !d.measured) {
+      say("carMsg", "Not described yet. Weigh what is bolted to the flange and "
+        + "save it — pre-flight will refuse to record until you do.", "warn");
+      return;
+    }
+    if (!d.ok) {
+      say("carMsg", d.error || "Could not save that.", "bad");
+      return;
+    }
+    carrierFields(d);
+    say("carMsg", "Saved — " + (d.words || "") + " Every run from now on "
+      + "carries this, and the simulated arm is given the same payload.", "ok");
+    // The gate reads the saved value, so re-check it rather than leaving a red
+    // "Carrier described" sitting there next to a carrier that is now described.
+    if (S.connected()) sendPreflight();
+  });
+
   /* ---- the job --------------------------------------------------------- */
   function armConfig() { return (($("jobArm") || {}).value) || "mid_workspace"; }
 
@@ -2477,6 +2531,7 @@
     if (!S.connected()) return;
     send({ type: "auto_jobs", arm_config: armConfig() });
     send({ type: "auto_status" });
+    send({ type: "carrier_get" });
     sendPreflight();
   });
 

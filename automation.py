@@ -270,6 +270,29 @@ def preflight(ctx, requires=None) -> dict:
         checks.append(Check("imu_units", "Sensor scales established", "pass",
                             "; ".join(detail) + " — measured, not assumed."))
 
+    # --- what is on the end of the arm? --------------------------------
+    #
+    # Blocking, and blocking on "has anybody answered" rather than on "is it
+    # non-zero" -- a bare flange is a perfectly good answer. What cannot be
+    # allowed is the default zero, which produces a simulated arm carrying
+    # nothing against a real arm carrying a sensor, a bracket and a cable, and
+    # charges the difference to the sim-to-real gap.
+    car = ctx.carrier() or {}
+    if not car.get("measured"):
+        checks.append(Check("carrier", "Carrier described", "fail",
+                            "Nobody has said what is bolted to the flange. The "
+                            "simulated arm's payload is built from this, so a "
+                            "run recorded without it gets compared against a "
+                            "simulation carrying nothing — and that difference "
+                            "is indistinguishable from the sim-to-real gap "
+                            "afterwards. Weigh the carrier and enter it on the "
+                            "Automate page. Zero is a fine answer if the flange "
+                            "really is bare.",
+                            blocking="imu" in requires or "robot" in requires))
+    else:
+        checks.append(Check("carrier", "Carrier described", "pass",
+                            _carrier_words(car)))
+
     # --- is time real on every channel? --------------------------------
     clk = ctx.clock_status() or {}
     stalled = [c for c, b in (clk.get("channels") or {}).items()
@@ -688,6 +711,14 @@ class Runner:
                 "operator": step.get("operator", "automation"),
                 "notes": job.notes,
             }
+            # What is bolted to the flange goes in every run, because the
+            # simulated twin's payload is built from it. A run stamped 0 kg
+            # gets a simulated bare flange, and the difference lands in the
+            # sim-to-real gap where nothing can separate it out later.
+            car = self.ctx.carrier() or {}
+            for k in ("carrier_id", "carrier_mass_kg", "carrier_com_m"):
+                if car.get(k) is not None:
+                    args[k] = car[k]
             res = self.ctx.record_start(args)
             if not res.get("ok"):
                 return False, res.get("error", "could not start the run file")
@@ -1008,6 +1039,10 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
             "robot_host": ctx.robot_host(),
             "camera": ctx.camera_info(),
             "inertial": ctx.imu_status(),
+            # The payload the simulated twin has to be given. Recorded at the
+            # dataset level as well as per run, so a reader who opens the
+            # folder rather than a single file still finds it.
+            "carrier": ctx.carrier(),
         },
         # The transform every 3D number in here depends on. Copied in rather
         # than referenced: a dataset that points at a calibration file on
@@ -1093,6 +1128,16 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
             "note": (f"{len(copied_runs)} run files and {len(copied_imu)} "
                      f"inertial logs, with the calibration, the channel "
                      f"definitions and the clock they are all on.")}
+
+
+def _carrier_words(car: dict) -> str:
+    m = float(car.get("carrier_mass_kg") or 0.0)
+    com = car.get("carrier_com_m") or [0.0, 0.0, 0.0]
+    if m <= 0.0:
+        return f"{car.get('carrier_id', '?')}: nothing on the flange."
+    where = (f", centre of mass {com[0] * 1000:.0f}/{com[1] * 1000:.0f}/"
+             f"{com[2] * 1000:.0f} mm from it" if any(com) else "")
+    return f"{car.get('carrier_id', '?')}: {m:.3f} kg on the flange{where}."
 
 
 def _audit_runs(runs_dir) -> dict:

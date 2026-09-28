@@ -105,6 +105,11 @@ except Exception as _he:         # noqa: BLE001
     handeye = None
     print(f"[agent] WARNING: handeye unavailable ({_he}).")
 
+# Pure stdlib, one small file: an import failure here would mean the file is
+# missing, and there is no sensible degraded mode -- pre-flight blocks without
+# it, which is the intended behaviour.
+import carrier
+
 try:
     import multiview
     _HAS_MV = True
@@ -1645,6 +1650,14 @@ class _CellContext:
         loaded = handeye.load()
         return loaded if loaded.get("ok") else None
 
+    def carrier(self) -> dict:
+        """What is bolted to the flange, as last described by the operator."""
+        try:
+            return carrier.load()
+        except Exception as e:      # noqa: BLE001
+            record_fault("carrier_load", e)
+            return carrier.blank()
+
     def imu_status(self) -> dict:
         # The merged per-unit row, not the hub's rate-only view: pre-flight has
         # to know what a unit's numbers MEAN as well as how fast they arrive.
@@ -1805,6 +1818,16 @@ def _handle_automation(data: dict):
     if mtype == "auto_export":
         return {"type": "auto_res", "cmd": "export",
                 **CELL.export_dataset(data.get("name") or "dataset")}
+
+    if mtype == "carrier_get":
+        c = carrier.load()
+        return {"type": "carrier_res", "cmd": "get", **c,
+                "words": carrier.describe(c)}
+
+    if mtype == "carrier_set":
+        c = carrier.save(data.get("carrier") or data)
+        return {"type": "carrier_res", "cmd": "set", **c,
+                "words": carrier.describe(c)}
 
     return None
 

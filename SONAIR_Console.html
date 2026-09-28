@@ -1444,6 +1444,37 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     <div class="note info" id="pfMsg">&mdash;</div>
   </section>
 
+  <section class="block">
+    <h3>What is on the flange</h3>
+    <div class="note info">The simulated arm's payload is built from these
+    numbers. A campaign recorded without them is compared against a simulation
+    carrying <b>nothing</b>, and afterwards that difference cannot be told apart
+    from the sim-to-real gap it contaminates. Weigh the carrier — sensor,
+    bracket, cable and all — on a kitchen scale; that is accurate enough.
+    <b>Zero is a fine answer</b> if the flange really is bare. Enter it once per
+    build; re-enter it after any refit.</div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="field"><label>Carrier name</label>
+        <input id="carId" value="carrier-v1"/></div>
+      <div class="field"><label>Mass on the flange (kg)</label>
+        <input id="carMass" type="number" value="0" min="0" max="5" step="0.001"/></div>
+    </div>
+    <div class="grid g3" style="margin-top:12px">
+      <div class="field"><label>Centre of mass X (mm from flange)</label>
+        <input id="carComX" type="number" value="0" step="1"/></div>
+      <div class="field"><label>Centre of mass Y (mm)</label>
+        <input id="carComY" type="number" value="0" step="1"/></div>
+      <div class="field"><label>Centre of mass Z (mm, along the tool)</label>
+        <input id="carComZ" type="number" value="0" step="1"/></div>
+    </div>
+    <div class="field" style="margin-top:12px"><label>Note (optional)</label>
+      <input id="carNote" placeholder="e.g. LPMS-B2 on the printed bracket, rev 2"/></div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn primary" id="btnCarSave">Save the carrier</button>
+    </div>
+    <div class="note info" id="carMsg">&mdash;</div>
+  </section>
+
   <div class="grid g2" style="align-items:start">
     <section class="block" style="margin:0">
       <h3>The job</h3>

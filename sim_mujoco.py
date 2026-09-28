@@ -153,23 +153,54 @@ class Arm:
             if wid >= 0:
                 self.m.body_mass[wid] += float(carrier_mass_kg)
 
+        # WHERE THE FLANGE IS, remembered before anything moves it.
+        #
+        # `attachment_site` is not at its parent body's origin: in the
+        # menagerie UR5e it sits 100 mm out along the wrist. A tool offset
+        # read off the pendant is measured FROM THE FLANGE, so it has to be
+        # composed with that, not written over it. Overwriting it was a 100 mm
+        # error in the opposite direction from the one the frame check exists
+        # to catch -- and it fired on anyone who followed the check's own
+        # advice and passed --tcp-offset. Keeping the base pose here also
+        # makes repeated calls idempotent instead of compounding.
+        self._site = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE,
+                                       "attachment_site")
+        if self._site >= 0:
+            self._site_pos0 = np.array(self.m.site_pos[self._site], dtype=float)
+            self._site_quat0 = np.array(self.m.site_quat[self._site], dtype=float)
+
     def set_tool_offset(self, offset):
         """
         Move the measurement site out to the tool centre point, so the sim
         reports the same physical point the robot does.
+
+        `offset` is x,y,z[,rx,ry,rz] in the FLANGE frame, metres and radians --
+        exactly what the pendant shows under Installation > TCP -- and is
+        composed onto the flange's own pose in its parent body, never
+        substituted for it.
         """
-        sid = mujoco.mj_name2id(self.m, mujoco.mjtObj.mjOBJ_SITE,
-                                "attachment_site")
+        sid = getattr(self, "_site", -1)
         if sid < 0:
             return
-        off = [float(v) for v in list(offset)[:3]]
-        self.m.site_pos[sid] = np.asarray(off, dtype=float)
+        off = np.zeros(3)
+        vals = [float(v) for v in list(offset)[:3]]
+        off[:len(vals)] = vals
+
+        R0 = np.zeros(9)
+        mujoco.mju_quat2Mat(R0, self._site_quat0)
+        self.m.site_pos[sid] = self._site_pos0 + R0.reshape(3, 3) @ off
+
         if len(offset) >= 6:
             rv = np.asarray([float(v) for v in offset[3:6]], dtype=float)
-            q = np.zeros(4)
-            mujoco.mju_axisAngle2Quat(q, rv / (np.linalg.norm(rv) or 1.0),
-                                      float(np.linalg.norm(rv)))
-            self.m.site_quat[sid] = q
+            ang = float(np.linalg.norm(rv))
+            qt = np.array([1.0, 0.0, 0.0, 0.0])
+            if ang > 1e-12:
+                mujoco.mju_axisAngle2Quat(qt, rv / ang, ang)
+            out = np.zeros(4)
+            mujoco.mju_mulQuat(out, self._site_quat0, qt)
+            self.m.site_quat[sid] = out
+        else:
+            self.m.site_quat[sid] = self._site_quat0
         mujoco.mj_forward(self.m, self.d)
 
     def tcp_position(self):
@@ -223,7 +254,7 @@ def _quat_to_rotvec(q):
 
 
 def replay(run, out_dir: Path, menagerie: Path, degrader=None,
-           carrier_mass_kg: float = 0.0, settle_s: float = 0.5,
+           carrier_mass_kg: float | None = None, settle_s: float = 0.5,
            tcp_offset=None, frame_tol_m: float = 0.05) -> dict:
     """
     One real run in, one simulated run out, same cell, same rate.
@@ -242,6 +273,26 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
     ok, why = available()
     if not ok:
         return {"ok": False, "error": why}
+
+    # THE PAYLOAD COMES FROM THE RUN, not from whether the operator remembered
+    # a flag. The real arm carried a bracket, a sensor and a cable; the run
+    # file records what they weigh. Defaulting the simulated arm to a bare
+    # flange because nobody typed --carrier-mass-kg produces a difference in
+    # exactly the joint torques, overshoot and settling that a campaign
+    # sweeping elbow speed exists to observe, and charges it to the gap.
+    # The flag stays, as an override for deliberately asking "what if".
+    from_run = float(getattr(run.manifest, "carrier_mass_kg", 0.0) or 0.0)
+    if carrier_mass_kg is None:
+        carrier_mass_kg = from_run
+        carrier_src = "from the run's own manifest"
+    else:
+        carrier_mass_kg = float(carrier_mass_kg)
+        carrier_src = "overridden on the command line"
+        if abs(carrier_mass_kg - from_run) > 1e-4:
+            print(f"WARNING {run.manifest.run_id}: replaying with "
+                  f"{carrier_mass_kg:.3f} kg on the flange, but the run was "
+                  f"recorded with {from_run:.3f} kg. The gap this produces "
+                  f"includes the difference.", file=sys.stderr)
 
     samples = [s for s in run.samples if s.get("target_q")]
     if len(samples) < 10:
@@ -283,7 +334,8 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
         carrier_id=man.carrier_id, carrier_mass_kg=carrier_mass_kg,
         sample_rate_hz=man.sample_rate_hz, started_utc=man.started_utc,
         operator="sim_mujoco",
-        notes=f"mujoco {mujoco.__version__}; replayed from {man.run_id}")
+        notes=(f"mujoco {mujoco.__version__}; replayed from {man.run_id}; "
+               f"flange payload {carrier_mass_kg:.3f} kg {carrier_src}"))
     problems = sim.validate()
     if problems:
         return {"ok": False, "error": "; ".join(problems)}
@@ -350,8 +402,11 @@ def main(argv=None) -> int:
                     help="clone of google-deepmind/mujoco_menagerie")
     ap.add_argument("--phase0", default="",
                     help="phase0/ind0.json — applies the measured noise floor")
-    ap.add_argument("--carrier-mass-kg", type=float, default=0.0,
-                    help="MEASURED bracket + IMU mass carried at the wrist")
+    ap.add_argument("--carrier-mass-kg", type=float, default=None,
+                    help="override the flange payload. By default it is taken "
+                         "from each run's own manifest, which is where the "
+                         "measured bracket + IMU mass is recorded; pass this "
+                         "only to deliberately simulate a different payload")
     ap.add_argument("--tcp-offset", default="",
                     help="the pendant's tool offset, x,y,z[,rx,ry,rz] in "
                          "metres and radians — read it off Installation > TCP")

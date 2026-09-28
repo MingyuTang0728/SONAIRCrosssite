@@ -323,6 +323,25 @@ Checked before every job, and the job is **refused**, not warned:
 Remote Control cannot be read back from the controller, so it is always shown
 as a warning. If the first move does nothing, that is what it is.
 
+### Say what is on the flange — once per build
+
+Pre-flight also refuses to record until somebody has entered the **carrier**:
+what is bolted to the flange and what it weighs. The simulated arm's payload is
+built from that number, so a run recorded without it is later compared against
+a simulation carrying **nothing** — and that difference is in exactly the joint
+torques, overshoot and settling a campaign sweeping elbow *speed* exists to
+observe. Afterwards nothing can separate it from the sim-to-real gap it
+contaminates.
+
+Weigh the carrier — sensor, bracket, cable and all — on a kitchen scale; that
+is accurate enough. Enter it on the **Automate** page, with the centre of mass
+in millimetres from the flange. **Zero is a fine answer** if the flange really
+is bare; what is not acceptable is zero because nobody was asked.
+
+Re-enter it after any refit, and change the carrier name when you do — the
+campaign design calls for one deliberate refit partway through, and the runs
+either side are only comparable if the file says which side they are on.
+
 ### Settle the sensors first — run `settle_sensors` once per session
 
 Two things about an inertial stream are not printed on the sensor and are not

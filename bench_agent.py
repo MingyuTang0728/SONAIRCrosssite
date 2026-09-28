@@ -822,8 +822,15 @@ class FusionHubBridge:
             self.link = None
 
     def status(self) -> dict:
+        # `gyro_units_pref` is what the OPERATOR asked for ("auto", or pinned);
+        # `gyro_units` is the link's VERDICT and only a live link has one.
+        # They were the same key, which meant a stopped link reported
+        # "gyro_units": "auto" -- a preference wearing a verdict's name. Every
+        # reader downstream has to ask "do we know what this unit's numbers
+        # mean?", and "auto" is not an answer to that question.
         base = {"unit": self.unit, "kind": self.kind, "config": dict(self.config),
-                "gyro_units": self.gyro_units, "error": self.error,
+                "gyro_units_pref": self.gyro_units, "gyro_units": "deciding",
+                "error": self.error,
                 "port": self.port, "transport_available": _HAS_LINK}
         if self.link:
             base.update(self.link.health())
@@ -950,8 +957,9 @@ class BenchRecorder:
     def start(self, *, run_id: str, joint_vel: float, arm_config: str,
               traj_type: str, repeat_idx: int, calib_version: str,
               rate_hz: float = 125.0, carrier_mass_kg: float = 0.0,
-              carrier_id: str = "carrier-v1", operator: str = "",
-              notes: str = "", allow_no_target: bool = False) -> dict:
+              carrier_id: str = "carrier-v1", carrier_com_m=None,
+              operator: str = "", notes: str = "",
+              allow_no_target: bool = False) -> dict:
         if not _HAS_BENCH:
             return {"ok": False, "error": "sonair_benchmark package not importable"}
         if self.is_recording():
@@ -962,6 +970,11 @@ class BenchRecorder:
             joint_vel=float(joint_vel), arm_config=arm_config,
             traj_type=traj_type, repeat_idx=int(repeat_idx),
             carrier_id=carrier_id, carrier_mass_kg=float(carrier_mass_kg),
+            # Where the payload's mass sits, in the tool frame. It is what
+            # decides the moment the payload adds, which is the part of it the
+            # elbow actually feels, so a mass with no position is only half an
+            # answer to the simulator.
+            carrier_com_m=tuple(float(v) for v in (carrier_com_m or (0.0, 0.0, 0.0))),
             sample_rate_hz=float(rate_hz),
             started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             operator=operator, notes=notes,
@@ -1183,8 +1196,9 @@ def unit_report() -> dict:
     for u in set(hub) | set(links) | set(trackers):
         row = dict(hub.get(u, {}))
         lk = links.get(u) or {}
-        for k in ("gyro_units", "gyro_units_basis", "gyro_units_revised",
-                  "gyro_units_evidence", "gyro_peak_raw", "running", "format"):
+        for k in ("gyro_units", "gyro_units_pref", "gyro_units_basis",
+                  "gyro_units_revised", "gyro_units_evidence", "gyro_peak_raw",
+                  "running", "format"):
             if k in lk:
                 row[k] = lk[k]
         if u == D435I.UNIT and D435I.status().get("running"):
@@ -1239,6 +1253,7 @@ def handle_message(data: dict) -> dict | None:
             rate_hz=data.get("rate_hz", 125.0),
             carrier_mass_kg=data.get("carrier_mass_kg", 0.0),
             carrier_id=data.get("carrier_id", "carrier-v1"),
+            carrier_com_m=data.get("carrier_com_m"),
             operator=data.get("operator", ""),
             notes=data.get("notes", ""),
         )
