@@ -78,11 +78,40 @@ export_commands(planned_run, waypoints, "sim/run_0001.commands.json", contract)
 write_isaac_stub("sim/isaac_replay.py")
 ```
 
-**This is where sim-to-real is won or lost.** Isaac must be given the
-*commanded* trajectory — the same waypoints, the same units, the same rate —
-and must not be given the real robot's measured result. If the simulation is
-fed what actually happened it will reproduce what actually happened, and the
-gap you measure will be zero for reasons that mean nothing.
+**This is where sim-to-real is won or lost.** The simulator must be given the
+*commanded* trajectory and must not be given the real robot's measured result.
+If the simulation is fed what actually happened it will reproduce what actually
+happened, and the gap you measure will be zero for reasons that mean nothing.
+
+### What "the commanded trajectory" actually is
+
+Not the waypoints. A UR takes a Cartesian target and generates its own joint
+trajectory from it, with its own blending, its own acceleration limits and
+whatever the speed slider was set to. None of that is recoverable from the
+waypoints afterwards, so two people replaying "the same" waypoints get two
+different trajectories.
+
+The commanded trajectory is **`target_q`** — the controller's own joint
+setpoint stream, at the control rate, which RTDE reports and the recorder now
+writes into every sample beside the measured `q`. Feed the simulator
+`target_q` as joint position targets, let it produce its own `q`, and:
+
+| Compare | Gives you |
+|---|---|
+| real `target_q` vs real `q` | how well the **real** robot tracks its own controller |
+| sim `target_q` vs sim `q` | how well the **simulated** robot tracks the same |
+| real `q` vs sim `q` | **the plant gap** — friction, drive flexibility, payload inertia |
+| real IMU vs sim IMU | the gap in what a sensor on the tool actually feels |
+
+The last row is the one that earns the IMU its place. A rigid-body simulator
+reproduces the trajectory; it does not reproduce the structural ringing a
+wrist-mounted accelerometer sees when the arm stops. That difference is real,
+it is large, and it is exactly what a model submitted to this benchmark has to
+learn.
+
+`speed_scaling` is recorded with it. A run captured at 50% speed executed a
+different trajectory from the one commanded, and without that field nothing
+downstream can tell.
 
 The contract fixes the four things that otherwise drift apart:
 
@@ -101,6 +130,34 @@ the hardware.
 Run the stub inside Isaac (`./python.sh isaac_replay.py run_0001.commands.json`).
 It logs one JSON object per line in the same schema the real recorder writes,
 so nothing downstream has to know which side a run came from.
+
+## Which simulator
+
+The contract names its solver in a field (`SimContract.solver`), and the
+harness never imports the simulator, so this is a choice you can change later
+without invalidating anything already recorded.
+
+| | Runs on | Strength | Cost |
+|---|---|---|---|
+| **MuJoCo** | CPU, `pip install mujoco` | joint dynamics, and the friction/damping/armature parameters can be *fitted to your own recordings* | no camera worth the name |
+| **Isaac Sim** | RTX GPU, ~30 GB | RTX-accurate depth and colour cameras, GPU-parallel runs | heavy install, and no more accurate than MuJoCo for a serial arm with no contact |
+| **Gazebo + `ur_robot_driver`** | CPU | runs the *real* UR control stack, so the controller stops being part of the gap | ROS 2 setup |
+| **URSim** (UR's own Docker image) | CPU | the actual UR controller software — same `target_q` generation as the real robot | controller only, no plant |
+
+**Start with MuJoCo.** It installs in a minute on the machine already wired to
+the robot, `mujoco_menagerie` ships a UR5e, and it is the only one of these
+where you can *identify* the plant parameters from the runs you have just
+recorded rather than trusting a datasheet. You will have a gap number in days.
+
+**Keep Isaac as the declared simulator** for the benchmark and the proposal —
+it is what OMAIB expects, and you need its cameras the moment the application
+case rejoins the story. Because the contract carries the solver name, running
+MuJoCo first is a step on the path, not a detour: the same run files, the same
+scorer, the same leaderboard.
+
+**URSim is the refinement, not the start.** If the controller turns out to be a
+large part of the gap, put URSim in front of the plant simulator and you have
+separated the two. Do not begin there; find out first whether it matters.
 
 ## Step 5 — measure the gap
 
