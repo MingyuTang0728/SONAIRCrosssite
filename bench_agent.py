@@ -949,6 +949,9 @@ class BenchRecorder:
         self.last: dict | None = None
         self._skips = 0
         self._worst_gap = 0.0
+        self._cost = {"robot": 0.0, "sensors": 0.0, "write": 0.0, "total": 0.0}
+        self._cost_sum = {"robot": 0.0, "sensors": 0.0, "write": 0.0}
+        self._cost_n = 0
         self.state_fn = None  # set by the bridge: () -> (q, tcp_pose)
 
     def is_recording(self) -> bool:
@@ -1032,6 +1035,9 @@ class BenchRecorder:
         next_t = MASTER.now()
         self._skips = 0
         self._worst_gap = 0.0
+        self._cost = {"robot": 0.0, "sensors": 0.0, "write": 0.0, "total": 0.0}
+        self._cost_sum = {"robot": 0.0, "sensors": 0.0, "write": 0.0}
+        self._cost_n = 0
         n = 0
         while not self._stop.is_set():
             now = MASTER.now()
@@ -1065,6 +1071,16 @@ class BenchRecorder:
                 self._worst_gap = max(self._worst_gap, behind + period)
                 next_t = MASTER.now()
 
+            # WHERE THE TIME GOES, measured rather than guessed.
+            #
+            # A campaign came back at 28 Hz of a declared 125, with gaps of two
+            # and a half seconds, and finding out why took forensics on
+            # uploaded files: every sensor driver in the registry was being
+            # called on every tick, so the fastest loop in the system ran at
+            # the speed of its slowest driver. The loop now times its own
+            # phases and reports them with the run, so the next time a rate is
+            # short the answer is in the summary instead of in an investigation.
+            tA = time.perf_counter()
             st = {}
             if self.state_fn:
                 try:
@@ -1077,6 +1093,7 @@ class BenchRecorder:
                 # nothing at all.
                 if isinstance(st, tuple):
                     st = {"q": st[0], "tcp": st[1]}
+            tB = time.perf_counter()
             q, tcp = st.get("q"), st.get("tcp")
             # Every registered modality goes into the same row. A sensor that
             # arrives next month is recorded from the day it is attached with
@@ -1087,6 +1104,7 @@ class BenchRecorder:
                     extra = sensor_hub.HUB.snapshot()
                 except Exception:
                     extra = {}
+            tC = time.perf_counter()
             sample = Sample(
                 t=now,
                 q=list(q) if q else None,
@@ -1110,6 +1128,15 @@ class BenchRecorder:
                     except Exception as e:
                         log.warning("sample write failed: %s", e)
                         break
+            tD = time.perf_counter()
+            self._cost["robot"] = max(self._cost["robot"], tB - tA)
+            self._cost["sensors"] = max(self._cost["sensors"], tC - tB)
+            self._cost["write"] = max(self._cost["write"], tD - tC)
+            self._cost["total"] = max(self._cost["total"], tD - tA)
+            self._cost_sum["robot"] += tB - tA
+            self._cost_sum["sensors"] += tC - tB
+            self._cost_sum["write"] += tD - tC
+            self._cost_n += 1
 
     def stop(self) -> dict:
         if not self.is_recording():
@@ -1131,6 +1158,13 @@ class BenchRecorder:
                      "achieved_rate_hz": round(achieved, 1),
                      "skipped_intervals": int(getattr(self, "_skips", 0)),
                      "worst_gap_s": round(float(getattr(self, "_worst_gap", 0.0)), 3)}
+        cn = max(1, int(getattr(self, "_cost_n", 0) or 1))
+        cs = getattr(self, "_cost_sum", {}) or {}
+        cw = getattr(self, "_cost", {}) or {}
+        self.last["cost_ms"] = {
+            k: {"mean": round(cs.get(k, 0.0) / cn * 1000, 2),
+                "worst": round(cw.get(k, 0.0) * 1000, 2)}
+            for k in ("robot", "sensors", "write")}
         if asked and achieved < 0.8 * asked:
             # Said plainly, on the run that is affected, while the operator is
             # still standing at the cell and can do something about it.
@@ -1142,6 +1176,14 @@ class BenchRecorder:
                 f"a resampling this large is error charged to the gap. Close "
                 f"the live camera views while recording, or record at "
                 f"{achieved:.0f} Hz.")
+            # Name the phase that actually cost the time, so the next step is
+            # obvious instead of a guess.
+            worst = max(self.last["cost_ms"], key=lambda k: self.last["cost_ms"][k]["mean"])
+            ms = self.last["cost_ms"][worst]
+            self.last["rate_warning"] += (
+                f" Most of each tick went on {worst}: {ms['mean']:.1f} ms on "
+                f"average, {ms['worst']:.0f} ms at worst, against the "
+                f"{1000.0 / asked:.1f} ms a sample is allowed.")
         self.current = None
         log.info("run %s finished: %d samples, %.1f Hz achieved of %.0f asked",
                  self.last.get("run_id"), n, achieved, asked)

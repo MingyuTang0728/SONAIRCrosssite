@@ -88,6 +88,48 @@ _BROWSER = {
 }
 
 
+def _unreachable_handlers(agent: str) -> list:
+    """
+    Every `mtype == "x"` branch must sit in a function some route sends "x" to.
+
+    Finds the router's `startswith(...) -> _handle_y(data)` pairs, then walks
+    each handler function and checks the message names it answers against the
+    prefixes that reach it.
+    """
+    # Which prefixes route to which handler function.
+    routes: dict[str, set] = {}
+    pat = re.compile(
+        r'startswith\(\s*(\(?[^)]*?\)?)\s*\)\s*:\s*\n\s*reply\s*=\s*'
+        r'await\s+asyncio\.to_thread\(\s*([A-Za-z_][A-Za-z0-9_]*)')
+    for raw, fn in pat.findall(agent):
+        routes.setdefault(fn, set()).update(re.findall(r'"([a-z0-9_]+)"', raw))
+    if not routes:
+        return []
+
+    # Where each handler function starts and ends.
+    bounds = {}
+    for fn in routes:
+        m = re.search(rf'^(?:async )?def {re.escape(fn)}\(', agent, re.M)
+        if not m:
+            continue
+        # `async def` counts too -- missing it swallowed every function after
+        # the one being measured and reported half the agent as unreachable.
+        nxt = re.search(r'^(?:async def |def |class |@)', agent[m.end():], re.M)
+        bounds[fn] = (m.start(),
+                      m.end() + (nxt.start() if nxt else len(agent) - m.end()))
+
+    out = []
+    for fn, (a, b) in bounds.items():
+        body = agent[a:b]
+        for msg in sorted(set(re.findall(r'mtype == "([a-z0-9_]+)"', body))):
+            if not any(msg.startswith(p) for p in routes[fn]):
+                out.append(
+                    f"{fn}() answers {msg!r}, but the router only sends it "
+                    + " or ".join(repr(p) + "*" for p in sorted(routes[fn]))
+                    + f" — {msg!r} never gets there, so the page waits forever")
+    return out
+
+
 def check_js_calls(js_files) -> list:
     """
     Every function called must exist.
@@ -208,12 +250,28 @@ def main(verbose=False) -> int:
     for group in re.findall(r'mtype in \(([^)]*)\)', agent, re.S):
         handled |= set(re.findall(r'"([a-z0-9_]+)"', group))
     prefixes = set(re.findall(r'startswith\("([a-z0-9_]+)"\)', agent))
+    for group in re.findall(r'startswith\(\(([^)]*)\)\)', agent):
+        prefixes |= set(re.findall(r'"([a-z0-9_]+)"', group))
 
     unanswered = [m for m in sent
                   if m not in handled
                   and not any(m.startswith(p) for p in prefixes)]
     problems += [f"the page sends {m!r} and no agent handler takes it"
                  for m in unanswered]
+
+    # -- 2b. handlers the router cannot actually reach -------------------
+    #
+    # The check above asks "does a handler for this message exist anywhere in
+    # the agent", and that is not the same question as "will this message get
+    # there". The agent is a PREFIX ROUTER: a message is handed to one handler
+    # function chosen by the start of its name, so a branch sitting in the
+    # wrong function is dead code no matter how correct it is.
+    #
+    # It passed this audit and shipped: `carrier_set` was answered inside
+    # `_handle_automation`, which only ever sees messages beginning `auto_`.
+    # From the operator's side an unreachable handler and a missing one are the
+    # same thing -- a button that spins forever -- so it is worth its own check.
+    problems += _unreachable_handlers(agent)
 
     # -- 3. agent replies nothing on the page reads ----------------------
     replies = sorted(set(re.findall(r'"type":\s*"([a-z0-9_]+)"', agent)))

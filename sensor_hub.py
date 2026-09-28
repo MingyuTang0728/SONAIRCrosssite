@@ -93,8 +93,25 @@ class Channel:
     detail: str = ""
     fields: list = field(default_factory=list)
     reader: Callable[[], dict] | None = None
+    # How often this channel's reader is worth CALLING, as opposed to how fast
+    # its value is written into runs. Nothing to do with the nominal rate above.
+    #
+    # The recorder samples every channel on one fixed grid, and it used to call
+    # every driver on every tick. That makes the fastest loop in the system run
+    # at the speed of its slowest driver: a 125 Hz recording was gated by a
+    # camera channel that recomputed a full-frame depth statistic under the
+    # camera lock three times per sample, and came out at 28 Hz with stalls of
+    # over two seconds where the capture thread wanted the same lock.
+    #
+    # A camera's fill fraction cannot change faster than the camera produces
+    # frames, so polling it at 125 Hz buys nothing and costs the run. Readers
+    # are now called at most this often and the cached value is written in
+    # between -- which is exactly what was being recorded anyway, just without
+    # paying for it. Leave it None for a genuinely cheap reader.
+    poll_hz: float | None = None
     _last: dict = field(default_factory=dict, repr=False)
-    _t_last: float = 0.0
+    _t_last: float = 0.0          # when the value was last REFRESHED
+    _t_poll: float = 0.0          # when the reader was last CALLED
     _n: int = 0
     _err: str = ""
 
@@ -184,6 +201,14 @@ class SensorHub:
                      and (channel_id is None or cid == channel_id)]
         now = time.monotonic()
         for cid, ch in items:
+            # Skip a reader polled more recently than it is worth polling. The
+            # value stays in `_last` and is still written into the sample; what
+            # is skipped is the cost of re-deriving a number that cannot have
+            # changed.
+            if ch.poll_hz and ch._t_poll and \
+                    (now - ch._t_poll) < (1.0 / float(ch.poll_hz)):
+                continue
+            ch._t_poll = now
             try:
                 val = ch.reader()
             except Exception as e:                  # noqa: BLE001
@@ -288,18 +313,23 @@ def install_defaults(hub: SensorHub | None = None) -> SensorHub:
                        "never streams — the benchmark then has one inertial "
                        "tier rather than two, with nothing to cross-check it "
                        "against.")
+    # poll_hz on the camera channels: their readers touch full frames under the
+    # capture lock, and the camera cannot produce a new one faster than 30 Hz
+    # anyway. Polling them on the recorder's 125 Hz grid bought nothing and cost
+    # the run three quarters of its samples.
     hub.declare(id="cam_depth", label="Depth camera", modality="vision_depth",
-                units="m", rate_hz=30.0, frame="camera", vendor="Intel D435",
-                transport="USB", role="application",
+                units="m", rate_hz=30.0, poll_hz=10.0, frame="camera",
+                vendor="Intel D435", transport="USB", role="application",
                 fields=["depth", "intrinsics"])
     hub.declare(id="cam_color", label="Colour camera", modality="vision_rgb",
-                units="8-bit BGR", rate_hz=30.0, frame="camera",
+                units="8-bit BGR", rate_hz=30.0, poll_hz=10.0, frame="camera",
                 vendor="Intel D435", transport="USB", role="application",
                 fields=["color"])
     hub.declare(id="cam_ir", label="Infrared stereo pair",
                 modality="vision_rgb", units="8-bit mono", rate_hz=30.0,
-                frame="camera", vendor="Intel D435", transport="USB",
-                role="application", fields=["ir_left", "ir_right"])
+                poll_hz=10.0, frame="camera", vendor="Intel D435",
+                transport="USB", role="application",
+                fields=["ir_left", "ir_right"])
     # Not here yet, and deliberately visible.
     hub.declare(id="eddy0", label="Eddy current probe", modality="eddy_current",
                 units="V (I/Q)", rate_hz=1000.0, frame="tcp",

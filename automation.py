@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import shutil
+import statistics as st
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1305,10 +1306,24 @@ def _audit_runs(runs_dir) -> dict:
         # How long the commanded joint velocity actually sat at the cell's label.
         if labelled_vel and qd_hist:
             want = float(labelled_vel)
-            at_speed = [t for t, w in qd_hist if w >= 0.95 * want]
+            # ACCUMULATED time at speed, not the span from the first sample at
+            # speed to the last. The span counts the dwell between the out and
+            # back legs as though the joint had been cruising through it, and
+            # on a real sweep that turned 4.4 s of motion into 16 s of
+            # "held" -- which would wave through exactly the too-short cells
+            # this check exists to catch.
+            # Each interval contributes at most a few times the file's own
+            # median spacing. On a recording that stalled -- and one campaign's
+            # did, for over two seconds at a stretch -- a single sample at
+            # speed followed by a long gap would otherwise be counted as
+            # seconds of cruising, and a 25 deg move at 0.2 rad/s came out as
+            # twelve seconds at speed when the joint only travels for four.
+            med = st.median(gaps) if gaps else 0.01
+            cap = max(4.0 * med, 0.02)
             held = 0.0
-            if len(at_speed) >= 2:
-                held = at_speed[-1] - at_speed[0]
+            for (ta, wa), (tb, _) in zip(qd_hist, qd_hist[1:]):
+                if wa >= 0.95 * want and tb > ta:
+                    held += min(tb - ta, cap)
             block["labelled_joint_vel"] = want
             block["peak_commanded_joint_vel"] = round(peak_qd, 4)
             block["held_at_labelled_vel_s"] = round(held, 3)

@@ -1769,6 +1769,21 @@ def _num(v):
 
 def _handle_automation(data: dict):
     mtype = data.get("type")
+
+    # The carrier is answered before the automation guard. `carrier` is one
+    # stdlib file with no dependency on the job runner, and describing what is
+    # bolted to the flange is the thing pre-flight blocks on -- so it has to
+    # work even on a cell where the runner failed to import.
+    if mtype == "carrier_get":
+        c = carrier.load()
+        return {"type": "carrier_res", "cmd": "get", **c,
+                "words": carrier.describe(c)}
+
+    if mtype == "carrier_set":
+        c = carrier.save(data.get("carrier") or data)
+        return {"type": "carrier_res", "cmd": "set", **c,
+                "words": carrier.describe(c)}
+
     if not _HAS_AUTO:
         return {"type": "auto_res", "ok": False,
                 "error": f"automation unavailable: {_AUTO_ERR}"}
@@ -1818,16 +1833,6 @@ def _handle_automation(data: dict):
     if mtype == "auto_export":
         return {"type": "auto_res", "cmd": "export",
                 **CELL.export_dataset(data.get("name") or "dataset")}
-
-    if mtype == "carrier_get":
-        c = carrier.load()
-        return {"type": "carrier_res", "cmd": "get", **c,
-                "words": carrier.describe(c)}
-
-    if mtype == "carrier_set":
-        c = carrier.save(data.get("carrier") or data)
-        return {"type": "carrier_res", "cmd": "set", **c,
-                "words": carrier.describe(c)}
 
     return None
 
@@ -2166,7 +2171,13 @@ async def _dispatch(websocket, data, mtype, prefs):
         if reply is not None:
             await websocket.send(json.dumps(reply))
         return
-    if str(mtype or "").startswith("auto_"):
+    # `carrier_` rides with `auto_`: the carrier belongs to the Automate page
+    # and its handler lives in that module. Naming it here rather than folding
+    # it into the prefix keeps the route explicit -- a handler that exists but
+    # that no route reaches is indistinguishable, from the operator's side,
+    # from a handler that is not there, and it presents as a button that spins
+    # forever.
+    if str(mtype or "").startswith(("auto_", "carrier_")):
         reply = await asyncio.to_thread(_handle_automation, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
