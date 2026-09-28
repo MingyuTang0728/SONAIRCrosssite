@@ -144,6 +144,35 @@ without invalidating anything already recorded.
 | **Gazebo + `ur_robot_driver`** | CPU | runs the *real* UR control stack, so the controller stops being part of the gap | ROS 2 setup |
 | **URSim** (UR's own Docker image) | CPU | the actual UR controller software — same `target_q` generation as the real robot | controller only, no plant |
 
+### Running the MuJoCo side
+
+```bash
+pip install mujoco
+git clone --depth 1 https://github.com/google-deepmind/mujoco_menagerie.git
+
+python sim_mujoco.py --real data/real --out data/sim \
+    --menagerie ./mujoco_menagerie \
+    --carrier-mass-kg <weighed> \
+    --tcp-offset <x,y,z from the pendant> \
+    --phase0 phase0/ind0.json
+```
+
+It reads each real run, drives a simulated UR5e with that run's own `target_q`,
+and writes the result in the same schema — same cell, same repeat index, so
+`gap` pairs them automatically.
+
+Two arguments are not optional in practice:
+
+- **`--tcp-offset`** — the robot reports its TOOL CENTRE POINT as configured on
+  the pendant; the model reports the bare flange. With a bracket and a camera
+  bolted on, those are a long way apart, and the "gap" that comes out is that
+  offset: constant, large, varying with nothing, and indistinguishable from a
+  result. The replay refuses when the two disagree by more than 50 mm at the
+  first sample, before anything has moved. Measured here at 913 mm.
+- **`--phase0`** — without it the simulated sensors are ideal and the gap
+  includes "the simulator has no sensor noise", which nobody needs a benchmark
+  to discover.
+
 **Start with MuJoCo.** It installs in a minute on the machine already wired to
 the robot, `mujoco_menagerie` ships a UR5e, and it is the only one of these
 where you can *identify* the plant parameters from the runs you have just
