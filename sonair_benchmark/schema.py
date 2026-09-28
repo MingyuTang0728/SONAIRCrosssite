@@ -86,11 +86,35 @@ class Sample:
     """
 
     t: float
-    # robot state
+    # robot state, as MEASURED
     q: Sequence[float] | None = None            # 6 joint angles, rad
     qd: Sequence[float] | None = None           # 6 joint velocities, rad/s
     tcp_pos: Sequence[float] | None = None      # x y z, m, robot base frame
     tcp_rot: Sequence[float] | None = None      # rotation vector rx ry rz, rad
+    # robot state, as COMMANDED — the controller's own setpoint stream.
+    #
+    # THIS IS WHAT THE SIMULATOR MUST BE FED, and it is the field the whole
+    # comparison hinges on. Replaying the MEASURED trajectory in simulation
+    # produces a gap of zero by construction: the simulator is being told the
+    # answer. Reconstructing the command from the waypoints instead is
+    # ambiguous, because a UR generates its own joint trajectory from a
+    # Cartesian target, with its own blending, its own acceleration limits and
+    # whatever the speed slider was set to at the time — none of which is
+    # recoverable after the fact.
+    #
+    # `target_q` is that generated trajectory, straight from the controller at
+    # the control rate. Give the simulator this, let it produce its own
+    # `q`, and the difference against the real `q` is the plant gap: friction,
+    # drive flexibility, payload inertia. That is a measurement. Anything else
+    # is a number whose meaning depends on what you happened to feed in.
+    target_q: Sequence[float] | None = None     # 6 commanded joint angles, rad
+    target_qd: Sequence[float] | None = None    # 6 commanded joint vels, rad/s
+    target_moment: Sequence[float] | None = None  # 6 commanded torques, Nm
+    # The controller was asked for target_q but only allowed to run this
+    # fraction of it. A run captured at 50% speed scaling executed a different
+    # trajectory from the one commanded, and without this nothing downstream
+    # can tell.
+    speed_scaling: float | None = None
     # inertial channels, keyed by unit id ("ind0" industrial, "con0" consumer,
     # "d435i" the camera's own BMI055)
     imu: dict[str, dict[str, Sequence[float]]] = field(default_factory=dict)
@@ -114,6 +138,17 @@ class Sample:
             d["tcp_pos"] = [round(float(v), 6) for v in self.tcp_pos]
         if self.tcp_rot is not None:
             d["tcp_rot"] = [round(float(v), 6) for v in self.tcp_rot]
+        # The commanded channels. Written when present and omitted when not,
+        # like every other optional field, so a run from a cell that cannot
+        # report them is still a valid run -- it just is not replayable.
+        if self.target_q is not None:
+            d["target_q"] = [round(float(v), 6) for v in self.target_q]
+        if self.target_qd is not None:
+            d["target_qd"] = [round(float(v), 6) for v in self.target_qd]
+        if self.target_moment is not None:
+            d["target_moment"] = [round(float(v), 4) for v in self.target_moment]
+        if self.speed_scaling is not None:
+            d["speed_scaling"] = round(float(self.speed_scaling), 4)
         if self.imu:
             d["imu"] = self.imu
         if self.em:

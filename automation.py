@@ -78,7 +78,7 @@ class Check:
                 "detail": self.detail, "blocking": self.blocking}
 
 
-def preflight(ctx) -> dict:
+def preflight(ctx, requires=None) -> dict:
     """
     Ask the cell whether it is fit to run, and say so in sentences.
 
@@ -89,7 +89,19 @@ def preflight(ctx) -> dict:
     Ordered the way a person would check: can we talk to the robot, will the
     robot accept commands, can we see, do we know where the camera is, are the
     sensors live, is there room to write.
+
+    `requires` says what the job actually uses, and only those checks can
+    block. This matters more than it looks. The benchmark's scored channels --
+    orientation, angular rate, acceleration, and the tool pose the robot
+    computes from its own joint angles -- involve no camera at all. Gating a
+    capture campaign on the hand-eye calibration would hold up weeks of arm
+    time waiting on a measurement none of those channels depend on. The
+    calibration is still checked, and still reported, because a run recorded
+    without it cannot later be used for anything in the camera's frame -- but
+    for an inertial campaign that is a note, not a stop.
     """
+    requires = set(requires or ("robot", "imu", "camera"))
+    needs_cam = "camera" in requires
     checks: list[Check] = []
 
     # --- robot ---------------------------------------------------------
@@ -148,31 +160,41 @@ def preflight(ctx) -> dict:
     # --- camera --------------------------------------------------------
     cam_age = ctx.camera_age_s()
     if cam_age is None:
-        checks.append(Check("camera", "Camera", "warn",
+        checks.append(Check("camera", "Camera",
+                            "fail" if needs_cam else "warn",
                             "No camera. Steps that need a picture will fail; "
                             "motion and inertial capture will not.",
-                            blocking=False))
+                            blocking=needs_cam))
     elif cam_age > 2.0:
-        checks.append(Check("camera", "Camera", "fail",
-                            f"The last picture arrived {cam_age:.0f} s ago."))
+        checks.append(Check("camera", "Camera",
+                            "fail" if needs_cam else "warn",
+                            f"The last picture arrived {cam_age:.0f} s ago.",
+                            blocking=needs_cam))
     else:
         checks.append(Check("camera", "Camera", "pass", "Streaming."))
 
     # --- calibration ---------------------------------------------------
     cal = ctx.calibration()
     if not cal:
-        checks.append(Check("calibration", "Camera position known", "fail",
+        checks.append(Check("calibration", "Camera position known",
+                            "fail" if needs_cam else "warn",
                             "No hand-eye calibration is loaded, so nothing the "
                             "camera sees can be placed in the robot's frame. "
-                            "Run it on the Calibrate page, or load the saved "
-                            "one."))
+                            + ("Run it on the Calibrate page, or load the "
+                               "saved one." if needs_cam else
+                               "This job does not use the camera, so it can "
+                               "run — but these runs will carry no usable "
+                               "camera geometry."),
+                            blocking=needs_cam))
     else:
         spread = cal.get("target_spread_mm")
         if spread is not None and spread > 5.0:
-            checks.append(Check("calibration", "Camera position known", "fail",
+            checks.append(Check("calibration", "Camera position known",
+                                "fail" if needs_cam else "warn",
                                 f"The loaded calibration reconstructs the board "
                                 f"to {spread:.1f} mm, which is too loose to "
-                                "build a dataset on. Run it again."))
+                                "build a dataset on. Run it again.",
+                                blocking=needs_cam))
         else:
             checks.append(Check("calibration", "Camera position known", "pass",
                                 f"{cal.get('calib_version', 'loaded')}"
@@ -241,6 +263,8 @@ class Job:
     sweep_key: str = ""                 # e.g. "joint_vel"
     sweep_values: list = field(default_factory=list)
     notes: str = ""
+    # What this job actually uses. Only these can block it.
+    requires: list = field(default_factory=lambda: ["robot", "imu"])
 
     def expand(self) -> list:
         """The flat list of (iteration, params, step) this job will execute."""
@@ -260,7 +284,7 @@ class Job:
     def as_dict(self):
         return {"name": self.name, "steps": self.steps, "repeats": self.repeats,
                 "sweep_key": self.sweep_key, "sweep_values": self.sweep_values,
-                "notes": self.notes}
+                "notes": self.notes, "requires": list(self.requires)}
 
 
 class Runner:
@@ -328,7 +352,7 @@ class Runner:
         # The gate. Checked here, before a thread exists, so a refusal is
         # immediate and carries the reason rather than appearing as a job that
         # started and died.
-        pre = preflight(self.ctx)
+        pre = preflight(self.ctx, job.requires)
         if not pre["ok"]:
             return {"ok": False, "error": pre["summary"], "preflight": pre}
 
@@ -434,7 +458,7 @@ class Runner:
             return True, ""
 
         if kind == "preflight":
-            pre = preflight(self.ctx)
+            pre = preflight(self.ctx, job.requires)
             for c in pre["checks"]:
                 if c["state"] != "pass":
                     self._say(f"{c['label']}: {c['detail']}",

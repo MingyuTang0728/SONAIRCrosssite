@@ -796,7 +796,7 @@ class BenchRecorder:
               traj_type: str, repeat_idx: int, calib_version: str,
               rate_hz: float = 125.0, carrier_mass_kg: float = 0.0,
               carrier_id: str = "carrier-v1", operator: str = "",
-              notes: str = "") -> dict:
+              notes: str = "", allow_no_target: bool = False) -> dict:
         if not _HAS_BENCH:
             return {"ok": False, "error": "sonair_benchmark package not importable"}
         if self.is_recording():
@@ -814,6 +814,35 @@ class BenchRecorder:
         problems = manifest.validate()
         if problems:
             return {"ok": False, "error": "; ".join(problems)}
+
+        # IS THE COMMANDED TRAJECTORY ACTUALLY ARRIVING?
+        #
+        # Checked here, once, before a run exists -- because the cost of
+        # getting this wrong is not one run, it is the campaign. A run file
+        # without `target_q` looks complete, opens cleanly, plots correctly
+        # and cannot be replayed in a simulator against anything meaningful:
+        # the only trajectory in it is the one the robot actually followed,
+        # and feeding that to a simulator measures nothing. Nobody finds out
+        # until the sim side is built, weeks later, with the arm time already
+        # spent.
+        warn = ""
+        if self.state_fn:
+            try:
+                probe = self.state_fn() or {}
+                if isinstance(probe, tuple):
+                    probe = {"q": probe[0], "tcp": probe[1]}
+                if not probe.get("target_q"):
+                    warn = ("the robot is not reporting its COMMANDED joint "
+                            "trajectory (target_q), so these runs cannot be "
+                            "replayed in a simulator. Start the robot link on "
+                            "the Connect page; if it is already running, the "
+                            "controller is answering on the fallback interface "
+                            "rather than RTDE.")
+                    if not allow_no_target:
+                        return {"ok": False, "error": warn,
+                                "missing": "target_q"}
+            except Exception:
+                pass
 
         path = self.out_dir / f"{run_id}.jsonl"
         try:
@@ -846,12 +875,19 @@ class BenchRecorder:
             if MASTER.now() - next_t > 0.25:
                 next_t = MASTER.now()
 
-            q = tcp = None
+            st = {}
             if self.state_fn:
                 try:
-                    q, tcp = self.state_fn()
+                    st = self.state_fn() or {}
                 except Exception:
-                    pass
+                    st = {}
+                # The state source returned a (q, tcp) pair before it returned
+                # the commanded channels as well. Accepted here so a partially
+                # updated deployment records the measured half rather than
+                # nothing at all.
+                if isinstance(st, tuple):
+                    st = {"q": st[0], "tcp": st[1]}
+            q, tcp = st.get("q"), st.get("tcp")
             # Every registered modality goes into the same row. A sensor that
             # arrives next month is recorded from the day it is attached with
             # no change here — which is the point of the registry.
@@ -864,8 +900,13 @@ class BenchRecorder:
             sample = Sample(
                 t=now,
                 q=list(q) if q else None,
+                qd=st.get("qd"),
                 tcp_pos=list(tcp[:3]) if tcp else None,
                 tcp_rot=list(tcp[3:6]) if tcp and len(tcp) >= 6 else None,
+                target_q=st.get("target_q"),
+                target_qd=st.get("target_qd"),
+                target_moment=st.get("target_moment"),
+                speed_scaling=st.get("speed_scaling"),
                 imu=HUB.snapshot(),
                 sensors=extra,
             )

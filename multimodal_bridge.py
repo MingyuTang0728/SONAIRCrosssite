@@ -1703,6 +1703,22 @@ CELL = _CellContext()
 RUNNER = automation.Runner(CELL) if _HAS_AUTO else None
 
 
+def _seq(v):
+    """A list of floats, or None. Never a partial row of zeros."""
+    try:
+        out = [float(x) for x in v]
+    except (TypeError, ValueError):
+        return None
+    return out or None
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _handle_automation(data: dict):
     mtype = data.get("type")
     if not _HAS_AUTO:
@@ -2340,14 +2356,28 @@ async def main():
             # unexpected packet length, and it carries the full field set. The
             # legacy globals stay as the fallback so recording still works if
             # the UR service failed to start.
+            #
+            # The COMMANDED fields matter as much as the measured ones and are
+            # cheaper to lose: they exist only while the run is happening. A
+            # campaign recorded without them can be replayed in a simulator
+            # only by feeding it the measured trajectory, which returns a gap
+            # of zero because the simulator has been handed the answer.
             if _HAS_EXT and ur_bridge_ext.UR.enabled:
                 st = ur_bridge_ext.UR.state()
                 q = st.get("actual_q")
                 pose = st.get("actual_TCP_pose")
                 if q and pose:
-                    return list(q), list(pose)
+                    return {
+                        "q": list(q),
+                        "tcp": list(pose),
+                        "qd": _seq(st.get("actual_qd")),
+                        "target_q": _seq(st.get("target_q")),
+                        "target_qd": _seq(st.get("target_qd")),
+                        "target_moment": _seq(st.get("target_moment")),
+                        "speed_scaling": _num(st.get("speed_scaling")),
+                    }
             with data_lock:
-                return list(global_actual_q), list(global_tcp_pose)
+                return {"q": list(global_actual_q), "tcp": list(global_tcp_pose)}
 
         bench_agent.RECORDER.state_fn = _robot_state
         started = bench_agent.start_sources(
