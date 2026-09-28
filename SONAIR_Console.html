@@ -213,6 +213,10 @@ table.data tbody tr:hover{background:var(--surface-2)}
    desk screen, and room underneath on a narrow one. Nothing is ever hidden,
    and closing the dock gives the width straight back. */
 body.dockopen main.page{padding-right:392px}
+/* Even collapsed, the dock is a fixed panel over the bottom-right corner. A
+   little room at the foot of every page keeps it from sitting on top of the
+   last line of content. */
+main.page{padding-bottom:84px}
 @media(max-width:900px){body.dockopen main.page{padding-right:24px;padding-bottom:400px}}
 
 /* ---- the reading cards ------------------------------------------------
@@ -1446,11 +1450,32 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       <div class="grid g2">
         <div class="field"><label>Job</label>
           <select id="jobPick"><option value="">Connect first</option></select></div>
-        <div class="field"><label>Repeats of each setting</label>
-          <input id="jobRepeats" type="number" value="3" min="1" step="1"/></div>
+        <div class="field"><label>Arm configuration</label>
+          <select id="jobArm">
+            <option value="mid_workspace">Mid workspace</option>
+            <option value="near_singular">Near singular</option>
+            <option value="extended">Extended</option>
+          </select></div>
       </div>
-      <div class="field" style="margin-top:12px"><label>Speeds to sweep (m/s, comma separated)</label>
-        <input id="jobSweep" value="0.05, 0.10, 0.20, 0.35"/></div>
+      <div class="note info" style="margin-top:10px">Set this to match where the
+      arm actually is before you start. It is one of the three factors results
+      are grouped by, and a run labelled <b>mid workspace</b> that was taken
+      with the arm extended is a mislabelled cell nothing downstream can
+      detect.</div>
+      <div id="sweepBox">
+        <div class="grid g2" style="margin-top:12px">
+          <div class="field"><label>Repeats of each setting</label>
+            <input id="jobRepeats" type="number" value="3" min="1" step="1"/></div>
+          <div class="field"><label>Elbow speeds to sweep (rad/s, comma separated)</label>
+            <input id="jobSweep" value="0.2, 0.4, 0.6, 0.9"/></div>
+        </div>
+        <div class="note info" style="margin-top:10px">Commanded <b>elbow
+        angular velocity</b>, in rad/s &mdash; the quantity the benchmark
+        defines its condition cells by. The defaults bracket 0.6 rad/s, where
+        the simulator is already known to change behaviour.</div>
+      </div>
+      <div class="note info" id="noSweepMsg" hidden>This job runs one setting.
+      The sweep controls do not apply to it.</div>
       <div class="note info" id="jobNote" style="margin-top:11px">&mdash;</div>
       <div class="steps" id="jobSteps"></div>
       <div class="row" style="margin-top:12px">

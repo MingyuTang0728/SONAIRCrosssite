@@ -50,6 +50,7 @@ STEP_KINDS = (
     "dwell",            # wait, so a move can settle before a capture
     "move",             # go to one tool pose
     "trajectory",       # go through a list of tool poses
+    "joint_move",       # drive ONE joint at a commanded angular velocity
     "record_start",     # begin a benchmark run file
     "record_stop",
     "imu_log_start",    # begin the continuous inertial CSV
@@ -330,6 +331,11 @@ class Runner:
                 "job": self.job.name if self.job else "",
                 "step": self.step_i,
                 "steps": self.step_n,
+                # How many steps make one pass, so the page can highlight the
+                # live step without having to guess from whichever job happens
+                # to be selected in the dropdown -- which is not necessarily
+                # the one running.
+                "steps_per_pass": len(self.job.steps) if self.job else 0,
                 "current": self.current,
                 "error": self.error,
                 "seconds": round((self.finished_at or time.time()) - self.started_at, 1)
@@ -389,6 +395,18 @@ class Runner:
         self._say(f"{job.name}: {len(plan)} steps"
                   + (f", sweeping {job.sweep_key} over {job.sweep_values}"
                      if job.sweep_key else ""))
+
+        # START FROM A KNOWN STATE.
+        #
+        # A recording left open by anything -- a run stopped from the Record
+        # page, a previous job whose process was killed, an agent restarted
+        # mid-capture -- makes record_start refuse, and the job dies three
+        # steps in with "already recording". The runner cleaned up after
+        # itself but never before itself, so one interrupted run poisoned
+        # every job after it until somebody found the Stop button on another
+        # page. Closing here costs nothing when there is nothing to close.
+        self._clear_stale()
+
         failed = ""
         try:
             for i, (iteration, params, step) in enumerate(plan):
@@ -418,6 +436,25 @@ class Runner:
                 self.current = ""
             self._say("Finished." if not failed else "Stopped after a failure.",
                       "ok" if not failed else "bad")
+
+    def _clear_stale(self) -> None:
+        """Close anything a previous run left open, and say so if it did."""
+        try:
+            if self.ctx.is_recording():
+                res = self.ctx.record_stop()
+                self._say("A recording was still open from an earlier run and "
+                          "has been closed: " + str(res.get("path", "")) +
+                          ". It is kept; nothing was discarded.", "warn")
+        except Exception as e:      # noqa: BLE001
+            self._say(f"Could not close the earlier recording: {e}", "bad")
+        try:
+            if self.ctx.imu_logging():
+                res = self.ctx.imu_log_stop()
+                if res.get("path"):
+                    self._say("An inertial log was still open and has been "
+                              "closed: " + str(res["path"]), "warn")
+        except Exception as e:      # noqa: BLE001
+            self._say(f"Could not close the earlier inertial log: {e}", "bad")
 
     def _close_everything(self) -> None:
         try:
@@ -483,8 +520,18 @@ class Runner:
             poses = step.get("poses") or []
             if not poses:
                 return False, "no poses given"
-            speed = float(params.get("joint_vel", step.get("speed", 0.12)))
-            self._say(f"Running {len(poses)} poses at {speed:g} m/s.")
+            # Deliberately NOT params["joint_vel"]: that is an angular
+            # velocity in rad/s and this is a linear speed in m/s. Feeding one
+            # into the other is what mislabelled the campaign.
+            speed = float(step.get("speed", 0.12))
+            cap = self.ctx.max_linear_speed()
+            if cap and speed > cap + 1e-9:
+                return False, (f"{speed:g} m/s is above this cell's linear "
+                               f"speed limit of {cap:g} m/s; the arm would be "
+                               "held at the limit while the run recorded the "
+                               "higher figure.")
+            self._say(f"Running {len(poses)} poses at {speed:g} m/s "
+                      "(tool-space linear speed).")
             for j, pose in enumerate(poses):
                 if self._stop.is_set():
                     return True, ""
@@ -496,15 +543,77 @@ class Runner:
                     return False, f"pose {j+1}: {why}"
             return True, ""
 
+        if kind == "joint_move":
+            # THE CAMPAIGN'S SWEEP FACTOR, COMMANDED AS WHAT IT IS.
+            #
+            # `joint_vel` in the run manifest is documented as the commanded
+            # ELBOW ANGULAR VELOCITY in rad/s, and it is half of the condition
+            # cell every result is grouped by. Driving a tool-space move and
+            # writing its linear speed into that field labelled 0.4 m/s as
+            # 0.4 rad/s -- so the sweep never crossed the ~0.6 rad/s region the
+            # whole design is built around, and every cell key in the dataset
+            # named a quantity that had not been commanded. Nothing would have
+            # shown it; the runs look perfectly good.
+            #
+            # A single joint driven through a fixed excursion at a commanded
+            # angular velocity is exactly the quantity, exactly reproducible,
+            # and bounded enough to repeat unattended.
+            q0 = self.ctx.joints()
+            if not q0 or len(q0) < 6:
+                return False, ("the robot is not reporting joint angles, so a "
+                               "joint move cannot be commanded")
+            idx = int(step.get("joint", 2))          # 0-based; 2 is the elbow
+            if not 0 <= idx < 6:
+                return False, f"joint index {idx} is not in 0..5"
+            speed = float(params.get("joint_vel", step.get("joint_vel", 0.4)))
+            amp = math.radians(float(step.get("amplitude_deg", 25.0)))
+            if speed <= 0:
+                return False, "joint speed must be positive"
+            # The cell clamps a speed it considers unsafe, silently. That is
+            # correct for a jog and wrong for a swept factor: the run file
+            # would record the speed that was ASKED for while the arm moved at
+            # the limit, so two cells of the campaign would hold identical
+            # motion under different labels.
+            cap = self.ctx.max_joint_speed()
+            if cap and speed > cap + 1e-9:
+                return False, (f"{speed:g} rad/s is above this cell's joint "
+                               f"speed limit of {cap:g} rad/s. The robot would "
+                               "be held at the limit while the run file "
+                               "recorded the higher figure, so the two would "
+                               "disagree. Raise the limit deliberately or "
+                               "sweep within it.")
+            self._say(f"Joint {idx + 1} through {math.degrees(amp):.0f} deg "
+                      f"at {speed:g} rad/s.")
+            for leg, delta in (("out", +amp), ("back", 0.0)):
+                if self._stop.is_set():
+                    return True, ""
+                target = list(q0)
+                target[idx] = q0[idx] + delta
+                ok, why = self.ctx.move_joints(target, speed)
+                if not ok:
+                    return False, f"{leg}: {why}"
+                ok, why = self._await_joints(target, step)
+                if not ok:
+                    return False, f"{leg}: {why}"
+            return True, ""
+
         if kind == "record_start":
             run_id = self._run_id(step, params, iteration, job)
             args = {
                 "run_id": run_id,
-                "joint_vel": float(params.get("joint_vel", step.get("joint_vel", 0.4))),
+                # rad/s at the elbow. From the sweep when the job sweeps it,
+                # from the step otherwise. Never from a linear speed.
+                "joint_vel": float(params.get("joint_vel",
+                                              step.get("joint_vel", 0.4))),
                 "arm_config": step.get("arm_config", "mid_workspace"),
                 "traj_type": step.get("traj_type", "contour"),
                 "repeat_idx": int(params.get("repeat_idx", 0)),
-                "calib_version": (self.ctx.calibration() or {}).get("calib_version", "calib-0"),
+                # "none" rather than a plausible-looking version string. The
+                # inertial channels do not need a hand-eye transform, so these
+                # runs are valid -- but a run that names a calibration it was
+                # not taken under is one nobody can later separate out.
+                "calib_version": (self.ctx.calibration() or {}).get(
+                    "calib_version") or "none",
                 "rate_hz": float(step.get("rate_hz", 125.0)),
                 "operator": step.get("operator", "automation"),
                 "notes": job.notes,
@@ -553,6 +662,30 @@ class Runner:
 
         return False, f"step {kind!r} is not implemented"
 
+    def _await_joints(self, target, step) -> tuple[bool, str]:
+        """Wait until every joint is where it was sent, or say that it is not."""
+        tol = math.radians(float(step.get("tolerance_deg", 0.5)))
+        timeout = float(step.get("timeout_s", 30.0))
+        end = time.monotonic() + timeout
+        worst = None
+        while time.monotonic() < end:
+            if self._stop.is_set():
+                return True, ""
+            now = self.ctx.joints()
+            if now and len(now) >= 6:
+                worst = max(abs(now[i] - target[i]) for i in range(6))
+                if worst <= tol:
+                    return True, ""
+            time.sleep(0.02)
+        return False, (f"the arm did not reach the joint target within "
+                       f"{timeout:g} s"
+                       + (f" (worst joint still {math.degrees(worst):.1f} deg "
+                          "away)" if worst is not None
+                          else " \u2014 no joint angles are being reported")
+                       + ". The commonest cause is the pendant being in Local "
+                         "mode, where the robot accepts the connection and "
+                         "ignores the command.")
+
     def _await_arrival(self, pose, step) -> tuple[bool, str]:
         """
         Wait until the tool is where it was sent, or say that it is not.
@@ -593,13 +726,18 @@ class Runner:
 # built-in jobs
 # ---------------------------------------------------------------------------
 
-def builtin_jobs(tcp_pose=None) -> dict:
+def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
     """
     Jobs that are useful on day one, written against whatever pose the arm is
     in so they can be run without anybody typing coordinates.
 
     They are templates, not fixtures: the console shows the steps and the
     operator can change them before pressing Run.
+
+    `arm_config` is carried rather than defaulted because it is one of the
+    three factors the benchmark groups results by, and a run labelled
+    "mid_workspace" that was actually taken with the arm extended is a
+    mislabelled cell that nothing downstream can detect.
     """
     p = list(tcp_pose or [0.4, 0.0, 0.35, 0.0, 3.14, 0.0])
 
@@ -612,14 +750,24 @@ def builtin_jobs(tcp_pose=None) -> dict:
 
     # A closed box in the plane the tool is already in, so the motion is
     # bounded and returns to where it started — which is what makes it safe to
-    # repeat unattended.
+    # repeat unattended. This is the INSPECTION-SHAPED motion; it is not what
+    # the campaign sweeps (see below).
     square = [shifted(), shifted(dx=0.08), shifted(dx=0.08, dy=0.08),
               shifted(dy=0.08), shifted()]
+
+    # The campaign's own factor. campaign.py defines the sweep over elbow
+    # angular velocity in rad/s, bracketing ~0.6 rad/s where the simulator is
+    # already known to change behaviour, so the motion that carries it has to
+    # be commanded in joint space. A tool-space move at 0.4 m/s is not
+    # 0.4 rad/s at the elbow and never was.
+    ELBOW = 2
 
     return {
         "checkout": Job(
             name="checkout",
-            notes="Prove the cell is fit before trusting a campaign to it.",
+            notes="Prove the cell is fit before trusting a campaign to it. "
+                  "Moves nothing.",
+            requires=["robot", "imu"],
             steps=[
                 {"kind": "preflight"},
                 {"kind": "message", "text": "Everything the cell needs is present."},
@@ -627,32 +775,58 @@ def builtin_jobs(tcp_pose=None) -> dict:
         ),
         "single_run": Job(
             name="single_run",
-            notes="One recorded pass, for checking a change before a campaign.",
+            notes="One recorded pass at a single elbow speed, for checking a "
+                  "change before committing to a campaign.",
+            requires=["robot", "imu"],
             steps=[
                 {"kind": "preflight"},
                 {"kind": "imu_log_start"},
-                {"kind": "record_start", "traj_type": "contour", "joint_vel": 0.25},
-                {"kind": "dwell", "seconds": 1.0},
-                {"kind": "trajectory", "poses": square, "speed": 0.08},
-                {"kind": "dwell", "seconds": 1.0},
+                {"kind": "record_start", "traj_type": "point_to_point",
+                 "joint_vel": 0.4, "arm_config": arm_config},
+                {"kind": "dwell", "seconds": 1.5},
+                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": 25.0,
+                 "joint_vel": 0.4},
+                {"kind": "dwell", "seconds": 1.5},
                 {"kind": "record_stop"},
                 {"kind": "imu_log_stop"},
             ],
         ),
-        "speed_sweep": Job(
-            name="speed_sweep",
-            notes=("The benchmark campaign: the same motion at four speeds, "
-                   "three times each, then exported as one dataset."),
+        "elbow_sweep": Job(
+            name="elbow_sweep",
+            notes="The benchmark campaign: the same elbow motion at a range of "
+                  "commanded angular velocities, repeated, then exported as one "
+                  "dataset. This is the factor campaign.py defines the cells by.",
+            requires=["robot", "imu"],
             repeats=3,
             sweep_key="joint_vel",
-            sweep_values=[0.05, 0.10, 0.20, 0.35],
+            sweep_values=[0.2, 0.4, 0.6, 0.9],
             steps=[
                 {"kind": "preflight"},
                 {"kind": "imu_log_start"},
-                {"kind": "record_start", "traj_type": "contour"},
-                {"kind": "dwell", "seconds": 1.0},
-                {"kind": "trajectory", "poses": square},
-                {"kind": "dwell", "seconds": 1.0},
+                {"kind": "record_start", "traj_type": "point_to_point",
+                 "arm_config": arm_config},
+                {"kind": "dwell", "seconds": 1.5},
+                {"kind": "joint_move", "joint": ELBOW, "amplitude_deg": 25.0},
+                {"kind": "dwell", "seconds": 1.5},
+                {"kind": "record_stop"},
+                {"kind": "imu_log_stop"},
+            ],
+        ),
+        "scan_shaped": Job(
+            name="scan_shaped",
+            notes="A tool-space box, the shape a real inspection scan traces. "
+                  "Useful for the application case; it does NOT sweep the "
+                  "campaign's factor, so its runs are labelled at a fixed "
+                  "elbow speed.",
+            requires=["robot", "imu"],
+            steps=[
+                {"kind": "preflight"},
+                {"kind": "imu_log_start"},
+                {"kind": "record_start", "traj_type": "contour",
+                 "joint_vel": 0.4, "arm_config": arm_config},
+                {"kind": "dwell", "seconds": 1.5},
+                {"kind": "trajectory", "poses": square, "speed": 0.08},
+                {"kind": "dwell", "seconds": 1.5},
                 {"kind": "record_stop"},
                 {"kind": "imu_log_stop"},
             ],

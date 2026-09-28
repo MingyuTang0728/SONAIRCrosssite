@@ -1663,10 +1663,43 @@ class _CellContext:
         return str(Path("bench_runs").resolve().parent)
 
     # -- actions ---------------------------------------------------------
+    def joints(self):
+        """The measured joint angles, or None."""
+        if _HAS_EXT and ur_bridge_ext.UR.enabled:
+            q = (ur_bridge_ext.UR.state() or {}).get("actual_q")
+            if q and len(q) >= 6:
+                return [float(v) for v in q]
+        with data_lock:
+            return list(global_actual_q) if global_actual_q else None
+
+    def _envelope(self):
+        if _HAS_EXT and ur_bridge_ext.UR.controller is not None:
+            return ur_bridge_ext.UR.controller.envelope
+        return None
+
+    def max_joint_speed(self):
+        e = self._envelope()
+        return float(e.max_joint_speed) if e else None
+
+    def max_linear_speed(self):
+        e = self._envelope()
+        return float(e.max_linear_speed) if e else None
+
     def move_to(self, pose, speed):
+        """Tool-space move. `speed` is LINEAR, m/s."""
         if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
             return False, "the robot link has not been started"
         return ur_bridge_ext.UR.controller.movel(list(pose), a=0.5, v=float(speed))
+
+    def move_joints(self, q, speed):
+        """
+        Joint-space move. `speed` is ANGULAR, rad/s, and it is the quantity
+        the benchmark's condition cells are defined by — which is why this
+        exists separately from move_to rather than being folded into it.
+        """
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.movej(list(q), a=1.2, v=float(speed))
 
     def halt(self):
         if _HAS_EXT and ur_bridge_ext.UR.jog is not None:
@@ -1729,17 +1762,25 @@ def _handle_automation(data: dict):
         return {"type": "auto_status_res", "ok": True, **RUNNER.status()}
 
     if mtype == "auto_preflight":
-        return {"type": "auto_preflight_res", **automation.preflight(CELL)}
+        # Checked against what the SELECTED job needs. Without the job's own
+        # requirements this reported the camera and the calibration as
+        # blocking for an inertial campaign that never touches either, so the
+        # page showed a red gate the runner would then happily start through.
+        return {"type": "auto_preflight_res",
+                "requires": data.get("requires"),
+                **automation.preflight(CELL, data.get("requires"))}
 
     if mtype == "auto_jobs":
-        jobs = automation.builtin_jobs(CELL.tcp_pose())
+        jobs = automation.builtin_jobs(CELL.tcp_pose(),
+                                       data.get("arm_config") or "mid_workspace")
         return {"type": "auto_jobs_res", "ok": True,
                 "jobs": {k: v.as_dict() for k, v in jobs.items()}}
 
     if mtype == "auto_start":
         spec = data.get("job")
         if isinstance(spec, str):
-            jobs = automation.builtin_jobs(CELL.tcp_pose())
+            jobs = automation.builtin_jobs(CELL.tcp_pose(),
+                                           data.get("arm_config") or "mid_workspace")
             job = jobs.get(spec)
             if job is None:
                 return {"type": "auto_res", "ok": False,

@@ -718,6 +718,8 @@ body.push(table([3000, 6360], ['Trap', 'Why it costs more than it looks'], [
   ['Splitting the held-out set at random', 'Measures interpolation inside known conditions and reports it as generalisation across them.'],
   ['Leading with the inspection demo', 'It is the application case, not the benchmark. The review warned against this twice.'],
   ['Pendant left in Local mode', 'The robot accepts the connection and ignores every command. Nothing can detect it; the first move simply does nothing.'],
+  ['Confusing tool speed with elbow speed', 'The campaign\u2019s cells are defined by elbow angular velocity in rad/s. A tool-space move at 0.4 m/s is not 0.4 rad/s at the elbow, and a run labelled with the wrong one puts the whole sweep in the wrong cells. The elbow_sweep job commands joint space for this reason.'],
+  ['A speed above the cell limit', 'The cell clamps it silently, so the arm moves at the limit while the run file records the figure you asked for. The runner refuses rather than clamping.'],
 ], { cellStyle: function (t, i) { return i === 0 ? { bold: true, size: 18 } : { size: 18 }; } }));
 
 /* ---------- Appendix A ---------- */

@@ -61,6 +61,114 @@ WITHHELD = {
 }
 
 
+# Names the browser provides. Anything called that is neither declared in our
+# own files nor on this list is a typo or a function somebody deleted.
+_BROWSER = {
+    "parseInt", "parseFloat", "isNaN", "isFinite", "String", "Number",
+    "Boolean", "Array", "Object", "Math", "JSON", "Date", "RegExp", "Error",
+    "Promise", "Map", "Set", "WeakMap", "Symbol", "BigInt", "Proxy",
+    "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+    "requestAnimationFrame", "cancelAnimationFrame", "queueMicrotask",
+    "fetch", "atob", "btoa", "alert", "confirm", "prompt", "encodeURIComponent",
+    "decodeURIComponent", "encodeURI", "decodeURI", "escape", "unescape",
+    "Blob", "File", "FileReader", "URL", "URLSearchParams", "FormData",
+    "Image", "ImageBitmap", "createImageBitmap", "WebSocket", "Worker",
+    "Uint8Array", "Uint8ClampedArray", "Int8Array", "Uint16Array",
+    "Int16Array", "Uint32Array", "Int32Array", "Float32Array", "Float64Array",
+    "ArrayBuffer", "DataView", "TextDecoder", "TextEncoder",
+    "CustomEvent", "Event", "MutationObserver", "IntersectionObserver",
+    "ResizeObserver", "structuredClone", "reportError", "getComputedStyle",
+    "matchMedia", "open", "close", "print", "focus", "blur", "scrollTo",
+    "THREE", "performance", "console", "document", "window", "navigator",
+    "location", "history", "screen", "localStorage", "sessionStorage",
+    "if", "for", "while", "switch", "catch", "return", "typeof", "function",
+    "new", "delete", "void", "in", "of", "do", "else", "try", "finally",
+    "case", "break", "continue", "throw", "var", "let", "const", "class",
+    "extends", "super", "this", "null", "true", "false", "undefined",
+}
+
+
+def check_js_calls(js_files) -> list:
+    """
+    Every function called must exist.
+
+    Neither `node --check` nor the wiring audit above catches a call to a name
+    that was never declared: the file parses, every control has a handler by
+    name, and the failure only appears when a person presses that particular
+    button. One such call -- a helper whose declaration a bad edit had dropped
+    -- sat in the preflight path and made the gate report the wrong thing.
+    """
+    import re as _re
+
+    def strip_code(text: str) -> str:
+        """
+        Comments and string literals blanked, newlines kept.
+
+        Without this the scan reads prose and CSS out of string literals --
+        "rgba(" in a colour, "(see the pendant)" in an operator message -- and
+        reports them as calls to undeclared functions. Blanking rather than
+        deleting keeps every line number correct.
+        """
+        out = []
+        i, n = 0, len(text)
+        while i < n:
+            c = text[i]
+            if c == "/" and i + 1 < n and text[i + 1] == "/":
+                j = text.find("\n", i)
+                j = n if j < 0 else j
+                out.append(" " * (j - i)); i = j
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                j = text.find("*/", i + 2)
+                j = n if j < 0 else j + 2
+                out.append("".join(ch if ch == "\n" else " " for ch in text[i:j]))
+                i = j
+            elif c in "\"'`":
+                q, j = c, i + 1
+                while j < n:
+                    if text[j] == "\\":
+                        j += 2; continue
+                    if text[j] == q:
+                        j += 1; break
+                    j += 1
+                out.append("".join(ch if ch == "\n" else " " for ch in text[i:j]))
+                i = j
+            else:
+                out.append(c); i += 1
+        return "".join(out)
+
+    src = {}
+    for f in js_files:
+        src[f] = strip_code(read(f))
+    joined = "\n".join(src.values())
+
+    declared = set()
+    declared |= set(_re.findall(r"\bfunction\s+([A-Za-z_$][\w$]*)", joined))
+    declared |= set(_re.findall(r"\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)", joined))
+    # destructured and multi-declarator forms, and function parameters
+    declared |= set(_re.findall(r"\bfunction\s*\(([^)]*)\)", joined)
+                    and [] or [])
+    for params in _re.findall(r"function[^(]*\(([^)]*)\)", joined):
+        for nm in _re.findall(r"[A-Za-z_$][\w$]*", params):
+            declared.add(nm)
+    for params in _re.findall(r"\(([^()]*)\)\s*=>", joined):
+        for nm in _re.findall(r"[A-Za-z_$][\w$]*", params):
+            declared.add(nm)
+    declared |= set(_re.findall(r"\bcatch\s*\(\s*([A-Za-z_$][\w$]*)", joined))
+    declared |= set(_re.findall(r"([A-Za-z_$][\w$]*)\s*:\s*function", joined))
+    declared |= set(_re.findall(r"([A-Za-z_$][\w$]*)\s*=\s*function", joined))
+
+    problems = []
+    for f, text in src.items():
+        # a bare `name(` not preceded by a dot, and not a declaration site
+        for m in _re.finditer(r"(?<![.\w$])([A-Za-z_$][\w$]*)\s*\(", text):
+            name = m.group(1)
+            if name in declared or name in _BROWSER:
+                continue
+            line = text.count("\n", 0, m.start()) + 1
+            problems.append(f"{f}:{line} calls {name}() which is never declared")
+    return sorted(set(problems))
+
+
 def read(name):
     p = Path(name)
     return p.read_text(encoding="utf-8") if p.exists() else ""
@@ -123,6 +231,9 @@ def main(verbose=False) -> int:
     withheld = [c for c in never if c in WITHHELD]
     problems += [f"the agent supports {c!r} and no control sends it"
                  for c in forgotten]
+
+    # -- 5. functions that are called and do not exist -------------------
+    problems += check_js_calls(JS)
 
     # -- report ----------------------------------------------------------
     print(f"controls checked        : {len(controls)}")

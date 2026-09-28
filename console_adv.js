@@ -2122,7 +2122,16 @@
     if (el) el.addEventListener(ev, fn);
   }
 
-  var auto = { jobs: {}, pick: "", last: null, pollTimer: null };
+  var auto = { jobs: {}, pick: "", last: null, pollTimer: null,
+               preflightOk: null, running: false };
+
+  // One place decides whether Run is live: never while a job runs, and never
+  // once a pre-flight has said the cell is not fit.
+  function applyRunEnabled() {
+    var b = $("btnJobRun");
+    if (!b) return;
+    b.disabled = auto.running || auto.preflightOk === false;
+  }
 
   /* ---- pre-flight ------------------------------------------------------ */
   function renderPreflight(d) {
@@ -2140,18 +2149,39 @@
       tag.className = "tag " + (d.ok ? "ok" : "bad");
     }
     say("pfMsg", d.summary || "", d.ok ? "ok" : "bad");
-    var run = $("btnJobRun");
-    if (run) run.disabled = !d.ok;
+    // Remembered, because the heartbeat's auto_status arrives a second later
+    // and used to re-enable the button unconditionally -- so a cell that had
+    // just failed its gate showed a live Run button anyway.
+    auto.preflightOk = !!d.ok;
+    applyRunEnabled();
+  }
+
+  // Checked against what the SELECTED job actually needs. A preflight with no
+  // requirements reports the camera and the calibration as blocking, which for
+  // an inertial campaign that touches neither is a red gate in front of a job
+  // the runner would have started quite happily.
+  function sendPreflight() {
+    var job = currentJob();
+    send({ type: "auto_preflight",
+           requires: (job && job.requires) || ["robot", "imu"] });
   }
 
   on("btnPreflight", "click", function () {
     if (!S.require("pfMsg")) return;
     say("pfMsg", "Checking…", "info");
-    send({ type: "auto_preflight" });
+    sendPreflight();
   });
   S.on("auto_preflight_res", renderPreflight);
 
   /* ---- the job --------------------------------------------------------- */
+  function armConfig() { return (($("jobArm") || {}).value) || "mid_workspace"; }
+
+  on("jobArm", "change", function () {
+    // The templates carry the configuration into every record_start, so a
+    // change here has to re-fetch them rather than only being remembered.
+    if (S.connected()) send({ type: "auto_jobs", arm_config: armConfig() });
+  });
+
   S.on("auto_jobs_res", function (d) {
     if (!d.ok) return;
     auto.jobs = d.jobs || {};
@@ -2165,7 +2195,15 @@
     renderJob();
   });
 
-  on("jobPick", "change", function () { auto.pick = this.value; renderJob(); });
+  on("jobPick", "change", function () {
+    auto.pick = this.value;
+    renderJob();
+    // A different job checks different things, so the previous verdict does
+    // not carry over.
+    auto.preflightOk = null;
+    applyRunEnabled();
+    if (S.connected()) sendPreflight();
+  });
   ["jobRepeats", "jobSweep"].forEach(function (id) {
     on(id, "input", renderPlanTag);
   });
@@ -2210,7 +2248,8 @@
     preflight: "check the cell is fit to run",
     dwell: "wait for the arm to settle",
     move: "go to one pose",
-    trajectory: "run the motion",
+    trajectory: "run the tool-space motion",
+    joint_move: "drive one joint at the commanded angular velocity",
     record_start: "start a run file",
     record_stop: "close the run file",
     imu_log_start: "start logging every inertial sample",
@@ -2224,11 +2263,20 @@
     var box = $("jobSteps");
     if (!job || !box) return;
     say("jobNote", job.notes || "", "info");
+    // Controls that do nothing on this job are hidden rather than left
+    // sitting there inviting a value that will be ignored.
+    var sweeps = !!job.sweep_key;
+    if ($("sweepBox")) $("sweepBox").hidden = !sweeps;
+    if ($("noSweepMsg")) $("noSweepMsg").hidden = sweeps;
     box.innerHTML = job.steps.map(function (st, i) {
       var extra = [];
       if (st.seconds != null) extra.push(st.seconds + " s");
       if (st.poses) extra.push(st.poses.length + " poses");
-      if (st.speed != null) extra.push(st.speed + " m/s");
+      if (st.speed != null) extra.push(st.speed + " m/s (linear)");
+      if (st.joint != null) extra.push("joint " + (st.joint + 1));
+      if (st.amplitude_deg != null) extra.push(st.amplitude_deg + "\u00B0");
+      if (st.joint_vel != null) extra.push(st.joint_vel + " rad/s");
+      if (st.arm_config) extra.push(st.arm_config.replace(/_/g, " "));
       if (st.text) extra.push(st.text);
       return '<div class="stp" data-i="' + i + '"><span class="i">'
         + (i + 1) + '</span><span class="k">' + esc(st.kind) + '</span>'
@@ -2243,7 +2291,7 @@
     var job = currentJob();
     if (!job) { say("pfMsg", "Pick a job first.", "warn"); return; }
     say("pfMsg", "Starting " + job.name + "…", "info");
-    send({ type: "auto_start", job: job });
+    send({ type: "auto_start", job: job, arm_config: armConfig() });
   });
 
   on("btnJobStop", "click", function () { send({ type: "auto_stop" }); });
@@ -2275,10 +2323,15 @@
         : st === "failed" ? "bad" : running ? "warn" : "");
     }
     if ($("runStep")) $("runStep").textContent = d.steps ? d.step + " / " + d.steps : "—";
-    if ($("runTime")) $("runTime").innerHTML = fmt(d.seconds || 0, 0) + '<span class="u">s</span>';
+    // One decimal under ten seconds. A job that failed in 400 ms reported
+    // "0s", which reads as "it never ran".
+    var secs = d.seconds || 0;
+    if ($("runTime")) $("runTime").innerHTML = fmt(secs, secs < 10 ? 1 : 0)
+      + '<span class="u">s</span>';
     if ($("runFiles")) $("runFiles").textContent = (d.produced || []).length;
     if ($("btnJobStop")) $("btnJobStop").disabled = !running;
-    if ($("btnJobRun")) $("btnJobRun").disabled = running;
+    auto.running = running;
+    applyRunEnabled();
 
     // the bar at the top of every page
     var bar = $("runBar");
@@ -2292,7 +2345,7 @@
       $("rbStep").textContent = d.steps
         ? d.step + "/" + d.steps + (d.current ? " " + d.current : "") : "—";
     }
-    if ($("rbTime")) $("rbTime").textContent = fmt(d.seconds || 0, 0) + "s";
+    if ($("rbTime")) $("rbTime").textContent = fmt(secs, secs < 10 ? 1 : 0) + "s";
     if ($("rbFill")) {
       $("rbFill").style.width = d.steps
         ? Math.round(100 * d.step / d.steps) + "%" : "0%";
@@ -2302,7 +2355,10 @@
     // which step is live
     var box = $("jobSteps");
     if (box && d.steps) {
-      var perPass = (currentJob() || { steps: [] }).steps.length || 1;
+      // From the RUNNING job, not the selected one: an operator who changes
+      // the dropdown mid-campaign would otherwise see the highlight jump.
+      var perPass = d.steps_per_pass
+        || (currentJob() || { steps: [] }).steps.length || 1;
       var within = ((d.step - 1) % perPass + perPass) % perPass;
       box.querySelectorAll(".stp").forEach(function (el, i) {
         el.classList.toggle("now", running && i === within);
@@ -2361,20 +2417,26 @@
       + "it can be read without this console.", "ok");
   }
 
-  /* ---- recording lamp on the run bar ----------------------------------- */
-  S.on("imu", function (d) {
-    if ($("rbRec")) {
-      var rec = !!d.rec;
-      $("rbRec").textContent = rec ? "yes" : "no";
-      $("rbRec").style.color = rec ? "var(--ok)" : "var(--text-2)";
-    }
+  /* ---- recording lamp on the run bar -----------------------------------
+     Fed from both the inertial stream and the heartbeat. Driving it from the
+     IMU message alone meant that with no inertial unit connected the lamp
+     never updated at all, so a recording could be running and the bar would
+     say no. */
+  function setRecLamp(rec) {
+    if (!$("rbRec")) return;
+    $("rbRec").textContent = rec ? "yes" : "no";
+    $("rbRec").style.color = rec ? "var(--ok)" : "var(--text-2)";
+  }
+  S.on("imu", function (d) { setRecLamp(!!d.rec); });
+  S.on("bench_status", function (d) {
+    if (d && d.recorder) setRecLamp(!!d.recorder.recording);
   });
 
   S.page("auto", function () {
     if (!S.connected()) return;
-    send({ type: "auto_jobs" });
+    send({ type: "auto_jobs", arm_config: armConfig() });
     send({ type: "auto_status" });
-    send({ type: "auto_preflight" });
+    sendPreflight();
   });
 
   S.on("close", function () {
