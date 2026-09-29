@@ -77,9 +77,34 @@ class FakeRTDE:
             c.close(); return
         fmt = ">" + "".join(TYPES[t][0] for _, t in recipe)
         vals = []
-        for _, t in recipe:
+        # FAKE_Q=q1,..,q6 holds the arm at a real pose (a powered, running
+        # robot), for driving the console against it; unset, everything is 0.
+        import os
+        q = [float(v) for v in os.environ.get("FAKE_Q", "").split(",") if v]
+        tcp = None
+        if len(q) == 6:
+            try:
+                import sys
+                sys.path.insert(0, str(__import__("pathlib").Path(__file__)
+                                       .resolve().parent.parent))
+                import ur_kin
+                tcp = ur_kin.fk_pose(q)
+            except Exception:       # noqa: BLE001
+                tcp = None
+        for name, t in recipe:
             n = {"3d": 3, "6d": 6, "6i": 6, "6I": 6}.get(TYPES[t][0], 1)
-            vals += [0] * n
+            v = [0] * n
+            if len(q) == 6 and name in ("actual_q", "target_q"):
+                v = list(q)
+            elif tcp and name in ("actual_TCP_pose", "target_TCP_pose"):
+                v = list(tcp)
+            elif len(q) == 6 and name == "robot_mode":
+                v = [7]
+            elif len(q) == 6 and name == "safety_mode":
+                v = [1]
+            elif len(q) == 6 and name == "speed_scaling":
+                v = [1.0]
+            vals += v
         # A small kernel buffer and a hard cap on what it will queue for one
         # client: exactly the "slow client" the real controller drops.
         c.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)

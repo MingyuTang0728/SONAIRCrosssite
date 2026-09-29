@@ -1785,6 +1785,8 @@
       if (held) { held = false; b.classList.remove("held"); up(); }
     });
   }
+  // Shared with the campaign section, which lives in another closure.
+  S.holdButton = holdButton;
   holdButton("btnCampFreedrive", "campGuideMsg",
              function () { setFreedrive(true, "campGuideMsg"); },
              function () { setFreedrive(false, "campGuideMsg"); });
@@ -2296,6 +2298,7 @@
   var CFG_WORDS = { near_singular: "Near singular", mid_workspace: "Mid workspace",
                     extended: "Extended" };
   var guide = { timer: null, cfg: "" };
+  var holdButton = S.holdButton;
   on("btnCampSuggest", "click", function () {
     if (!S.require("campGuideMsg")) return;
     say("campGuideMsg", "Working out three positions from where the arm is…", "info");
