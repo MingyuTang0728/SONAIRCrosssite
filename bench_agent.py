@@ -1608,17 +1608,6 @@ def handle_message(data: dict) -> dict | None:
         return {"type": "imu_zero_res", "ok": ok, "unit": unit,
                 "note": "hold the unit still for two seconds while the bias "
                         "re-learns" if ok else "attitude tracking unavailable"}
-    if mtype == "imu_d435i":
-        want = bool(data.get("on", True))
-        if want:
-            D435I.accel_hz = int(data.get("accel_hz", D435I.accel_hz))
-            D435I.gyro_hz = int(data.get("gyro_hz", D435I.gyro_hz))
-            ok = D435I.start()
-        else:
-            D435I.stop()
-            ok = True
-        return {"type": "imu_d435i_res", "ok": ok, **D435I.status()}
-
     # ---- getting the data out -----------------------------------------
     if mtype == "imu_export":
         return {"type": "imu_export_res",

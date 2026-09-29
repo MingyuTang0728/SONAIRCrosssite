@@ -304,15 +304,6 @@ def install_defaults(hub: SensorHub | None = None) -> SensorHub:
                 rate_hz=200.0, frame="tcp", vendor="FusionHub",
                 transport="UDP/TCP/serial", role="benchmark",
                 fields=["quat", "gyro", "accel"])
-    hub.declare(id="imu_d435i", label="Camera IMU (BMI055)",
-                modality="angular_rate", units="rad/s, m/s^2", rate_hz=200.0,
-                frame="camera", vendor="Intel", transport="USB",
-                role="benchmark", fields=["gyro", "accel", "quat"],
-                detail="Only on a D435i. A plain D435 has no motion module, "
-                       "so on that camera this channel stays declared and "
-                       "never streams — the benchmark then has one inertial "
-                       "tier rather than two, with nothing to cross-check it "
-                       "against.")
     # poll_hz on the camera channels: their readers touch full frames under the
     # capture lock, and the camera cannot produce a new one faster than 30 Hz
     # anyway. Polling them on the recorder's 125 Hz grid bought nothing and cost
@@ -369,7 +360,7 @@ def wire_standard_sources(*, ur_state=None, imu_latest=None,
     if ur_state is not None:
         out["ur_tcp"] = HUB.attach("ur_tcp", ur_state, "RTDE")
     if imu_latest is not None:
-        for unit, cid in (("ind0", "imu_ind0"), ("d435i", "imu_d435i")):
+        for unit, cid in (("ind0", "imu_ind0"),):
             out[cid] = HUB.attach(
                 cid, (lambda u=unit: (imu_latest() or {}).get(u) or None),
                 "inertial hub")

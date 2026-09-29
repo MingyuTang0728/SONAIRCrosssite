@@ -252,28 +252,6 @@
     }).join("");
     if ($("camDevTag")) $("camDevTag").textContent = (d.name || "camera")
       + " · USB " + (d.usb || "?");
-    // A plain D435 has no motion module and never will. Leaving the "use the
-    // camera's own motion sensor" option enabled invites the operator to wait
-    // for a channel that cannot exist, so it is disabled and the reason is
-    // given where the choice is made rather than in a terminal check.
-    var hasMotion = (d.sensors || []).some(function (s) {
-      return /motion/i.test(s.name || "");
-    });
-    var cb = $("cbD435i");
-    if (cb) {
-      cb.disabled = !hasMotion;
-      if (!hasMotion) {
-        cb.checked = false;
-        var lab = cb.parentElement;
-        if (lab && !lab.dataset.noted) {
-          lab.dataset.noted = "1";
-          lab.style.opacity = ".55";
-          lab.title = "This camera is a D435, which has no built-in motion "
-            + "sensor. A D435i does.";
-          lab.appendChild(document.createTextNode(" — this camera has none"));
-        }
-      }
-    }
     var opts = (d.sensors || []).reduce(function (n, s) {
       return n + (s.options || []).length; }, 0);
     say("rsInfoMsg", d.usb_warning || ((d.sensors || []).length
@@ -372,9 +350,6 @@
   on("btnImuRaw", "click", function () {
     if (!S.require("imuMsg")) return;
     send({ type: "imu_sniff", unit: $("imuUnit").value });
-  });
-  on("cbD435i", "change", function () {
-    send({ type: "imu_d435i", on: this.checked });
   });
   on("btnImuZero", "click", function () {
     if (!S.require("attMsg")) return;
@@ -1922,13 +1897,6 @@
         "info");
   });
 
-  S.on("imu_d435i_res", function (d) {
-    if (d.ok) return;
-    say("imuMsg", d.error
-      ? "The camera's motion sensor could not start: " + d.error
-      : "This camera has no built-in motion sensor.", "warn");
-  });
-
   S.on("imu_tcp_probe_res", function (d) {
     if (!d.ok) return;
     say("imuMsg", (d.open || []).length
@@ -2297,7 +2265,7 @@
   /* suggested configurations, and moving to them only while held */
   var CFG_WORDS = { near_singular: "Near singular", mid_workspace: "Mid workspace",
                     extended: "Extended" };
-  var guide = { timer: null, cfg: "" };
+  var guide = { timer: null, cfg: "", pending: false, lastGoto: 0 };
   var holdButton = S.holdButton;
   on("btnCampSuggest", "click", function () {
     if (!S.require("campGuideMsg")) return;
@@ -2314,11 +2282,16 @@
     send({ type: "camp_stop" });
     say("campGuideMsg", "Stop sent.", "warn");
   });
+  function sendGoto(c) {
+    guide.pending = true;
+    guide.lastGoto = Date.now();
+    send({ type: "camp_goto", config: c, which: "suggested" });
+  }
   function goHold(c) {
     return function () {
       guide.cfg = c;
       if ($("sugSt_" + c)) $("sugSt_" + c).textContent = "moving…";
-      send({ type: "camp_goto", config: c, which: "suggested" });
+      sendGoto(c);
       if (guide.timer) clearInterval(guide.timer);
       guide.timer = setInterval(function () { send({ type: "camp_hold" }); }, 150);
     };
@@ -2332,7 +2305,9 @@
     var c = d.config || d.label || guide.cfg;
     var cell = $("sugSt_" + c);
     if (!cell) return;
+    if (d.cmd === "goto") guide.pending = false;
     if (d.ok === false) {
+      guide.pending = false;
       if (guide.timer) { clearInterval(guide.timer); guide.timer = null; }
       cell.textContent = "not moved";
       say("campGuideMsg", d.error || "The move was refused.", "bad");
@@ -2344,6 +2319,12 @@
       say("campGuideMsg", CFG_WORDS[c] + ": arrived. Look at the arm and the "
         + "carrier. If it is clear of everything, press Teach here for "
         + CFG_WORDS[c] + " in the table below.", "ok");
+    } else if (d.cmd === "hold" && guide.timer && !guide.pending
+               && d.moving === false && Date.now() - guide.lastGoto > 600) {
+      // Still held, but the agent stopped the arm -- it missed heartbeats
+      // while it was held up. The button is still down, so carry on.
+      cell.textContent = "resuming…";
+      sendGoto(guide.cfg);
     } else if (d.remaining_deg != null) {
       cell.textContent = (d.cmd === "release" || d.moving === false
         ? "stopped, " : "moving, ") + d.remaining_deg + "° to go";

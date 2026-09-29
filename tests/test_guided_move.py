@@ -137,6 +137,35 @@ def main():
     print(f"  pass  heartbeats lost: the watchdog stopped the arm after "
           f"{waited + 0.1:.2f} s")
 
+    # the whole process stalls (a driver holding the interpreter) while the
+    # button is held: the heartbeats queued meanwhile must not be judged
+    # missing the instant the watchdog wakes -- that stopped the real arm
+    # after every stall, so it barely moved
+    g.press(target, "extended")
+    beating = threading.Event()
+    beating.set()
+
+    def beats():
+        while beating.is_set():
+            g.beat()
+            time.sleep(0.15)
+    threading.Thread(target=beats, daemon=True).start()
+    time.sleep(0.4)
+    before = g.stops
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(5.0)
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < 1.2:       # hold the interpreter 1.2 s
+        pass
+    sys.setswitchinterval(old)
+    time.sleep(0.6)
+    assert g.stops == before, "a stall of the agent was taken for a release"
+    beating.clear()
+    time.sleep(0.8)
+    assert g.stops == before + 1, "heartbeats stopped but the arm did not"
+    print("  pass  a 1.2 s stall of the agent is not taken for a release; "
+          "heartbeats that really stop still stop the arm")
+
     # press again and hold to arrival
     g.press(target, "extended")
     t0 = time.monotonic()

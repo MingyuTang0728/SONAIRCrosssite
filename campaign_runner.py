@@ -517,11 +517,26 @@ class HoldToMove:
                 "label": self._label}
 
     def _watch(self):
+        # If this watchdog itself was held up -- the whole agent stalled, as
+        # a camera driver retrying a missing device made it do for 1-2 s at a
+        # time -- the heartbeats sent meanwhile are still queued, not lost.
+        # Judging them the instant it wakes stopped the arm after every
+        # stall, which on a cell stalling every few seconds meant it barely
+        # moved. So after a stall of its own it gives the queued heartbeats
+        # one timeout to arrive. (During the stall the arm keeps moving, as it
+        # would with any watchdog in a stalled process; that is what the
+        # physical e-stop is for.)
+        last_tick = time.monotonic()
+        grace_until = 0.0
         while True:
             time.sleep(0.05)
+            now = time.monotonic()
+            if now - last_tick > 0.25:
+                grace_until = now + HOLD_TIMEOUT_S
+            last_tick = now
             with self._lock:
-                late = (self._moving and
-                        time.monotonic() - self._last_beat > HOLD_TIMEOUT_S)
+                late = (self._moving and now >= grace_until and
+                        now - self._last_beat > HOLD_TIMEOUT_S)
                 if late:
                     self._moving = False
             if late:

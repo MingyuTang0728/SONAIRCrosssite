@@ -235,7 +235,9 @@ ENVELOPE = {
 # Benchmark acquisition
 BENCH_RUN_DIR      = os.environ.get("BENCH_RUN_DIR", "./bench_runs")
 BENCH_FUSIONHUB_PORT = int(os.environ.get("BENCH_FUSIONHUB_PORT", 5005))
-BENCH_ENABLE_D435I_IMU = os.environ.get("BENCH_D435I_IMU", "1") != "0"
+# Off unless asked for: this cell's camera has no motion module, and retrying
+# one that is not there held the whole agent up for 1-2 s every few seconds.
+BENCH_ENABLE_D435I_IMU = os.environ.get("BENCH_D435I_IMU", "0") == "1"
 BENCH_ENABLE_FUSIONHUB = os.environ.get("BENCH_FUSIONHUB", "1") != "0"
 
 # Audit log
@@ -2132,6 +2134,47 @@ async def local_handler(websocket):
                 await asyncio.sleep(0.5)
 
     stream_task = asyncio.create_task(stream())
+
+    async def guarded(data, mtype):
+        # ONE MESSAGE MUST NEVER TAKE THE CONNECTION WITH IT.
+        #
+        # Every handler used to run bare inside the receive loop, so any
+        # exception any of them raised -- a robot socket that closed
+        # mid-command, a reply holding a value json could not encode, a field
+        # a newer console sent that an older agent did not expect -- escaped
+        # and closed the websocket. From the operator's side that is "I
+        # pressed a button and it disconnected", with nothing on screen naming
+        # the button. The guard turns every one of those into a message on
+        # the page instead.
+        try:
+            await _dispatch(websocket, data, mtype, prefs)
+        except websockets.exceptions.ConnectionClosed:
+            return
+        except Exception as exc:                         # noqa: BLE001
+            entry = record_fault("message handler", exc, mtype)
+            try:
+                await websocket.send(json.dumps({
+                    "type": "agent_fault", "on": mtype,
+                    "error": entry["error"], "at": entry["at"]}))
+            except Exception:
+                pass
+
+    # Messages are handled one at a time, in the order they were sent -- a
+    # stop must never overtake the move it is stopping. But they are READ as
+    # they arrive, by this loop, and queued for the worker below, so a slow
+    # handler (a dashboard command waiting on its timeout) no longer stops
+    # the loop reading. That matters for exactly one message: the heartbeat
+    # of a hold-to-move button, which is answered here, at once, because the
+    # arm stops when heartbeats stop arriving and a heartbeat stuck behind a
+    # slow handler looked exactly like the operator letting go.
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def worker():
+        while True:
+            data, mtype = await queue.get()
+            await guarded(data, mtype)
+
+    worker_task = asyncio.create_task(worker())
     try:
         async for raw in websocket:
             try:
@@ -2139,35 +2182,17 @@ async def local_handler(websocket):
             except Exception:
                 continue
             mtype = data.get("type")
-            # ONE MESSAGE MUST NEVER TAKE THE CONNECTION WITH IT.
-            #
-            # Every handler below used to run bare inside this loop, so any
-            # exception any of them raised -- a robot socket that closed
-            # mid-command, a reply holding a value json could not encode, a
-            # field a newer console sent that an older agent did not expect --
-            # escaped the `async for`, past the ConnectionClosed handler, and
-            # out of local_handler, which closes the websocket. From the
-            # operator's side that is "I pressed a button and it
-            # disconnected", with nothing on screen naming the button.
-            #
-            # The guard costs one try block and turns every one of those into
-            # a message on the page instead.
-            try:
-                await _dispatch(websocket, data, mtype, prefs)
-            except websockets.exceptions.ConnectionClosed:
-                raise
-            except Exception as exc:                         # noqa: BLE001
-                entry = record_fault("message handler", exc, mtype)
+            if mtype == "camp_hold":
                 try:
-                    await websocket.send(json.dumps({
-                        "type": "agent_fault",
-                        "on": mtype,
-                        "error": entry["error"],
-                        "at": entry["at"],
-                    }))
-                except Exception:
-                    pass
-            continue
+                    reply = {"type": "camp_res", "cmd": "hold",
+                             **_camp_guide().beat()}
+                except Exception as exc:                 # noqa: BLE001
+                    record_fault("hold heartbeat", exc, mtype)
+                    reply = {"type": "camp_res", "cmd": "hold", "ok": False,
+                             "error": str(exc)}
+                await websocket.send(json.dumps(reply))
+                continue
+            await queue.put((data, mtype))
 
     except websockets.exceptions.ConnectionClosed:
         pass
@@ -2175,6 +2200,7 @@ async def local_handler(websocket):
         record_fault("local_handler", exc, None)
     finally:
         stream_task.cancel()
+        worker_task.cancel()
         log.info("local browser disconnected")
 
 
