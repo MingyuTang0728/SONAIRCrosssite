@@ -163,13 +163,28 @@ def preflight(ctx, requires=None) -> dict:
                               "port 30004 — another copy of this agent, or a "
                               "program left running — then reconnect.",
                             blocking="robot" in requires))
-    elif ctx.robot_enabled():
+    if ctx.robot_enabled() and (health.get("host_stalls") or 0) > 0:
+        checks.append(Check("agent_stalls", "Agent responsiveness", "warn",
+                            f"The agent process has frozen "
+                            f"{health['host_stalls']} time(s), the worst for "
+                            f"{health.get('host_stall_max_s', 0):.1f} s. The "
+                            "robot is read in a separate process so the link "
+                            "survives this, but live displays and the camera "
+                            "pause meanwhile. The usual cause is the camera "
+                            "driver retrying a stream it cannot open.",
+                            blocking=False))
+    if ctx.robot_enabled() and not degraded:
         nf = len(health.get("fields") or [])
         dropped = health.get("dropped_fields") or []
         checks.append(Check("robot_interface", "Robot interface", "pass",
                             f"RTDE on port 30004, {nf} fields"
                             + (f" ({len(dropped)} the controller does not have)"
-                               if dropped else "") + "."))
+                               if dropped else "")
+                            + (", read in its own process"
+                               if health.get("mode") == "process" else
+                               ", read IN the agent process — a freeze of the "
+                               "agent can still drop it")
+                            + "."))
 
     mode = str(st.get("robot_mode_text") or "").upper()
     safety = str(st.get("safety_mode_text") or "").upper()

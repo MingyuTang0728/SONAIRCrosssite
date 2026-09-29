@@ -28,6 +28,7 @@ that a bug in a control path cannot take the telemetry stream down with it.
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
 import socket
 import struct
 import threading
@@ -370,6 +371,11 @@ class TelemetryHealth:
     rtde_unavailable_reason: str = ""
     reconnects: int = 0
     dropped_fields: list = field(default_factory=list)
+    rtde_drops: int = 0                 # times RTDE started and was then lost
+    rtde_last_drop: float = 0.0         # time.time() of the last one
+    mode: str = ""                      # "process" | "thread"
+    host_stall_max_s: float = 0.0       # worst freeze of the AGENT process seen
+    host_stalls: int = 0                # freezes longer than half a second
 
     def degraded(self) -> str:
         """
@@ -384,6 +390,12 @@ class TelemetryHealth:
         """
         if not self.connected:
             return "the robot link is not connected"
+        if self.source == "rtde" and self.rtde_drops >= 2 and \
+                time.time() - self.rtde_last_drop < 120.0:
+            return (f"RTDE keeps dropping: the controller has closed it "
+                    f"{self.rtde_drops} times, most recently "
+                    f"{time.time() - self.rtde_last_drop:.0f} s ago "
+                    f"({self.rtde_unavailable_reason or 'no reason given'})")
         if self.source != "rtde":
             why = self.rtde_unavailable_reason or "no reason recorded"
             return (f"the robot is being read over the FALLBACK interface on "
@@ -404,24 +416,121 @@ class URTelemetry:
     # How long to wait before trying RTDE again once it has refused.
     RTDE_RETRY_S = 20.0
 
-    def __init__(self, host: str, frequency: float = 125.0, prefer_rtde: bool = True):
+    def __init__(self, host: str, frequency: float = 125.0, prefer_rtde: bool = True,
+                 use_process: bool = True):
         self.host = host
         self.frequency = frequency
         self.prefer_rtde = prefer_rtde
+        self.use_process = use_process
         self._lock = threading.Lock()
         self._state: dict = {}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._sinks: list = []
         self.health = TelemetryHealth()
+        # Where a received packet goes. In-process it is published directly;
+        # in the reader child it is put on the queue to the agent instead.
+        self._emit = self._publish
+        self._rx = 0            # packets received by this reader's loop
+        self._rtde_outcome = ""  # "refused" | "dropped", for the last attempt
+        self._proc = None
+        self._watch = None
+
+    # --- lifecycle -------------------------------------------------------
+    #
+    # THE READER RUNS IN ITS OWN PROCESS.
+    #
+    # The controller streams RTDE into a per-client buffer and CLOSES a client
+    # that stops draining it. A thread in the agent cannot guarantee it keeps
+    # draining: every thread in a Python process shares one interpreter lock,
+    # and a C extension that holds it -- a camera driver starting a pipeline,
+    # a large array operation -- freezes all of them at once. Reproduced
+    # against a stand-in controller: one 2.8 s hold in the agent and the
+    # controller closed RTDE with exactly the message the cell logged, "RTDE
+    # connection closed by controller", and the fallback 30003 reader stalled
+    # alongside it. A child process has its own interpreter and keeps reading
+    # whatever the agent is doing; packets queue up and are delivered, with
+    # the time they were RECEIVED, as soon as the agent is free.
 
     def start(self) -> None:
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="ur-telemetry")
+        self._watch = StallWatch(self)
+        self._watch.start()
+        if self.use_process:
+            try:
+                self._spawn()
+                self.health.mode = "process"
+                self._thread = threading.Thread(target=self._drain, daemon=True,
+                                                name="ur-telemetry-drain")
+                self._thread.start()
+                return
+            except Exception as e:      # noqa: BLE001
+                log.warning("could not start the robot reader process (%s); "
+                            "reading in-process instead", e)
+        self.health.mode = "thread"
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name="ur-telemetry")
         self._thread.start()
+
+    def _spawn(self) -> None:
+        # A plain subprocess running this module, NOT multiprocessing: the
+        # spawn start method re-imports the agent's main script in the child,
+        # which would drag the camera driver and everything else into a
+        # process whose only job is to read one socket.
+        import subprocess, sys
+        self._proc = subprocess.Popen(
+            [sys.executable, "-u", "-m", "ur_telemetry", "--reader", self.host,
+             str(self.frequency), "1" if self.prefer_rtde else "0",
+             str(RTDE_PORT), str(PRIMARY_PORT)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            cwd=str(__import__("pathlib").Path(__file__).resolve().parent))
+
+    def _drain(self) -> None:
+        import pickle
+        while not self._stop.is_set():
+            proc = self._proc
+            try:
+                head = proc.stdout.read(4) if proc else b""
+                if len(head) < 4:
+                    raise EOFError
+                n = struct.unpack(">I", head)[0]
+                msg = pickle.loads(proc.stdout.read(n))
+            except Exception:       # noqa: BLE001
+                if self._stop.is_set():
+                    return
+                log.warning("robot reader process stopped (code %s); restarting it",
+                            proc.poll() if proc else None)
+                with self._lock:
+                    self.health.connected = False
+                    self.health.errors += 1
+                time.sleep(0.5)
+                try:
+                    self._spawn()
+                except Exception as e:      # noqa: BLE001
+                    log.warning("could not restart the reader: %s", e)
+                    time.sleep(2.0)
+                continue
+            if msg[0] == "pkt":
+                for raw, source, t_recv in msg[1]:
+                    self._publish(raw, source, t_recv)
+            elif msg[0] == "health":
+                with self._lock:
+                    for k, v in msg[1].items():
+                        if k in ("packets", "mode", "host_stall_max_s",
+                                 "host_stalls"):
+                            continue
+                        setattr(self.health, k, v)
 
     def stop(self) -> None:
         self._stop.set()
+        if self._watch:
+            self._watch.stop()
+        if self._proc is not None:
+            try:
+                self._proc.stdin.close()        # the child exits on EOF
+                self._proc.wait(timeout=2.0)
+            except Exception:       # noqa: BLE001
+                self._proc.kill()
         if self._thread:
             self._thread.join(timeout=2.0)
 
@@ -454,9 +563,14 @@ class URTelemetry:
             if fn in self._sinks:
                 self._sinks.remove(fn)
 
-    def _publish(self, raw: dict, source: str) -> None:
+    def _publish(self, raw: dict, source: str, t_recv: float | None = None) -> None:
+        st = decorate(raw, source)
+        if t_recv is not None:
+            # When it arrived at the socket, not when the agent got round to
+            # it: a backlog drained after a stall keeps its true spacing.
+            st["_mono"] = float(t_recv)
         with self._lock:
-            st = self._state = decorate(raw, source)
+            self._state = st
             self.health.packets += 1
             sinks = list(self._sinks)
         # Outside the lock. A subscriber that blocks on a disk write while
@@ -474,7 +588,12 @@ class URTelemetry:
         while not self._stop.is_set():
             ok = False
             started = time.monotonic()
-            before = self.health.packets
+            # Counted where packets are RECEIVED, not where they are published:
+            # in the reader child nothing is published here -- packets go
+            # straight onto the pipe -- so a count taken from `_publish` read
+            # zero, every drop looked like a link that had never worked, and
+            # the backoff climbed straight back to ten seconds.
+            before = self._rx
             try:
                 # RTDE is retried on a slower schedule once it has been shown
                 # to fail. Attempting it on EVERY reconnect cost several
@@ -482,6 +601,15 @@ class URTelemetry:
                 # were silence on the only working stream.
                 if self.prefer_rtde and time.monotonic() >= rtde_next:
                     ok = self._run_rtde()
+                    # A REFUSAL and a DROP are different failures. RTDE that
+                    # would not start is worth waiting on before asking again;
+                    # RTDE that was streaming and got cut off is a hiccup, and
+                    # the answer is RTDE again at once -- not twenty seconds on
+                    # the fallback, which is exactly the "stream ended, reading
+                    # primary interface on 30003" pattern the cell logged.
+                    if not ok and self._rtde_outcome == "dropped":
+                        self._stop.wait(0.2)
+                        continue
                     if not ok:
                         rtde_next = time.monotonic() + self.RTDE_RETRY_S
                 if not ok and not self._stop.is_set():
@@ -503,7 +631,7 @@ class URTelemetry:
             # working one it turned a momentary drop into a fourteen second
             # hole, and a campaign came back with fresh robot state in 16% of
             # its samples because of exactly that.
-            delivered = (self.health.packets - before) > 50 and \
+            delivered = (self._rx - before) > 50 and \
                 (time.monotonic() - started) > 1.0
             if delivered:
                 backoff = 0.2
@@ -511,6 +639,7 @@ class URTelemetry:
             backoff = 0.2 if delivered else min(backoff * 2, 10.0)
 
     def _run_rtde(self) -> bool:
+        self._rtde_outcome = "refused"
         client = RTDEClient(self.host, RTDE_PORT, self.frequency)
         try:
             client.connect()
@@ -536,12 +665,15 @@ class URTelemetry:
                  len(granted), self.frequency, client.controller_version or "unknown")
 
         t0, n0 = time.monotonic(), 0
+        started = t0
+        self._rtde_outcome = "dropped"      # from here on, a failure is a drop
         try:
             while not self._stop.is_set():
                 pkt = client.read()
                 if pkt is None:
                     continue
-                self._publish(pkt, "rtde")
+                self._emit(pkt, "rtde")
+                self._rx += 1
                 n0 += 1
                 now = time.monotonic()
                 if now - t0 >= 1.0:
@@ -550,10 +682,15 @@ class URTelemetry:
                     t0, n0 = now, 0
             return True
         except Exception as e:
+            lasted = time.monotonic() - started
             with self._lock:
                 self.health.last_error = f"rtde stream: {e}"
                 self.health.errors += 1
-            log.warning("RTDE stream ended: %s", e)
+                self.health.rtde_drops += 1
+                self.health.rtde_last_drop = time.time()
+                self.health.rtde_unavailable_reason = (
+                    f"RTDE started and then ended after {lasted:.1f} s: {e}")
+            log.warning("RTDE stream ended after %.1f s: %s", lasted, e)
             return False
         finally:
             client.close()
@@ -577,6 +714,7 @@ class URTelemetry:
 
         buf = b""
         t0, n0 = time.monotonic(), 0
+        opened = t0
         try:
             while not self._stop.is_set():
                 chunk = sock.recv(8192)
@@ -593,9 +731,18 @@ class URTelemetry:
                     pkt, buf = buf[:plen], buf[plen:]
                     parsed = parse_primary_packet(pkt)
                     if parsed:
-                        self._publish(parsed, "primary-30003")
+                        self._emit(parsed, "primary-30003")
+                        self._rx += 1
                         n0 += 1
                 now = time.monotonic()
+                # The fallback is a stopgap, not a destination. Hand back to
+                # the loop every so often so RTDE gets tried again; otherwise
+                # one transient refusal would leave the cell on the fallback
+                # for the rest of the session with pre-flight blocking.
+                if self.prefer_rtde and now - opened > self.RTDE_RETRY_S:
+                    log.info("retrying RTDE after %.0f s on the fallback",
+                             now - opened)
+                    return True
                 if now - t0 >= 1.0:
                     with self._lock:
                         self.health.rate_hz = n0 / (now - t0)
@@ -677,3 +824,124 @@ def decorate(raw: dict, source: str) -> dict:
     if dout is not None:
         out["digital_outputs"] = [bool(int(dout) & (1 << i)) for i in range(18)]
     return out
+
+
+
+# ---------------------------------------------------------------------------
+# the reader process
+# ---------------------------------------------------------------------------
+
+def _reader_main(host, frequency, prefer_rtde, rtde_port, primary_port):
+    """
+    The robot reader child. Runs the ordinary connect / stream / fall back /
+    reconnect loop and writes every packet to stdout, framed and pickled, with
+    the time it was received.
+
+    Three threads, so that no one of them can stall another: the socket reader
+    only appends to memory, the writer only drains memory to the pipe, and a
+    third watches stdin -- when the agent exits or closes it, the child exits
+    too rather than being left behind holding the robot's port.
+    """
+    import collections, os, pickle, sys
+    global RTDE_PORT, PRIMARY_PORT
+    RTDE_PORT, PRIMARY_PORT = int(rtde_port), int(primary_port)
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
+                        format="%(asctime)s %(levelname)s [ur.reader] %(message)s",
+                        datefmt="%H:%M:%S")
+    out = sys.stdout.buffer
+    buf = collections.deque()
+    cv = threading.Condition()
+    t = URTelemetry(host, float(frequency), bool(int(prefer_rtde)),
+                    use_process=False)
+
+    def emit(raw, src):
+        with cv:
+            buf.append((raw, src, time.perf_counter()))
+            cv.notify()
+    t._emit = emit
+
+    def write(msg):
+        data = pickle.dumps(msg, protocol=pickle.HIGHEST_PROTOCOL)
+        out.write(struct.pack(">I", len(data)) + data)
+        out.flush()
+
+    def writer():
+        last_h = 0.0
+        while True:
+            with cv:
+                cv.wait(timeout=0.25)
+                batch = list(buf)
+                buf.clear()
+            try:
+                if batch:
+                    write(("pkt", batch))
+                if time.monotonic() - last_h > 0.5:
+                    last_h = time.monotonic()
+                    # Snapshot under the lock, WRITE outside it. The write can
+                    # block for as long as the agent is frozen -- that is what
+                    # the pipe is for -- and blocking while holding the lock
+                    # the socket reader also takes stalled the reader too, and
+                    # the controller dropped the link anyway.
+                    with t._lock:
+                        h = asdict(t.health)
+                    write(("health", h))
+            except Exception:       # noqa: BLE001
+                os._exit(0)          # the agent has gone
+
+    def watch_stdin():
+        try:
+            while sys.stdin.buffer.read(1):
+                pass
+        except Exception:       # noqa: BLE001
+            pass
+        os._exit(0)
+
+    threading.Thread(target=writer, daemon=True).start()
+    threading.Thread(target=watch_stdin, daemon=True).start()
+    t._loop()
+
+
+class StallWatch:
+    """
+    Measures how long the AGENT process itself is frozen.
+
+    A thread that asks to sleep 20 ms and is woken much later was held off by
+    the interpreter lock -- which means every other thread in the agent was
+    too. Those freezes are what get a robot link dropped, and they are
+    invisible from inside any single component, so they are measured here and
+    reported with the robot's health.
+    """
+
+    TICK = 0.02
+    REPORT = 0.5
+
+    def __init__(self, owner):
+        self.owner = owner
+        self._ev = threading.Event()
+
+    def start(self):
+        threading.Thread(target=self._run, daemon=True, name="stall-watch").start()
+
+    def stop(self):
+        self._ev.set()
+
+    def _run(self):
+        while not self._ev.is_set():
+            t0 = time.perf_counter()
+            time.sleep(self.TICK)
+            late = time.perf_counter() - t0 - self.TICK
+            if late > self.REPORT:
+                h = self.owner.health
+                h.host_stalls += 1
+                h.host_stall_max_s = max(h.host_stall_max_s, round(late, 2))
+                log.warning("the agent process was frozen for %.1f s; every "
+                            "thread in it was held up, including anything "
+                            "reading a socket", late)
+
+
+# Last in the file on purpose: `_reader_main` never returns, so everything the
+# child could need has to be defined before this line runs.
+if __name__ == "__main__" and len(__import__("sys").argv) > 1 \
+        and __import__("sys").argv[1] == "--reader":
+    import sys as _sys
+    _reader_main(*_sys.argv[2:7])

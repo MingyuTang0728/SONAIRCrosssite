@@ -647,7 +647,10 @@ class UrLogger:
             if fh is None:
                 return
             try:
-                fh.write(",".join(ur_row(MASTER.now(), st)) + "\n")
+                mono = st.get("_mono")
+                t = (float(mono) - MASTER._t0) if isinstance(mono, (int, float)) \
+                    else MASTER.now()
+                fh.write(",".join(ur_row(t, st)) + "\n")
                 self.rows += 1
             except Exception as e:      # noqa: BLE001
                 self.dropped += 1
@@ -907,6 +910,13 @@ class D435iImuSource:
         return True
 
     def _loop(self) -> None:
+        # Backs off, and goes quiet. This used to retry every five seconds for
+        # ever, and each attempt enumerates USB devices and tries to start a
+        # pipeline -- work the camera driver does while holding the Python
+        # interpreter lock, which freezes every thread in the agent for its
+        # duration, including the ones reading the robot. The camera's IMU is
+        # optional; the robot link is not, so the optional one yields.
+        wait, failures = 5.0, 0
         while not self._stop.is_set():
             pipe = rs.pipeline()
             cfg = rs.config()
@@ -919,9 +929,21 @@ class D435iImuSource:
                          self.accel_hz, self.gyro_hz)
             except Exception as e:
                 self.error = str(e)
-                log.warning("D435i IMU start failed: %s — retrying in 5 s", e)
-                time.sleep(5)
+                failures += 1
+                if failures <= 3:
+                    log.warning("D435i IMU start failed: %s — retrying in %.0f s",
+                                e, wait)
+                elif failures == 4:
+                    log.warning("D435i IMU still unavailable after %d tries (%s). "
+                                "Retrying every 2 minutes, quietly. The usual "
+                                "cause is the camera on a USB 2 port, or its "
+                                "colour/depth streams already holding it; the "
+                                "industrial IMU and the robot are unaffected.",
+                                failures, e)
+                self._stop.wait(wait)
+                wait = min(wait * 2.0, 120.0)
                 continue
+            wait, failures = 5.0, 0
 
             accel = [0.0, 0.0, 0.0]
             gyro = [0.0, 0.0, 0.0]
@@ -1271,7 +1293,7 @@ class BenchRecorder:
                 if wait > 0.0015:
                     time.sleep(wait - 0.001)
                 while MASTER.now() < next_t and not self._stop.is_set():
-                    pass
+                    time.sleep(0)       # yield, so the spin never starves a reader
                 continue
             next_t += period
             # If we fall far behind (a GC pause, a disk hiccup), resynchronise

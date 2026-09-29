@@ -540,6 +540,23 @@ def ur_io_thread():
     global global_actual_q, global_tcp_pose, ur_socket_tx
     _logged_size = set()   # avoid spamming log with unknown packet sizes
     while True:
+        # ONE READER PER ROBOT. When the UR service is running it already
+        # reads the controller -- over RTDE, in its own process -- and this
+        # thread used to open a SECOND connection to 30003 alongside it, for
+        # the same joint angles. On the cell that connection went thirty
+        # seconds at a time without a byte while the others were being dropped
+        # too. Now it only mirrors the service's state into the old globals,
+        # and opens its own socket only when there is no service at all.
+        if _HAS_EXT and ur_bridge_ext.UR.enabled:
+            ur_socket_tx = None
+            st = ur_bridge_ext.UR.state() or {}
+            q, tcp = st.get("actual_q"), st.get("actual_TCP_pose")
+            if q and tcp:
+                with data_lock:
+                    global_actual_q = list(q)
+                    global_tcp_pose = list(tcp)
+            time.sleep(0.02)
+            continue
         try:
             host = robot_host()
             gen = robot_addr_gen()
