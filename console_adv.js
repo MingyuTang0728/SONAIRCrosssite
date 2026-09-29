@@ -1751,16 +1751,43 @@
      is the wrong control for that, so it follows the button: pressed means
      on, released means off, and losing the window releases it too.         */
   var fd = false;
-  function setFreedrive(want) {
+  function setFreedrive(want, msgId) {
     if (want === fd) return;
     fd = want;
     send({ type: "ur_freedrive", enable: want });
     var tag = $("fdTag");
     if (tag) { tag.textContent = want ? "ON — arm is loose" : "off"; }
-    say("fdMsg", want
+    say(msgId || "fdMsg", want
       ? "The arm is loose. Let go of the button to lock it again."
       : "The arm is locked.", want ? "warn" : "info");
   }
+  // Pressed means on, released (or the window lost) means off.
+  function holdButton(id, msgId, down, up) {
+    var b = $(id); if (!b) return;
+    var held = false;
+    b.addEventListener("pointerdown", function (ev) {
+      if (b.disabled || !S.require(msgId)) return;
+      ev.preventDefault();
+      if (b.setPointerCapture) b.setPointerCapture(ev.pointerId);
+      held = true;
+      b.classList.add("held");
+      down();
+    });
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach(function (e) {
+      b.addEventListener(e, function () {
+        if (!held) return;
+        held = false;
+        b.classList.remove("held");
+        up();
+      });
+    });
+    window.addEventListener("blur", function () {
+      if (held) { held = false; b.classList.remove("held"); up(); }
+    });
+  }
+  holdButton("btnCampFreedrive", "campGuideMsg",
+             function () { setFreedrive(true, "campGuideMsg"); },
+             function () { setFreedrive(false, "campGuideMsg"); });
   (function () {
     var b = $("btnFreedrive"); if (!b) return;
     ["pointerdown"].forEach(function (e) {
@@ -2265,6 +2292,61 @@
   on("btnTeach_near_singular", "click", function () { teach("near_singular", "cfgD_near_singular"); });
   on("btnTeach_mid_workspace", "click", function () { teach("mid_workspace", "cfgD_mid_workspace"); });
   on("btnTeach_extended", "click", function () { teach("extended", "cfgD_extended"); });
+  /* suggested configurations, and moving to them only while held */
+  var CFG_WORDS = { near_singular: "Near singular", mid_workspace: "Mid workspace",
+                    extended: "Extended" };
+  var guide = { timer: null, cfg: "" };
+  on("btnCampSuggest", "click", function () {
+    if (!S.require("campGuideMsg")) return;
+    say("campGuideMsg", "Working out three positions from where the arm is…", "info");
+    send({ type: "camp_suggest" });
+  });
+  function guideStop() {
+    if (guide.timer) { clearInterval(guide.timer); guide.timer = null; }
+    if (guide.cfg) send({ type: "camp_release" });
+  }
+  on("btnCampStop", "click", function () {
+    if (!S.require("campGuideMsg")) return;
+    if (guide.timer) { clearInterval(guide.timer); guide.timer = null; }
+    send({ type: "camp_stop" });
+    say("campGuideMsg", "Stop sent.", "warn");
+  });
+  function goHold(c) {
+    return function () {
+      guide.cfg = c;
+      if ($("sugSt_" + c)) $("sugSt_" + c).textContent = "moving…";
+      send({ type: "camp_goto", config: c, which: "suggested" });
+      if (guide.timer) clearInterval(guide.timer);
+      guide.timer = setInterval(function () { send({ type: "camp_hold" }); }, 150);
+    };
+  }
+  holdButton("btnGo_near_singular", "campGuideMsg", goHold("near_singular"), guideStop);
+  holdButton("btnGo_mid_workspace", "campGuideMsg", goHold("mid_workspace"), guideStop);
+  holdButton("btnGo_extended", "campGuideMsg", goHold("extended"), guideStop);
+  S.on("close", function () { if (guide.timer) { clearInterval(guide.timer); guide.timer = null; } });
+
+  function guideStatus(d) {
+    var c = d.config || d.label || guide.cfg;
+    var cell = $("sugSt_" + c);
+    if (!cell) return;
+    if (d.ok === false) {
+      if (guide.timer) { clearInterval(guide.timer); guide.timer = null; }
+      cell.textContent = "not moved";
+      say("campGuideMsg", d.error || "The move was refused.", "bad");
+      return;
+    }
+    if (d.arrived) {
+      if (guide.timer) { clearInterval(guide.timer); guide.timer = null; }
+      cell.textContent = "arrived";
+      say("campGuideMsg", CFG_WORDS[c] + ": arrived. Look at the arm and the "
+        + "carrier. If it is clear of everything, press Teach here for "
+        + CFG_WORDS[c] + " in the table below.", "ok");
+    } else if (d.remaining_deg != null) {
+      cell.textContent = (d.cmd === "release" || d.moving === false
+        ? "stopped, " : "moving, ") + d.remaining_deg + "° to go";
+    }
+  }
+
   on("btnCampPreview", "click", function () {
     if (!S.require("campMsg")) return;
     say("campMsg", "Checking the session…", "info");
@@ -2317,6 +2399,29 @@
   }
 
   S.on("camp_res", function (d) {
+    if (d.cmd === "suggest") {
+      CFGS.forEach(function (c) {
+        var g = (d.configs || {})[c];
+        if ($("sugInfo_" + c)) $("sugInfo_" + c).textContent = g
+          ? "elbow bent " + g.bend_deg + "°, runs move it " + g.travel_deg
+            + "° " + (g.direction > 0 ? "(+)" : "(−)") + "; tool stays "
+            + g.tool_low_cm + "–" + g.tool_high_cm + " cm above the base; "
+            + "getting there turns a joint up to " + g.move_deg + "°"
+          : "nothing safe found from here";
+        if ($("btnGo_" + c)) $("btnGo_" + c).disabled = !g;
+        if ($("sugSt_" + c)) $("sugSt_" + c).textContent = g ? "ready" : "—";
+        if (g && $("cfgD_" + c)) $("cfgD_" + c).value = String(g.direction);
+      });
+      say("campGuideMsg", (d.problems || []).length
+        ? d.problems.join(" · ")
+        : "Three positions found. Hold a button to drive there slowly; let go "
+          + "to stop.", (d.problems || []).length ? "warn" : "ok");
+      return;
+    }
+    if (d.cmd === "goto" || d.cmd === "hold" || d.cmd === "release") {
+      guideStatus(d);
+      return;
+    }
     renderCampProgress(d);
     if (d.cmd === "teach") {
       say("campMsg", d.ok ? "Saved the " + d.config.replace("_", " ")

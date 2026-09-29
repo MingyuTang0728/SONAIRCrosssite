@@ -186,6 +186,8 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .btn.go{background:var(--ok);border-color:var(--ok);color:#06210d}
 .btn.danger{background:var(--bad);border-color:var(--bad);color:#fff}
 .btn.big{padding:13px 22px;font-size:14.5px;font-weight:650}
+.btn.held{outline:2px solid var(--warn, #e0a030);outline-offset:2px}
+#btnCampFreedrive,#btnGo_near_singular,#btnGo_mid_workspace,#btnGo_extended{touch-action:none;user-select:none;-webkit-user-select:none}
 .btn.wide{width:100%}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 /* Field labels are SENTENCE CASE, not capitals.
@@ -1542,6 +1544,40 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     done and checked are skipped, and any run whose file failed its check is
     recorded again. Run the <b>imu mount cal</b> job from the list below once
     the carrier is fitted, and again after the refit.</div>
+
+    <h4 style="margin:16px 0 6px">Finding the three configurations</h4>
+    <p class="hint">Put the arm somewhere you know is safe &mdash; by hand with
+    <b>Hold to hand-guide</b>, or with the pendant &mdash; then press
+    <b>Suggest from here</b>. Three positions are worked out from where the arm
+    is, each one checked so that every run's elbow travel keeps the tool at
+    least 3&nbsp;cm inside the safe envelope. Then drive to each one with
+    <b>Hold to move there</b>: the arm moves slowly (about 9&deg; a second) and
+    <b>only while you hold the button</b>; let go and it stops at once. When it
+    arrives, look at it, and if you are happy press <b>Teach here</b> for that
+    row in the table below. Keep the emergency stop within reach.</p>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" id="btnCampFreedrive">Hold to hand-guide</button>
+      <button class="btn" id="btnCampSuggest">Suggest from here</button>
+      <button class="btn danger" id="btnCampStop">Stop the arm</button>
+    </div>
+    <div style="overflow-x:auto">
+    <table class="data" style="margin-top:10px" id="campSugTable">
+      <thead><tr><th>Configuration</th><th>Suggested position</th>
+        <th></th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Near singular</td><td id="sugInfo_near_singular">&mdash;</td>
+          <td><button class="btn" id="btnGo_near_singular" disabled>Hold to move there</button></td>
+          <td id="sugSt_near_singular">&mdash;</td></tr>
+        <tr><td>Mid workspace</td><td id="sugInfo_mid_workspace">&mdash;</td>
+          <td><button class="btn" id="btnGo_mid_workspace" disabled>Hold to move there</button></td>
+          <td id="sugSt_mid_workspace">&mdash;</td></tr>
+        <tr><td>Extended</td><td id="sugInfo_extended">&mdash;</td>
+          <td><button class="btn" id="btnGo_extended" disabled>Hold to move there</button></td>
+          <td id="sugSt_extended">&mdash;</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <div class="note info" id="campGuideMsg">&mdash;</div>
 
     <table class="data" style="margin-top:12px" id="campCfgTable">
       <thead><tr><th>Configuration</th><th>Taught</th><th>Elbow moves</th>

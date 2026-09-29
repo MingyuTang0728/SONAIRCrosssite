@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import threading
 import time
 from pathlib import Path
 
@@ -182,16 +183,62 @@ def session_runs(session: int, state: dict | None = None, seed: int = 0):
     return out, held
 
 
+CONFIG_WORDS = {"near_singular": "Near singular", "mid_workspace": "Mid workspace",
+                "extended": "Extended"}
+
+
+def _tool_offset(q_now, tcp_now):
+    """
+    Where the tool point sits in the FLANGE's frame, from one reading.
+
+    The robot reports its tool centre point; the kinematics give the flange.
+    The difference is fixed to the flange and turns with it, so it is stored
+    in flange axes and rotated with every planned pose. Treating it as a
+    fixed shift in the base frame -- what the first version did -- puts a
+    15 cm tool offset up to 16 cm wrong after a 64 deg elbow move.
+    """
+    if ur_kin is None or tcp_now is None or q_now is None:
+        return None
+    T = ur_kin.fk(q_now)
+    return T[:3, :3].T @ (ur_kin.np.asarray(tcp_now[:3], dtype=float) - T[:3, 3])
+
+
+def _tool_at(q, off):
+    T = ur_kin.fk(q)
+    p = T[:3, 3] if off is None else T[:3, 3] + T[:3, :3] @ off
+    return [float(v) for v in p]
+
+
+def _elbow_path(q0, travel, n=None):
+    """The elbow's positions from the start to `travel` rad, every ~4 deg."""
+    n = n or max(2, int(abs(travel) / math.radians(4.0)) + 1)
+    out = []
+    for k in range(n + 1):
+        q = list(q0)
+        q[ELBOW] += travel * k / n
+        out.append(q)
+    return out
+
+
+def max_travel(direction: int = 1, session: int | None = None) -> float:
+    """The largest elbow travel (rad, signed) any planned run makes."""
+    runs, _ = the_plan()
+    kinds = {(r.traj_type, r.joint_vel) for r in runs
+             if session is None or r.session == session}
+    return max((abs(e) for tt, v in kinds
+                for e in motion(tt, v, direction)["excursion"]),
+               default=0.0) * (1 if direction >= 0 else -1)
+
+
 def preview(session: int, state: dict, envelope_ok=None, tcp_now=None,
             q_now=None) -> dict:
     """
     What this session will do, checked before the arm moves at all.
 
-    Every configuration it needs must be taught, and every run's excursion is
-    pushed through the kinematics and checked against the cell's safe
-    envelope at its extremes. The tool position along the excursion is taken
-    as the TAUGHT configuration's tool position plus the flange displacement
-    the kinematics predict, so it needs no TCP offset to be known.
+    Every configuration it needs must be taught, and every run's elbow travel
+    is pushed through the kinematics every few degrees and the tool point
+    checked against the cell's safe envelope. Problems are reported per
+    configuration, worst case first, in words.
     """
     runs, held = session_runs(session, state)
     configs = state.get("configs", {})
@@ -199,8 +246,12 @@ def preview(session: int, state: dict, envelope_ok=None, tcp_now=None,
     need = sorted({r.arm_config for r in runs})
     for c in need:
         if c not in configs:
-            problems.append(f"the {c} configuration has not been taught: jog the "
-                            f"arm there and press Teach on the Automate page")
+            problems.append(f"{CONFIG_WORDS.get(c, c)} has not been taught: jog "
+                            f"the arm there and press Teach here")
+    off = _tool_offset(q_now, tcp_now)
+    bad = {}         # config -> [conditions failing, worst travel, why]
+    total = {}
+    checked = {}
     for r in runs:
         cfg = configs.get(r.arm_config)
         m = motion(r.traj_type, r.joint_vel, (cfg or {}).get("direction", 1))
@@ -211,31 +262,286 @@ def preview(session: int, state: dict, envelope_ok=None, tcp_now=None,
                                        math.degrees(max(abs(e) for e in m["excursion"])), 1),
                                    "seconds": round(m["seconds"], 1)})
         c["runs"] += 1
-        if cfg and ur_kin is not None and envelope_ok is not None:
-            q0 = list(cfg["q"])
-            base = ur_kin.fk(q0)[:3, 3]
-            ref = None
-            if tcp_now is not None and q_now is not None:
-                ref = [float(tcp_now[i]) - float(ur_kin.fk(q_now)[i, 3])
-                       for i in range(3)]
-            for e in m["excursion"] + [m["excursion"][-1] / 2.0]:
-                q = list(q0)
-                q[ELBOW] += e
-                p = ur_kin.fk(q)[:3, 3]
-                pose = [p[i] + (ref[i] if ref else 0.0) for i in range(3)]
-                ok, why = envelope_ok(pose + [0.0, 0.0, 0.0])
+        if not cfg or ur_kin is None or envelope_ok is None:
+            continue
+        total.setdefault(r.arm_config, set()).add(key)
+        travel = max(m["excursion"], key=abs)
+        memo = (r.arm_config, round(travel, 6))
+        if memo not in checked:
+            checked[memo] = None
+            for q in _elbow_path(cfg["q"], travel):
+                ok, why = envelope_ok(_tool_at(q, off) + [0.0, 0.0, 0.0])
                 if not ok:
-                    msg = (f"{r.arm_config}: moving the elbow "
-                           f"{math.degrees(e):+.0f} deg for {key} leaves the safe "
-                           f"envelope ({why})")
-                    if msg not in problems:
-                        problems.append(msg)
+                    checked[memo] = (math.degrees(q[ELBOW] - cfg["q"][ELBOW]), why)
+                    break
+        if checked[memo]:
+            b = bad.setdefault(r.arm_config, [set(), 0.0, ""])
+            b[0].add(key)
+            if not b[2] or abs(checked[memo][0]) < abs(b[1]):
+                b[1], b[2] = checked[memo]
+    for cfg_name, (keys, deg, why) in sorted(bad.items()):
+        problems.append(
+            f"{CONFIG_WORDS.get(cfg_name, cfg_name)}: {len(keys)} of "
+            f"{len(total.get(cfg_name, keys))} conditions take the tool out of "
+            f"the safe envelope, the first after {deg:+.0f} deg of elbow travel "
+            f"({why}). Teach it with the tool higher, choose the other elbow "
+            f"direction, or use Suggest configurations")
     refit = any(r.refit_before for r in runs)
     return {"ok": not problems, "session": session, "runs": len(runs),
             "cells": sorted(cells.values(), key=lambda c: c["cell"]),
             "held_out_cells": sum(1 for c in cells.values() if c["held_out"]),
             "minutes": round(secs / 60.0, 1), "refit_before": refit,
             "problems": problems}
+
+
+# ---------------------------------------------------------------------------
+# suggesting the three configurations
+# ---------------------------------------------------------------------------
+
+# How bent the elbow is at the start of each configuration's runs, in deg
+# (0 = arm straight, the elbow singularity). Set by how far the shoulder-to-
+# wrist distance reaches of its maximum: 97% (near singular), 85% (extended)
+# and 60% (mid workspace).
+CONFIG_BEND_DEG = {"near_singular": 28.0, "extended": 64.0, "mid_workspace": 106.0}
+MIN_BEND_DEG = 10.0      # never closer to straight than this during a run
+MAX_BEND_DEG = 155.0     # never folded tighter than this
+MARGIN_M = 0.03          # extra clearance inside the envelope for a suggestion
+MIN_RADIUS_M = 0.20      # keep the wrist this far from the base's own axis
+
+
+def _inside(p, bounds, margin):
+    return (bounds["x_min"] + margin <= p[0] <= bounds["x_max"] - margin and
+            bounds["y_min"] + margin <= p[1] <= bounds["y_max"] - margin and
+            bounds["z_min"] + margin <= p[2] <= bounds["z_max"] - margin)
+
+
+def suggest(q_now, tcp_now, bounds: dict, envelope_ok=None) -> dict:
+    """
+    Three configurations, found from where the operator has put the arm.
+
+    Only the shoulder, elbow and first wrist joint change: the base, the
+    other two wrist joints and the tool's tilt stay as the operator left
+    them, so each suggestion is the same arm, reaching nearer or further in
+    the direction it already faces. For each configuration the shoulder angle
+    closest to the current one is chosen for which
+      * every run's elbow travel, checked every 4 deg, keeps the tool point at
+        least 3 cm inside the safe envelope,
+      * the elbow never comes within 10 deg of straight,
+      * the wrist stays 20 cm from the base's axis, and
+      * the move there from here, as movej makes it, stays inside too.
+    These are proposals. The operator drives to each one slowly and decides.
+    """
+    if ur_kin is None:
+        return {"ok": False, "error": "the kinematics module is not available"}
+    if not q_now or len(q_now) < 6:
+        return {"ok": False, "error": "the robot is not reporting joint angles"}
+    np = ur_kin.np
+    q_now = [float(v) for v in q_now[:6]]
+    off = _tool_offset(q_now, tcp_now)
+    sign = 1.0 if q_now[ELBOW] >= 0 else -1.0
+    tilt = q_now[1] + q_now[2] + q_now[3]      # tool pitch in the arm's plane
+    trav = {d: max_travel(d) for d in (1, -1)}
+    here = _tool_at(q_now, off)
+    if not _inside(here, bounds, 0.0) or (
+            envelope_ok is not None and not envelope_ok(here + [0.0] * 3)[0]):
+        why = envelope_ok(here + [0.0] * 3)[1] if envelope_ok else ""
+        return {"ok": False, "configs": {}, "problems": [
+            "The arm is outside the safe envelope where it is now"
+            + (f" ({why})" if why else "") + ". Hand-guide or jog it back "
+            "inside, nearer the middle of the table, and ask again"]}
+
+    def ok_at(q, margin, radius=True):
+        p = _tool_at(q, off)
+        if not _inside(p, bounds, margin):
+            return False
+        if envelope_ok is not None and not envelope_ok(p + [0.0, 0.0, 0.0])[0]:
+            return False
+        if not radius:
+            return True
+        w = ur_kin.frames(q)[4][:3, 3]           # wrist centre
+        return math.hypot(w[0], w[1]) >= MIN_RADIUS_M
+
+    def search(cfg, base):
+        bend = math.radians(CONFIG_BEND_DEG[cfg])
+        best = None
+        for d in (1, -1):
+            travel = trav[d]
+            end = sign * bend + travel
+            if end * sign < 0 or not (MIN_BEND_DEG <= math.degrees(abs(end))
+                                      <= MAX_BEND_DEG):
+                continue                    # would straighten through 0
+            for sh_deg in np.arange(-180.0, 0.1, 2.0):
+                q = list(q_now)
+                q[0] = base
+                q[1] = math.radians(sh_deg)
+                q[2] = sign * bend
+                q[3] = tilt - q[1] - q[2]
+                cost = max(abs(a - b) for a, b in zip(q, q_now))
+                if best is not None and cost >= best[0]:
+                    continue
+                if not all(ok_at(p, MARGIN_M) for p in _elbow_path(q, travel)):
+                    continue
+                transit = [list(np.asarray(q_now) + (np.asarray(q) - q_now) * k / 20)
+                           for k in range(21)]
+                if not all(ok_at(p, 0.0, radius=False) for p in transit):
+                    continue
+                zs = [_tool_at(p, off)[2] for p in _elbow_path(q, travel)]
+                best = (cost, q, d, min(zs), max(zs))
+        return best
+
+    out, problems = {}, []
+    for cfg in ("near_singular", "mid_workspace", "extended"):
+        # First with the base where the operator left it; only if nothing
+        # fits there, turned a little further each way, up to 90 deg.
+        best = None
+        for k in range(0, 10):
+            for sgn in ((1,) if k == 0 else (1, -1)):
+                b = search(cfg, q_now[0] + sgn * math.radians(10.0 * k))
+                if b and (best is None or b[0] < best[0]):
+                    best = b
+            if best:
+                break
+        if best is None:
+            problems.append(
+                f"{CONFIG_WORDS[cfg]}: nothing safe found from this position. "
+                f"Start with the arm higher and nearer the middle of the table")
+            continue
+        cost, q, d, zlo, zhi = best
+        out[cfg] = {"q": [round(v, 5) for v in q], "direction": d,
+                    "bend_deg": CONFIG_BEND_DEG[cfg],
+                    "travel_deg": round(math.degrees(abs(trav[d])), 0),
+                    "move_deg": round(math.degrees(cost), 0),
+                    "tool_low_cm": round(zlo * 100, 1),
+                    "tool_high_cm": round(zhi * 100, 1)}
+    return {"ok": not problems, "configs": out, "problems": problems}
+
+
+# ---------------------------------------------------------------------------
+# driving to a configuration slowly, only while the operator holds the button
+# ---------------------------------------------------------------------------
+
+GUIDED_SPEED = 0.15     # rad/s at the fastest joint: about 9 deg a second
+GUIDED_ACCEL = 0.3      # rad/s^2
+HOLD_TIMEOUT_S = 0.4    # this long without a heartbeat and the arm stops
+
+
+class HoldToMove:
+    """
+    A move that happens only while a person is holding the button.
+
+    The browser sends a heartbeat every 150 ms for as long as the button is
+    held. Letting go sends a stop; so does losing the window, the network, the
+    browser or this program's attention for HOLD_TIMEOUT_S, because a watchdog
+    stops the arm whenever the heartbeats stop arriving -- whatever the
+    reason. Pressing again carries on from wherever the arm stopped.
+
+    This is the software half. The physical e-stop is the other half, and it
+    stays within reach.
+    """
+
+    def __init__(self, move_fn, stop_fn, joints_fn, path_ok=None):
+        self.move_fn, self.stop_fn, self.joints_fn = move_fn, stop_fn, joints_fn
+        self.path_ok = path_ok
+        self._lock = threading.Lock()
+        self._target = None
+        self._label = ""
+        self._last_beat = 0.0
+        self._moving = False
+        self.stops = 0
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def remaining_deg(self):
+        q, t = self.joints_fn(), self._target
+        if not q or not t:
+            return None
+        return math.degrees(max(abs(a - b) for a, b in zip(q, t)))
+
+    def press(self, target, label="") -> dict:
+        """Start (or resume) the move. Returns what the button should show."""
+        q = self.joints_fn()
+        if not q or len(q) < 6:
+            return {"ok": False, "error": "the robot is not reporting joint angles"}
+        target = [float(v) for v in target[:6]]
+        if self.path_ok is not None:
+            ok, why = self.path_ok(q, target)
+            if not ok:
+                return {"ok": False, "error": why}
+        with self._lock:
+            self._target, self._label = target, label
+            self._last_beat = time.monotonic()
+        left = self.remaining_deg()
+        if left is not None and left < 0.3:
+            return {"ok": True, "arrived": True, "remaining_deg": round(left, 1)}
+        ok, why = self.move_fn(target, GUIDED_SPEED, GUIDED_ACCEL)
+        if not ok:
+            return {"ok": False, "error": why or "the move was not accepted"}
+        with self._lock:
+            self._moving = True
+        return {"ok": True, "arrived": False, "remaining_deg": round(left or 0, 1)}
+
+    def beat(self) -> dict:
+        with self._lock:
+            self._last_beat = time.monotonic()
+            moving = self._moving
+        left = self.remaining_deg()
+        arrived = left is not None and left < 0.3
+        if arrived:
+            with self._lock:
+                self._moving = False
+        return {"ok": True, "moving": moving and not arrived, "arrived": arrived,
+                "remaining_deg": None if left is None else round(left, 1),
+                "label": self._label}
+
+    def release(self) -> dict:
+        with self._lock:
+            was = self._moving
+            self._moving = False
+        if was:
+            self.stop_fn()
+            self.stops += 1
+        left = self.remaining_deg()
+        return {"ok": True, "arrived": left is not None and left < 0.3,
+                "remaining_deg": None if left is None else round(left, 1),
+                "label": self._label}
+
+    def stop_now(self) -> dict:
+        """The Stop button: stop whatever the arm is doing, moving or not."""
+        with self._lock:
+            self._moving = False
+        self.stop_fn()
+        self.stops += 1
+        left = self.remaining_deg()
+        return {"ok": True, "arrived": False,
+                "remaining_deg": None if left is None else round(left, 1),
+                "label": self._label}
+
+    def _watch(self):
+        while True:
+            time.sleep(0.05)
+            with self._lock:
+                late = (self._moving and
+                        time.monotonic() - self._last_beat > HOLD_TIMEOUT_S)
+                if late:
+                    self._moving = False
+            if late:
+                try:
+                    self.stop_fn()
+                finally:
+                    self.stops += 1
+
+
+def transit_ok(q_from, q_to, envelope_ok, tcp_now=None, q_now=None, n=24):
+    """Every point of a movej from q_from to q_to keeps the tool inside."""
+    if ur_kin is None or envelope_ok is None:
+        return True, ""
+    off = _tool_offset(q_now or q_from, tcp_now)
+    for k in range(n + 1):
+        q = [a + (b - a) * k / n for a, b in zip(q_from, q_to)]
+        ok, why = envelope_ok(_tool_at(q, off) + [0.0, 0.0, 0.0])
+        if not ok:
+            return False, f"the way there leaves the safe envelope: {why}"
+    return True, ""
 
 
 def imu_cal_note(carrier: dict, root=".") -> str:

@@ -1897,6 +1897,27 @@ def _handle_automation(data: dict):
     return None
 
 
+_CAMP_SUGGESTED: dict = {}
+_CAMP_GUIDE = None
+
+
+def _camp_guide():
+    """The hold-to-move driver for the campaign page, made on first use."""
+    global _CAMP_GUIDE
+    if _CAMP_GUIDE is None:
+        import campaign_runner as cr
+
+        def stop():
+            if _HAS_EXT and ur_bridge_ext.UR.controller is not None:
+                ur_bridge_ext.UR.controller.stopj(1.5)
+
+        _CAMP_GUIDE = cr.HoldToMove(
+            move_fn=CELL.move_joints, stop_fn=stop, joints_fn=CELL.joints,
+            path_ok=lambda a, b: cr.transit_ok(a, b, CELL.pose_allowed,
+                                               CELL.tcp_pose(), CELL.joints()))
+    return _CAMP_GUIDE
+
+
 def _handle_campaign(mtype: str, data: dict) -> dict:
     """The planned campaign: teach configurations, preview, run, progress."""
     import campaign_runner as cr
@@ -1910,6 +1931,38 @@ def _handle_campaign(mtype: str, data: dict) -> dict:
                        int(data.get("direction", 1) or 1))
         return {"type": "camp_res", "cmd": "teach", **res,
                 **cr.progress(cr.load_state())}
+    if mtype == "camp_suggest":
+        env = CELL._envelope()
+        if env is None:
+            import ur_control
+            env = ur_control.Envelope()
+        res = cr.suggest(CELL.joints(), CELL.tcp_pose(), env.as_dict(),
+                         envelope_ok=CELL.pose_allowed)
+        global _CAMP_SUGGESTED
+        _CAMP_SUGGESTED = res.get("configs", {})
+        return {"type": "camp_res", "cmd": "suggest", **res}
+    if mtype in ("camp_goto", "camp_hold", "camp_release", "camp_stop"):
+        guide = _camp_guide()
+        if mtype == "camp_stop":
+            return {"type": "camp_res", "cmd": "release", **guide.stop_now()}
+        if mtype == "camp_hold":
+            return {"type": "camp_res", "cmd": "hold", **guide.beat()}
+        if mtype == "camp_release":
+            return {"type": "camp_res", "cmd": "release", **guide.release()}
+        if RUNNER is not None and RUNNER.status().get("state") in (
+                "running", "starting", "stopping"):
+            return {"type": "camp_res", "cmd": "goto", "ok": False,
+                    "error": "a job is running; stop it first"}
+        cfg = data.get("config", "")
+        src = (_CAMP_SUGGESTED if data.get("which") == "suggested"
+               else st.get("configs", {}))
+        if cfg not in src:
+            return {"type": "camp_res", "cmd": "goto", "ok": False,
+                    "config": cfg, "error": "press Suggest configurations first"
+                    if data.get("which") == "suggested" else
+                    "that configuration has not been taught"}
+        res = guide.press(src[cfg]["q"], cfg)
+        return {"type": "camp_res", "cmd": "goto", "config": cfg, **res}
     if mtype == "camp_preview":
         pv = cr.preview(session, st, envelope_ok=CELL.pose_allowed,
                         tcp_now=CELL.tcp_pose(), q_now=CELL.joints())

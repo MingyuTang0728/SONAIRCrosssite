@@ -62,12 +62,18 @@ class Envelope:
         px, py, pz = float(pose[0]), float(pose[1]), float(pose[2])
         if not all(math.isfinite(v) for v in (px, py, pz)):
             return False, "pose contains a non-finite value"
-        if not (self.x[0] <= px <= self.x[1]):
-            return False, f"x={px:.3f} outside [{self.x[0]}, {self.x[1]}]"
-        if not (self.y[0] <= py <= self.y[1]):
-            return False, f"y={py:.3f} outside [{self.y[0]}, {self.y[1]}]"
-        if not (self.z[0] <= pz <= self.z[1]):
-            return False, f"z={pz:.3f} outside [{self.z[0]}, {self.z[1]}]"
+        # In words and centimetres: this reaches the operator's screen.
+        for name, v, (lo, hi) in (("x", px, self.x), ("y", py, self.y)):
+            if not (lo <= v <= hi):
+                return False, (f"the tool would be at {name} = {v * 100:.0f} cm, "
+                               f"outside the allowed {lo * 100:.0f} to "
+                               f"{hi * 100:.0f} cm")
+        if pz < self.z[0]:
+            return False, (f"the tool would be {pz * 100:.1f} cm above the "
+                           f"robot base, below the {self.z[0] * 100:.0f} cm floor")
+        if pz > self.z[1]:
+            return False, (f"the tool would be {pz * 100:.0f} cm above the "
+                           f"robot base, over the {self.z[1] * 100:.0f} cm ceiling")
         return True, ""
 
     def clamp_linear(self, v: float) -> float:
