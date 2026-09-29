@@ -2524,8 +2524,33 @@
   }
   S.on("imu", function (d) { setRecLamp(!!d.rec); });
   S.on("bench_status", function (d) {
-    if (d && d.recorder) setRecLamp(!!d.recorder.recording);
+    if (!d) return;
+    if (d.recorder) setRecLamp(!!d.recorder.recording);
+    // Three separate files come out of one job and they fail independently:
+    // the run can be recording while the robot log never started because the
+    // link dropped. Showing one "recording" lamp for all three hid that, so
+    // each says its own row count and whether it is actually running.
+    var rec = d.recorder || {}, cur = rec.current || {}, last = rec.last || {};
+    setLog("lgRun", "tileRun", rec.recording,
+           rec.recording ? (cur.n || 0) + " samples"
+                         : (last.n ? last.n + " samples" : "not running"));
+    var il = d.imu_log || {};
+    setLog("lgImu", "tileImu", il.running,
+           il.running ? (il.rows || 0) + " rows" : "not running");
+    var ul = d.ur_log || {};
+    setLog("lgUr", "tileUr", ul.running,
+           ul.running ? (ul.rows || 0) + " rows" : "not running");
+    if ($("lgUrD")) {
+      $("lgUrD").textContent = ul.columns
+        ? "every RTDE packet, " + ul.columns + " columns"
+        : "every RTDE packet";
+    }
   });
+
+  function setLog(valId, tileId, running, text) {
+    if ($(valId)) $(valId).textContent = text;
+    if ($(tileId)) $(tileId).className = "tile" + (running ? " ok" : "");
+  }
 
   S.page("auto", function () {
     if (!S.connected()) return;

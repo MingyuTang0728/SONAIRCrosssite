@@ -22,6 +22,27 @@
   --idle:#6e7f90;
   --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   --sans:"Segoe UI",Inter,-apple-system,system-ui,sans-serif;
+
+  /* The floating panels -- the jog dock, the reading cards, the run bar --
+     were written against --panel and --panel-2, which were never defined.
+     A var() with no value and no fallback resolves to nothing, so every one
+     of those surfaces rendered with NO background: the dock floated as bare
+     text over whatever page was underneath it, and the sensor cards had
+     borders around transparency. It is the kind of fault that is invisible
+     in the markup and obvious the moment anybody looks at the screen.
+     Named separately from --surface rather than merged into it, because
+     "a panel that floats above the page" and "a block in the page" want to
+     stay distinguishable. */
+  --panel:#1a212b; --panel-2:#212a35;
+
+  /* One radius scale. There were nine different values in this file, which
+     is what makes a layout look assembled rather than designed. */
+  --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:11px; --r-pill:999px;
+
+  --focus:#58a6ff;
+  /* Readable text on each state's own tint, rather than the state colour
+     itself -- a 12% wash under pure #f85149 is below contrast. */
+  --ok-text:#8adf9c; --warn-text:#e8c66a; --bad-text:#ff9d96;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -29,6 +50,23 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
      font-size:14px;line-height:1.5;overflow:hidden}
 button{font:inherit;cursor:pointer}
 input,select{font:inherit}
+
+/* A visible focus ring on everything interactive. There was none, so a
+   keyboard or a gloved operator tabbing through the page had no idea what was
+   about to be pressed -- and on a cell where a button starts an arm moving,
+   "which control has focus" is a safety question, not a styling one.
+   :focus-visible rather than :focus so a mouse click does not leave a ring
+   sitting on the button afterwards. */
+:where(button,input,select,textarea,[tabindex]):focus-visible{
+  outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--r-xs)}
+
+/* Disabled controls stop looking clickable. Opacity alone still leaves a hand
+   cursor and a hover highlight, which reads as "unresponsive" rather than
+   "not available yet". */
+:where(button,input,select):disabled{cursor:not-allowed}
+
+/* Nothing on this page benefits from a text cursor mid-drag. */
+.lamp,.flow .fs,nav.rail .step,.dockbar{user-select:none}
 
 /* ---------- shell ---------- */
 .shell{display:flex;flex-direction:column;height:100vh}
@@ -39,7 +77,7 @@ header.top .brand{display:flex;align-items:baseline;gap:10px}
 header.top h1{font-size:17px;margin:0;font-weight:650;letter-spacing:-.01em}
 header.top .sub{font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.1em}
 .lamps{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
-.lamp{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:7px;
+.lamp{display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:var(--r-sm);
   background:var(--surface-2);border:1px solid var(--line);min-width:150px}
 @media(max-width:700px){header.top{flex-wrap:wrap;gap:10px}
   .lamps{margin-left:0;width:100%;justify-content:flex-start}
@@ -59,7 +97,7 @@ nav.rail{width:196px;flex:none;background:var(--surface);
   border-right:1px solid var(--line);padding:12px 10px;overflow-y:auto}
 nav.rail .step{display:flex;gap:11px;align-items:flex-start;width:100%;
   background:none;border:none;color:var(--text-2);text-align:left;
-  padding:11px 10px;border-radius:8px;margin-bottom:3px}
+  padding:11px 10px;border-radius:var(--r-md);margin-bottom:3px}
 nav.rail .step:hover{background:var(--surface-2);color:var(--text)}
 nav.rail .step[aria-current="true"]{background:var(--accent);color:#fff}
 nav.rail .step[aria-current="true"] .n{background:rgba(255,255,255,.22);color:#fff}
@@ -69,23 +107,34 @@ nav.rail .n{width:22px;height:22px;border-radius:50%;background:var(--raised);
   align-items:center;justify-content:center;flex:none;margin-top:1px}
 nav.rail .lbl{display:block;font-size:13.5px;font-weight:600;line-height:1.3}
 nav.rail small{display:block;font-size:10.5px;color:var(--text-3);margin-top:2px;line-height:1.35}
-nav.rail .estop{width:100%;margin-top:14px;padding:13px;border-radius:8px;
+nav.rail .estop{width:100%;margin-top:14px;padding:13px;border-radius:var(--r-md);
   background:var(--bad);border:none;color:#fff;font-weight:700;font-size:13px;
   letter-spacing:.04em}
 nav.rail .estop:hover{filter:brightness(1.12)}
 
 /* ---------- pages ---------- */
 main.page{flex:1;min-width:0;overflow-y:auto;padding:20px 24px}
+/* A measure, not the whole monitor. Running text to 1400 px means the eye
+   loses the line it is on between the right edge and the start of the next,
+   and a form field stretched to 600 px for a three-character number tells the
+   operator nothing about how much to type. Everything on a page shares one
+   column so the left edges line up down the screen. */
+main.page > *{max-width:1180px}
+/* Inputs are sized by what goes in them. A mass in kilograms and a coordinate
+   in millimetres are both short, and a box that says so is quicker to fill in
+   and quicker to check. */
+.field input[type="number"]{max-width:190px}
+.field.wide input,.field.wide select{max-width:none}
 main.page[hidden]{display:none}
 .page h2{font-size:20px;margin:0 0 4px;font-weight:650;letter-spacing:-.01em}
 .page .lead{color:var(--text-2);margin:0 0 20px;max-width:70ch;font-size:13.5px}
 section.block{background:var(--surface);border:1px solid var(--line);
-  border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  border-radius:var(--r-lg);padding:16px 18px;margin-bottom:14px}
 section.block > h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;
   letter-spacing:.09em;color:var(--text-3);font-weight:650;
   display:flex;align-items:center;gap:8px}
 section.block > h3 .tag{margin-left:auto;font-size:10px;padding:2px 8px;
-  border-radius:20px;background:var(--raised);color:var(--text-2);
+  border-radius:var(--r-pill);background:var(--raised);color:var(--text-2);
   text-transform:none;letter-spacing:0;font-weight:600}
 .grid{display:grid;gap:12px}
 .g2{grid-template-columns:repeat(2,1fr)}
@@ -101,7 +150,7 @@ section.block > h3 .tag{margin-left:auto;font-size:10px;padding:2px 8px;
 
 /* ---------- readouts ---------- */
 .tile{background:var(--surface-2);border:1px solid var(--line);
-  border-radius:8px;padding:11px 13px}
+  border-radius:var(--r-md);padding:11px 13px}
 .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
   color:var(--text-3);font-weight:600;margin-bottom:4px}
 .tile .v{font-size:21px;font-weight:650;font-variant-numeric:tabular-nums;
@@ -120,10 +169,18 @@ table.data tbody tr:last-child td{border-bottom:none}
 table.data tbody tr:hover{background:var(--surface-2)}
 
 /* ---------- controls ---------- */
-.btn{padding:9px 15px;border-radius:7px;border:1px solid var(--line-strong);
-  background:var(--raised);color:var(--text);font-size:13px;font-weight:550}
-.btn:hover:not(:disabled){border-color:var(--accent);color:#fff}
+.btn{padding:9px 15px;border-radius:var(--r-sm);border:1px solid var(--line-strong);
+  background:var(--raised);color:var(--text);font-size:13px;font-weight:550;
+  line-height:1.25;white-space:nowrap;
+  transition:background-color .12s ease,border-color .12s ease,filter .12s ease}
+.btn:hover:not(:disabled){border-color:var(--accent);color:#fff;
+  background:var(--surface-2)}
+/* A pressed state. Without one, a button on a laggy link gives no sign it was
+   hit, and the operator presses it again. */
+.btn:active:not(:disabled){transform:translateY(1px)}
 .btn:disabled{opacity:.38;cursor:not-allowed}
+/* Long labels wrap instead of overflowing their button on a narrow screen. */
+@media(max-width:560px){.btn{white-space:normal}}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .btn.primary:hover:not(:disabled){filter:brightness(1.12)}
 .btn.go{background:var(--ok);border-color:var(--ok);color:#06210d}
@@ -131,23 +188,55 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .btn.big{padding:13px 22px;font-size:14.5px;font-weight:650}
 .btn.wide{width:100%}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.field{display:flex;flex-direction:column;gap:4px}
-.field label{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
-  color:var(--text-3);font-weight:600}
-.field input,.field select{padding:8px 10px;border-radius:6px;
-  border:1px solid var(--line-strong);background:var(--bg);color:var(--text);width:100%}
-.field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
+/* Field labels are SENTENCE CASE, not capitals.
+   Uppercase with letter-spacing is fine on a two-word section heading and bad
+   on everything else: it removes the ascender and descender shapes a reader
+   uses to recognise a word, so a label like "Centre of mass Z (mm, along the
+   tool)" has to be spelled out rather than read. On a shop floor that is the
+   difference between glancing at a form and studying it. The headings above
+   each block keep the capitals, because there the shouting is the point. */
+.field{display:flex;flex-direction:column;gap:5px;justify-content:flex-end}
+.field label{font-size:12px;color:var(--text-2);font-weight:600;
+  letter-spacing:0;line-height:1.35}
+.field input,.field select{padding:9px 11px;border-radius:var(--r-sm);
+  border:1px solid var(--line-strong);background:var(--bg);color:var(--text);
+  width:100%;height:38px}
+.field input:hover,.field select:hover{border-color:var(--line-strong);
+  background:var(--surface-2)}
+.field input:focus,.field select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(47,129,247,.18)}
+.field input::placeholder{color:var(--text-3)}
+/* A select with no arrow of its own reads as a text box that will not accept
+   typing. One arrow, drawn here, so every select on the page looks the same
+   whatever the browser would have drawn. */
+.field select{appearance:none;-webkit-appearance:none;padding-right:30px;
+  background-image:linear-gradient(45deg,transparent 50%,var(--text-2) 50%),
+                   linear-gradient(135deg,var(--text-2) 50%,transparent 50%);
+  background-position:calc(100% - 16px) 16px,calc(100% - 11px) 16px;
+  background-size:5px 5px,5px 5px;background-repeat:no-repeat}
+/* A label that wraps to two lines must not push its own input out of line
+   with the ones beside it. The row bottom-aligns, so every input in a grid
+   sits on the same baseline however long its label is. */
+.grid > .field{align-self:stretch}
+.field input[type="number"]{font-family:var(--mono);
+  font-variant-numeric:tabular-nums}
 .hint{font-size:12px;color:var(--text-3);margin-top:8px;line-height:1.5}
 .hint.warn{color:var(--warn)}
-.note{padding:10px 13px;border-radius:7px;font-size:12.5px;line-height:1.55;margin-top:10px}
-.note.ok{background:var(--ok-bg);color:#8adf9c} 
-.note.warn{background:var(--warn-bg);color:#e8c66a}
-.note.bad{background:var(--bad-bg);color:#ff9d96}
-.note.info{background:var(--surface-2);color:var(--text-2)}
+.note{padding:10px 13px;border-radius:var(--r-sm);font-size:12.5px;line-height:1.55;margin-top:10px}
+/* A left edge as well as a tint: on a dark ground a 12% wash reads as almost
+   nothing, and the three states were told apart only by a hue that colour
+   deficiency flattens. The bar gives them a second, non-colour difference and
+   lines the text up down the page. */
+.note{border-left:3px solid transparent}
+.note.ok{background:var(--ok-bg);border-left-color:var(--ok);color:var(--ok-text)}
+.note.warn{background:var(--warn-bg);border-left-color:var(--warn);color:var(--warn-text)}
+.note.bad{background:var(--bad-bg);border-left-color:var(--bad);color:var(--bad-text)}
+.note.info{background:var(--surface-2);border-left-color:var(--line-strong);
+  color:var(--text-2)}
 
 /* ---------- step chips inside a page ---------- */
 .flow{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
-.flow .fs{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:20px;
+.flow .fs{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-pill);
   background:var(--surface-2);border:1px solid var(--line);font-size:12px;color:var(--text-3)}
 .flow .fs b{width:17px;height:17px;border-radius:50%;background:var(--raised);
   font-size:10px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
@@ -158,10 +247,10 @@ table.data tbody tr:hover{background:var(--surface-2)}
 
 /* ---------- viewport (3D + inspection canvas) ---------- */
 .viewport{position:relative;background:#0a0e13;border:1px solid var(--line);
-  border-radius:9px;overflow:hidden}
+  border-radius:var(--r-md);overflow:hidden}
 .viewport .vlabel{position:absolute;top:9px;left:11px;font-size:10px;
   text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);
-  background:rgba(13,17,23,.82);padding:3px 8px;border-radius:4px;z-index:3;pointer-events:none}
+  background:rgba(13,17,23,.82);padding:3px 8px;border-radius:var(--r-xs);z-index:3;pointer-events:none}
 .viewport .vtools{position:absolute;top:7px;right:8px;left:8px;display:flex;gap:5px;
   z-index:3;flex-wrap:wrap;justify-content:flex-end;pointer-events:none}
 .viewport .vtools .btn{pointer-events:auto}
@@ -173,9 +262,9 @@ table.data tbody tr:hover{background:var(--surface-2)}
 #inspCanvas{display:block;width:100%;background:#0a0e13;cursor:crosshair}
 
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--text-2);
-  padding:9px 12px;background:var(--surface-2);border-radius:7px;margin-top:9px}
+  padding:9px 12px;background:var(--surface-2);border-radius:var(--r-sm);margin-top:9px}
 .legend span{display:flex;align-items:center;gap:6px}
-.legend i{width:12px;height:3px;border-radius:2px;display:inline-block}
+.legend i{width:12px;height:3px;border-radius:var(--r-xs);display:inline-block}
 .legend i.dot{width:9px;height:9px;border-radius:50%}
 
 /* ---------- jog ---------- */
@@ -188,7 +277,7 @@ table.data tbody tr:hover{background:var(--surface-2)}
    open. It is collapsed by default so it never covers a page nobody
    wanted it on. ------------------------------------------------------ */
 .dock{position:fixed;right:16px;bottom:16px;z-index:60;width:min(360px,calc(100vw - 32px));
-  background:var(--panel);border:1px solid var(--line-strong);border-radius:12px;
+  background:var(--panel);border:1px solid var(--line-strong);border-radius:var(--r-lg);
   box-shadow:0 18px 44px rgba(0,0,0,.45);overflow:hidden}
 .dock.min{width:auto}
 .dockbar{display:flex;align-items:center;gap:9px;padding:9px 11px;cursor:pointer;
@@ -202,7 +291,7 @@ table.data tbody tr:hover{background:var(--surface-2)}
 .dockpads .pad .knob{width:34px;height:34px}
 .dockxyz{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;
   font-family:var(--mono);font-size:11px;color:var(--text-2)}
-.dockxyz div{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;
+.dockxyz div{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-sm);
   padding:4px 6px;text-align:center}
 @media(max-width:700px){.dock{right:8px;bottom:8px;left:8px;width:auto}
   .dockbody{max-height:52vh;overflow-y:auto}}
@@ -241,21 +330,21 @@ body.dockopen .calgrid{grid-template-columns:1fr}
 @media(max-width:1100px){.cards{grid-template-columns:1fr}}
 body.dockopen .cards{grid-template-columns:1fr}
 @media(min-width:1400px){body.dockopen .cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
-.card{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+.card{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--r-lg);
   padding:11px 12px 12px;min-width:0}
 .card header{display:flex;align-items:baseline;gap:9px;margin-bottom:9px}
 .card h4{margin:0;font-size:12.5px;font-weight:650;letter-spacing:.01em}
 .card .cu{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--text-3);
   text-transform:none}
-.card .chart{width:100%;height:150px;display:block;border-radius:7px;
+.card .chart{width:100%;height:150px;display:block;border-radius:var(--r-sm);
   background:var(--panel);border:1px solid var(--line)}
 .card .hint{margin-top:8px}
 .vals{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}
 .vals .vv{flex:1 1 0;min-width:74px;background:var(--panel);border:1px solid var(--line);
-  border-radius:7px;padding:5px 8px}
+  border-radius:var(--r-sm);padding:5px 8px}
 .vals .vv .n{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
   color:var(--text-3);font-weight:650;display:flex;align-items:center;gap:5px}
-.vals .vv .n i{width:7px;height:7px;border-radius:2px;display:inline-block}
+.vals .vv .n i{width:7px;height:7px;border-radius:var(--r-xs);display:inline-block}
 .vals .vv .q{font-family:var(--mono);font-size:15px;font-weight:600;
   font-variant-numeric:tabular-nums;margin-top:2px}
 .kv{display:flex;flex-direction:column;gap:5px}
@@ -299,7 +388,7 @@ body.dockopen .cards{grid-template-columns:1fr}
 .runbar .rb .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;
   color:var(--text-3);font-weight:700}
 .runbar .rb .v{font-family:var(--mono);font-weight:600;font-size:12px}
-.runbar .bar{flex:1 1 180px;min-width:120px;height:6px;border-radius:3px;
+.runbar .bar{flex:1 1 180px;min-width:120px;height:6px;border-radius:var(--r-xs);
   background:var(--surface-2);overflow:hidden;position:relative}
 .runbar .bar i{position:absolute;inset:0 auto 0 0;width:0;background:var(--accent);
   transition:width .3s ease}
@@ -310,13 +399,13 @@ body.dockopen .cards{grid-template-columns:1fr}
 
 /* ---- pre-flight ------------------------------------------------------ */
 .checks{display:flex;flex-direction:column;gap:1px;border:1px solid var(--line);
-  border-radius:9px;overflow:hidden;margin-top:11px}
+  border-radius:var(--r-md);overflow:hidden;margin-top:11px}
 .chk-row{display:grid;grid-template-columns:104px 190px 1fr;gap:12px;
   padding:9px 12px;background:var(--panel-2);align-items:baseline;font-size:12.5px}
 @media(max-width:760px){.chk-row{grid-template-columns:90px 1fr}
   .chk-row .d{grid-column:1/-1}}
 .chk-row .s{font-size:10px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.09em;padding:2px 8px;border-radius:5px;text-align:center}
+  letter-spacing:.09em;padding:2px 8px;border-radius:var(--r-xs);text-align:center}
 .chk-row .s.pass{background:var(--ok-bg);color:var(--ok)}
 .chk-row .s.warn{background:var(--warn-bg);color:var(--warn)}
 .chk-row .s.fail{background:var(--bad-bg);color:var(--bad)}
@@ -328,7 +417,7 @@ body.dockopen .cards{grid-template-columns:1fr}
 .steps{display:flex;flex-direction:column;gap:5px;margin-top:10px;
   max-height:260px;overflow-y:auto}
 .stp{display:grid;grid-template-columns:26px 120px 1fr;gap:10px;font-size:12px;
-  padding:6px 9px;border-radius:6px;background:var(--panel-2);
+  padding:6px 9px;border-radius:var(--r-sm);background:var(--panel-2);
   border:1px solid var(--line);align-items:baseline}
 .stp .i{font-family:var(--mono);color:var(--text-3);font-size:11px}
 .stp .k{font-weight:650;font-family:var(--mono);font-size:11.5px}
@@ -336,7 +425,7 @@ body.dockopen .cards{grid-template-columns:1fr}
 .stp.now{border-color:var(--accent);background:rgba(57,135,229,.12)}
 .stp.done{opacity:.55}
 .joblog{font-family:var(--mono);font-size:11.5px;line-height:1.55;
-  background:var(--surface-2);border:1px solid var(--line);border-radius:8px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);
   padding:10px 12px;max-height:230px;overflow-y:auto;margin-top:11px;
   white-space:pre-wrap;word-break:break-word}
 .joblog .ok{color:var(--ok)}
@@ -364,16 +453,16 @@ body.dockopen .cards{grid-template-columns:1fr}
 .pad .ax{font-size:10px;color:var(--text-3);margin-top:6px;font-family:var(--mono)}
 .joints{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 @media(max-width:700px){.joints{grid-template-columns:repeat(2,1fr)}}
-.jcard{background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+.jcard{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-sm);
   padding:8px 9px;display:grid;grid-template-columns:26px 1fr 1fr;gap:6px;align-items:center}
 .jcard .jn{font-size:11px;font-weight:700;color:var(--text-2);font-family:var(--mono)}
-.jcard button{padding:7px 0;border-radius:5px;border:1px solid var(--line-strong);
+.jcard button{padding:7px 0;border-radius:var(--r-xs);border:1px solid var(--line-strong);
   background:var(--raised);color:var(--text);font-size:15px;font-weight:700;line-height:1}
 .jcard button:hover{border-color:var(--accent)}
 .jval{grid-column:1/-1;font-family:var(--mono);font-size:11px;color:var(--text-3);
   text-align:center;font-variant-numeric:tabular-nums}
 
-.seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:7px;overflow:hidden}
+.seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:var(--r-sm);overflow:hidden}
 .segb{padding:7px 14px;background:var(--raised);border:none;color:var(--text-2);
   font-size:12.5px;font-weight:600;border-right:1px solid var(--line-strong)}
 .segb:last-child{border-right:none}
@@ -383,19 +472,19 @@ body.dockopen .cards{grid-template-columns:1fr}
   font-size:11.5px;color:var(--text-3)}
 .kbd-row{display:flex;gap:8px;align-items:center}
 .kbd-row span{display:flex;gap:2px}
-kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-align:center;
+kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs);text-align:center;
   background:var(--raised);border:1px solid var(--line-strong);border-bottom-width:2px;
   font:600 10.5px var(--mono);color:var(--text-2)}
 .chk{display:flex;align-items:center;gap:7px;margin-top:11px;font-size:12.5px;color:var(--text-2)}
-.gp{margin-top:9px;padding:8px 11px;border-radius:6px;background:var(--surface-2);
+.gp{margin-top:9px;padding:8px 11px;border-radius:var(--r-sm);background:var(--surface-2);
   font-size:11.5px;color:var(--text-3)}
 .gp.on{color:var(--ok);background:var(--ok-bg)}
 .stepgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:7px}
 @media(max-width:900px){.stepgrid{grid-template-columns:repeat(3,1fr)}}
-.stepax{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px}
+.stepax{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-md);padding:9px}
 .stepax .sa{font:700 11px var(--mono);color:var(--text-2);text-align:center;margin-bottom:6px}
 .stepax .sbtns{display:grid;grid-template-columns:1fr 1fr;gap:5px}
-.stepax button{padding:11px 0;border-radius:6px;border:1px solid var(--line-strong);
+.stepax button{padding:11px 0;border-radius:var(--r-sm);border:1px solid var(--line-strong);
   background:var(--raised);color:var(--text);font-size:16px;font-weight:700;line-height:1}
 .stepax button:hover{border-color:var(--accent);background:var(--accent);color:#fff}
 .speedrow{display:flex;align-items:center;gap:11px;margin-top:12px}
@@ -403,9 +492,9 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 .speedrow .sv{font-family:var(--mono);font-size:13px;min-width:74px;text-align:right}
 
 /* ---------- misc ---------- */
-.dev{display:flex;gap:12px;align-items:flex-start;padding:13px;border-radius:8px;
+.dev{display:flex;gap:12px;align-items:flex-start;padding:13px;border-radius:var(--r-md);
   background:var(--surface-2);border:1px solid var(--line)}
-.dev .ic{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;
+.dev .ic{width:38px;height:38px;border-radius:var(--r-md);display:flex;align-items:center;
   justify-content:center;font-size:19px;flex:none;background:var(--raised)}
 .dev.ok .ic{background:var(--ok-bg)} .dev.bad .ic{background:var(--bad-bg)}
 .dev.warn .ic{background:var(--warn-bg)}
@@ -423,11 +512,11 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 /* ---- added: streams, attitude, charts, roi ---- */
 .streams{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 .stream{position:relative;background:#0a0e13;border:1px solid var(--line);
-  border-radius:9px;overflow:hidden;aspect-ratio:4/3}
+  border-radius:var(--r-md);overflow:hidden;aspect-ratio:4/3}
 .stream canvas{width:100%;height:100%;display:block;object-fit:contain}
 .stream .slab{position:absolute;top:7px;left:9px;font-size:10px;font-weight:700;
   letter-spacing:.07em;text-transform:uppercase;color:#cfe0f5;
-  background:rgba(8,12,18,.72);padding:3px 8px;border-radius:5px;z-index:2}
+  background:rgba(8,12,18,.72);padding:3px 8px;border-radius:var(--r-xs);z-index:2}
 .stream .sempty{position:absolute;inset:0;display:flex;align-items:center;
   justify-content:center;text-align:center;padding:16px;color:var(--text-3);
   font-size:12px;line-height:1.5}
@@ -435,17 +524,17 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 @media(max-width:700px){.att{grid-template-columns:1fr}
   .att canvas{width:100%;max-width:260px;margin:0 auto}}
 .att canvas{width:200px;height:170px;background:var(--surface-2);
-  border:1px solid var(--line);border-radius:9px}
+  border:1px solid var(--line);border-radius:var(--r-md)}
 .strip{width:100%;height:76px;background:var(--surface-2);
-  border:1px solid var(--line);border-radius:7px;display:block}
+  border:1px solid var(--line);border-radius:var(--r-sm);display:block}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
-.chip{font-size:11px;padding:4px 10px;border-radius:20px;background:var(--raised);
+.chip{font-size:11px;padding:4px 10px;border-radius:var(--r-pill);background:var(--raised);
   border:1px solid var(--line);color:var(--text-2);font-family:var(--mono)}
 .chip.ok{border-color:var(--ok);color:var(--ok)}
 .chip.bad{border-color:var(--bad);color:var(--bad)}
 .chip.warn{border-color:var(--warn);color:var(--warn)}
 .raw{font-family:var(--mono);font-size:11px;color:var(--text-2);background:#0a0e13;
-  border:1px solid var(--line);border-radius:7px;padding:10px 12px;margin-top:9px;
+  border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 12px;margin-top:9px;
   white-space:pre-wrap;word-break:break-all;max-height:110px;overflow:auto}
 .poselist{max-height:210px;overflow:auto;margin-top:10px}
 .sl{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;
@@ -456,7 +545,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
 .rng input[type=range]{width:100%;accent-color:var(--accent)}
 .rng .rv{font-family:var(--mono);font-size:11.5px;color:var(--text-2);text-align:right}
 .roihint{position:absolute;bottom:9px;left:11px;font-size:11px;color:#cfe0f5;
-  background:rgba(8,12,18,.72);padding:4px 9px;border-radius:5px;z-index:3}
+  background:rgba(8,12,18,.72);padding:4px 9px;border-radius:var(--r-xs);z-index:3}
 @media(max-width:1100px){.streams{grid-template-columns:1fr}
   .att{grid-template-columns:1fr}}
 </style>
@@ -1454,7 +1543,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
     <b>Zero is a fine answer</b> if the flange really is bare. Enter it once per
     build; re-enter it after any refit.</div>
     <div class="grid g2" style="margin-top:12px">
-      <div class="field"><label>Carrier name</label>
+      <div class="field wide"><label>Carrier name</label>
         <input id="carId" value="carrier-v1"/></div>
       <div class="field"><label>Mass on the flange (kg)</label>
         <input id="carMass" type="number" value="0" min="0" max="5" step="0.001"/></div>
@@ -1467,7 +1556,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
       <div class="field"><label>Centre of mass Z (mm, along the tool)</label>
         <input id="carComZ" type="number" value="0" step="1"/></div>
     </div>
-    <div class="field" style="margin-top:12px"><label>Note (optional)</label>
+    <div class="field wide" style="margin-top:12px"><label>Note (optional)</label>
       <input id="carNote" placeholder="e.g. LPMS-B2 on the printed bracket, rev 2"/></div>
     <div class="row" style="margin-top:11px">
       <button class="btn primary" id="btnCarSave">Save the carrier</button>
@@ -1533,10 +1622,21 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:4px;text-a
   <section class="block">
     <h3>The dataset <span class="tag" id="dsTag">&mdash;</span></h3>
     <p class="hint" style="margin-top:0">One self-describing folder: the run
-    files, every inertial sample, the hand-eye calibration these runs depend
-    on, the camera intrinsics, the clock the timestamps are on, and which
-    channels are scored. A dataset that needs the person who made it to
-    explain it is not a dataset.</p>
+    files, every inertial sample, every packet the robot sent, the hand-eye
+    calibration these runs depend on, the camera intrinsics, the clock the
+    timestamps are on, and which channels are scored. A dataset that needs the
+    person who made it to explain it is not a dataset.</p>
+    <div class="grid g3" id="logStrip" style="margin:12px 0">
+      <div class="tile" id="tileRun"><div class="k">Run file</div>
+        <div class="v" id="lgRun">&mdash;</div>
+        <div class="d">the benchmark grid</div></div>
+      <div class="tile" id="tileImu"><div class="k">Inertial log</div>
+        <div class="v" id="lgImu">&mdash;</div>
+        <div class="d">every sensor sample</div></div>
+      <div class="tile" id="tileUr"><div class="k">Robot log</div>
+        <div class="v" id="lgUr">&mdash;</div>
+        <div class="d" id="lgUrD">every RTDE packet</div></div>
+    </div>
     <div class="row">
       <div class="field" style="flex:1;min-width:200px"><label>Name</label>
         <input id="dsName" value="sonair_capture"/></div>

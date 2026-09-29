@@ -88,6 +88,24 @@ _BROWSER = {
 }
 
 
+def _undefined_css_vars(html: str) -> list:
+    """Custom properties a stylesheet reads but never sets."""
+    css = "\n".join(re.findall(r"<style>(.*?)</style>", html, re.S))
+    if not css:
+        return []
+    defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
+    out = []
+    for name in sorted(set(re.findall(r"var\((--[a-z0-9-]+)\s*\)", css))):
+        if name in defined:
+            continue
+        n = len(re.findall(re.escape(f"var({name}"), css))
+        out.append(f"the stylesheet reads {name} {n} time"
+                   + ("s" if n != 1 else "")
+                   + " and never defines it, so those declarations are "
+                     "dropped and the elements render unstyled")
+    return out
+
+
 def _unreachable_handlers(agent: str) -> list:
     """
     Every `mtype == "x"` branch must sit in a function some route sends "x" to.
@@ -258,6 +276,17 @@ def main(verbose=False) -> int:
                   and not any(m.startswith(p) for p in prefixes)]
     problems += [f"the page sends {m!r} and no agent handler takes it"
                  for m in unanswered]
+
+    # -- 1b. styling that resolves to nothing ----------------------------
+    #
+    # `background: var(--panel)` with no `--panel` defined is not an error
+    # anywhere: the declaration is dropped and the element renders with no
+    # background at all. The jog dock and every reading card on the sensors
+    # page were doing exactly that -- floating as bare text over whatever was
+    # underneath, with borders drawn around transparency. It is invisible in
+    # the markup and obvious on screen, which is the worst combination, so it
+    # is checked here rather than found by looking.
+    problems += _undefined_css_vars(html)
 
     # -- 2b. handlers the router cannot actually reach -------------------
     #
