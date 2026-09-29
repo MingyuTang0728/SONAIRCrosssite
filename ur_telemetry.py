@@ -96,8 +96,7 @@ OUTPUT_RECIPE: list[tuple[str, str]] = [
     ("joint_mode",                      "VECTOR6INT32"),
     ("actual_main_voltage",             "DOUBLE"),
     ("actual_execution_time",           "DOUBLE"),
-    ("momentum",                        "DOUBLE"),
-    ("actual_tool_current",             "DOUBLE"),
+    ("actual_momentum",                 "DOUBLE"),
     ("tool_output_voltage",             "INT32"),
     ("tool_output_current",             "DOUBLE"),
     ("tool_temperature",                "DOUBLE"),
@@ -199,6 +198,20 @@ class RTDEClient:
         recipe here, which is why the UI must read field names rather than
         positions.
         """
+        granted = self._setup_once(recipe)
+        if len(granted) < len(recipe):
+            # The controller marks a recipe containing ANY NOT_FOUND field as
+            # invalid and refuses START for it. Dropping the field locally is
+            # not enough -- the controller still holds the bad recipe. Send the
+            # granted subset again so the recipe it holds is the valid one.
+            # Without this, one misspelt field name silently cost the whole
+            # RTDE link and dropped the cell onto port 30003.
+            dropped = list(self.dropped)
+            granted = self._setup_once(granted)
+            self.dropped = dropped + self.dropped
+        return granted
+
+    def _setup_once(self, recipe):
         names = ",".join(n for n, _ in recipe)
         payload = struct.pack(">d", self.frequency) + names.encode("utf-8")
         self._send(RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS, payload)
