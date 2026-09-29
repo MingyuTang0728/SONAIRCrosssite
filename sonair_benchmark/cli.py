@@ -92,15 +92,34 @@ def _load_pairs(real_dir, sim_dir):
     return pairs
 
 
+def _imu_lag(args) -> float:
+    """The IMU's measured latency (imu_align), or zero with a warning."""
+    path = Path(getattr(args, "imu_cal", "") or "calib/imu_cal.json")
+    try:
+        cal = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cal = {}
+    if cal.get("ok") and cal.get("lag_s") is not None:
+        print(f"IMU latency {cal['lag_s'] * 1000:+.1f} ms taken out of the "
+              f"gyro gap (from {path})")
+        return float(cal["lag_s"])
+    print("WARNING: no IMU calibration found, so the gyro gap includes the "
+          "IMU's own latency. Run the imu_mount_cal job first.",
+          file=sys.stderr)
+    return 0.0
+
+
 def cmd_gap(args) -> int:
     pairs = _load_pairs(args.real, args.sim)
     if not pairs:
         print("no paired runs found", file=sys.stderr)
         return 1
     budget = ErrorBudget.load(args.budget) if args.budget else None
+    imu_lag = _imu_lag(args)
     reports = []
     for real, sim in pairs:
-        rep = gap_between(real, sim, compute_lag=not args.no_lag)
+        rep = gap_between(real, sim, compute_lag=not args.no_lag,
+                          imu_lag_s=imu_lag)
         if budget:
             rep.attach_floor(budget)
         reports.append(rep)
@@ -208,6 +227,8 @@ def main(argv=None) -> int:
     p.add_argument("--sim", required=True)
     p.add_argument("--budget")
     p.add_argument("--no-lag", action="store_true")
+    p.add_argument("--imu-cal", default="calib/imu_cal.json",
+                   help="IMU calibration from the imu_mount_cal job")
     p.add_argument("--out", default="results/gap.json")
     p.set_defaults(func=cmd_gap)
 

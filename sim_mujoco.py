@@ -255,6 +255,64 @@ def _quat_to_rotvec(q):
     return [x * k, y * k, z * k]
 
 
+def _qmul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return [aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw]
+
+
+def _mat_to_quat(R):
+    """Rotation matrix -> (w, x, y, z)."""
+    import numpy as np
+    import ur_kin
+    rv = ur_kin.rotvec(np.asarray(R, dtype=float))
+    ang = math.sqrt(sum(float(v) * float(v) for v in rv))
+    if ang < 1e-12:
+        return [1.0, 0.0, 0.0, 0.0]
+    k = math.sin(ang / 2) / ang
+    return [math.cos(ang / 2)] + [float(v) * k for v in rv]
+
+
+class ImuMount:
+    """
+    The real IMU's mounting, applied to the simulated one.
+
+    MuJoCo's IMU sits at attachment_site and reads in the flange's axes (the
+    site's frame and the kinematic flange frame agree to 0.000 deg). The real
+    IMU reads in its own axes, rotated by however the bracket holds it.
+    imu_align measures that rotation; this puts the simulated readings into
+    the same axes, so gyro x is compared with gyro x.
+    """
+
+    def __init__(self, cal: dict | None):
+        self.cal = cal
+        self.R = None
+        if cal and cal.get("R_flange_imu"):
+            self.R = [[float(v) for v in row] for row in cal["R_flange_imu"]]
+            self.q = _mat_to_quat(self.R)
+
+    def vec(self, v):
+        if self.R is None:
+            return v
+        # R^T v: flange axes -> IMU axes
+        return [sum(self.R[r][c] * float(v[r]) for r in range(3))
+                for c in range(3)]
+
+    def quat(self, q_site):
+        if self.R is None:
+            return q_site
+        return _qmul([float(v) for v in q_site], self.q)
+
+    def words(self) -> str:
+        if self.R is None:
+            return "IMU in flange axes (no mounting calibration)"
+        return (f"IMU rotated into the real IMU's axes "
+                f"(imu_cal {self.cal.get('made_at', '?')})")
+
+
 def _no_display() -> str:
     """Why the viewer cannot open here, or "" if it can."""
     if sys.platform.startswith(("win", "darwin")):
@@ -269,7 +327,8 @@ def _no_display() -> str:
 def replay(run, out_dir: Path, menagerie: Path, degrader=None,
            carrier_mass_kg: float | None = None, settle_s: float = 0.5,
            tcp_offset=None, frame_tol_m: float = 0.05,
-           view: bool = False, speed: float = 1.0) -> dict:
+           view: bool = False, speed: float = 1.0,
+           imu_cal: dict | None = None) -> dict:
     """
     One real run in, one simulated run out, same cell, same rate.
 
@@ -340,6 +399,7 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
                     "Without it the gap is that offset, which is constant, "
                     "large, and varies with nothing."}
 
+    mount = ImuMount(imu_cal)
     man = run.manifest
     sim = RunManifest(
         run_id=man.run_id, side="sim", calib_version=man.calib_version,
@@ -349,7 +409,8 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
         sample_rate_hz=man.sample_rate_hz, started_utc=man.started_utc,
         operator="sim_mujoco",
         notes=(f"mujoco {mujoco.__version__}; replayed from {man.run_id}; "
-               f"flange payload {carrier_mass_kg:.3f} kg {carrier_src}"))
+               f"flange payload {carrier_mass_kg:.3f} kg {carrier_src}; "
+               f"{mount.words()}"))
     problems = sim.validate()
     if problems:
         return {"ok": False, "error": "; ".join(problems)}
@@ -403,9 +464,9 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
                 dt = 1.0 / max(1.0, sim.sample_rate_hz)
             arm.drive(s["target_q"], dt)
 
-            gyro = arm.read("imu_gyro")
-            acc = arm.read("imu_acc")
-            quat = arm.read("imu_quat")
+            gyro = mount.vec(arm.read("imu_gyro"))
+            acc = mount.vec(arm.read("imu_acc"))
+            quat = mount.quat(arm.read("imu_quat"))
             if degrader is not None:
                 gyro = degrader.gyro(gyro)
                 acc = degrader.accel(acc)
@@ -490,6 +551,10 @@ def main(argv=None) -> int:
     ap.add_argument("--frame-tol-mm", type=float, default=50.0,
                     help="how far the real and simulated tool may sit apart "
                          "at the first sample before the replay refuses")
+    ap.add_argument("--imu-cal", default="calib/imu_cal.json",
+                    help="the IMU mounting and latency measured by the "
+                         "imu_mount_cal job; the simulated IMU is written in "
+                         "the real IMU's axes")
     ap.add_argument("--contract-out", default="",
                     help="where to write the SimContract actually used")
     args = ap.parse_args(argv)
@@ -521,6 +586,18 @@ def main(argv=None) -> int:
             print("--tcp-offset must be comma-separated numbers", file=sys.stderr)
             return 2
 
+    imu_cal = None
+    try:
+        import imu_align
+        imu_cal = imu_align.load(args.imu_cal)
+    except ImportError:
+        pass
+    if imu_cal is None:
+        print(f"WARNING: no IMU calibration at {args.imu_cal}, so the "
+              "simulated IMU is written in the flange's axes and the real one "
+              "is in its own. Their gyro and accelerometer cannot be compared "
+              "axis by axis. Run the imu_mount_cal job first.", file=sys.stderr)
+
     out = Path(args.out)
     done = failed = 0
     for r in runs:
@@ -528,7 +605,7 @@ def main(argv=None) -> int:
                      carrier_mass_kg=args.carrier_mass_kg,
                      tcp_offset=tcp_offset,
                      frame_tol_m=args.frame_tol_mm / 1000.0,
-                     view=args.view, speed=args.speed)
+                     view=args.view, speed=args.speed, imu_cal=imu_cal)
         if res.get("ok"):
             done += 1
             print(f"  {r.manifest.run_id}  ->  {res['samples']} samples  "

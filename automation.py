@@ -59,6 +59,13 @@ JOINT_ACCEL = 1.2
 
 STEP_KINDS = (
     "path", "ur_log_start", "ur_log_stop",
+    "goto_joints",      # drive every joint to a taught configuration
+    "joint_contour",    # one joint through a continuous sinusoid
+    "joint_stop_start", # one joint in short moves with stops between
+    "campaign_session", # stamp the start of a planned campaign session
+    "campaign_mark",    # read a finished run back and mark it done or not
+    "imu_excite",       # turn the wrist about three axes, stopping between
+    "imu_calibrate",    # IMU time offset and mounting, from the logs just made
     "preflight",        # run the checks; fail the job if any check fails
     "dwell",            # wait, so a move can settle before a capture
     "move",             # go to one tool pose
@@ -274,7 +281,8 @@ def preflight(ctx, requires=None) -> dict:
         checks.append(Check("imu", "Motion sensors", "fail",
                             "No inertial unit is streaming. Connect one on the "
                             "Sensors page — it is the channel the benchmark is "
-                            "scored on."))
+                            "scored on.",
+                            blocking="imu" in requires))
     else:
         worst = min((v.get("rate_hz") or 0) for v in live.values())
         checks.append(Check("imu", "Motion sensors", "pass",
@@ -324,7 +332,7 @@ def preflight(ctx, requires=None) -> dict:
                               "that may be 57x wrong and an orientation that "
                               "may be inverted.",
                             blocking="imu" in requires))
-    else:
+    elif live:
         detail = []
         for u, v in live.items():
             unit_word = ("degrees per second" if v.get("gyro_units") == "deg"
@@ -557,6 +565,9 @@ class Runner:
             self.job = job
             self.log = []
             self.produced = []
+            # per job: a step that reads "the log just closed" must never be
+            # handed one a previous job closed
+            self._last_run_path = self._last_ur_log = self._last_imu_log = ""
             self.state = "running"
             self.error = ""
             self.step_i = 0
@@ -783,6 +794,7 @@ class Runner:
             res = self.ctx.ur_log_stop()
             if not res.get("ok"):
                 return False, res.get("error", "could not close the robot log")
+            self._last_ur_log = res.get("path", "")
             self._say(f"Robot log closed: {res.get('rows', 0)} rows at "
                       f"{res.get('rate_hz', 0):.0f} a second.", "ok")
             return True, ""
@@ -812,6 +824,196 @@ class Runner:
                 ok, why = self._await_arrival(pose, step)
                 if not ok:
                     return False, f"pose {j+1}: {why}"
+            return True, ""
+
+        if kind == "goto_joints":
+            target = [float(v) for v in (step.get("q") or [])]
+            if len(target) < 6:
+                return False, "no joint target given"
+            speed = min(float(step.get("speed", 0.4)),
+                        float(self.ctx.max_joint_speed() or 1.0))
+            ok, why = self._excursion_ok(self.ctx.joints(), target)
+            if not ok:
+                return False, why
+            if step.get("label"):
+                self._say(f"Moving to the {step['label']} configuration.")
+            ok, why = self.ctx.move_joints(target, speed)
+            if not ok:
+                return False, why
+            return self._await_joints(target, {**step, "timeout_s": 60.0})
+
+        if kind == "joint_contour":
+            # CONTINUOUS motion at the cell's speed: q = q0 + A(1 - cos wt),
+            # so the joint's speed peaks at A*w = joint_vel and it never
+            # stops until the end. Run as a velocity loop on the controller
+            # itself, so its smoothness does not depend on this link.
+            q0 = self.ctx.joints()
+            if not q0 or len(q0) < 6:
+                return False, "the robot is not reporting joint angles"
+            idx = int(step.get("joint", 2))
+            v = float(params.get("joint_vel", step.get("joint_vel", 0.4)))
+            A = math.radians(float(step.get("amplitude_deg", 20.0)))
+            cycles = max(1, int(step.get("cycles", 2)))
+            d = 1 if float(step.get("direction", 1)) >= 0 else -1
+            cap = self.ctx.max_joint_speed()
+            if cap and v > cap + 1e-9:
+                return False, (f"{v:g} rad/s is above this cell's joint speed "
+                               f"limit of {cap:g} rad/s")
+            far = list(q0)
+            far[idx] += d * 2 * A
+            ok, why = self._excursion_ok(q0, far)
+            if not ok:
+                return False, why
+            w = v / A
+            secs = cycles * 2 * math.pi / w
+            self._say(f"Joint {idx + 1} in a continuous sweep of "
+                      f"{math.degrees(2 * A):.0f} deg, peaking at {v:g} rad/s, "
+                      f"{cycles} cycles, {secs:.1f} s.")
+            ok, why = self.ctx.joint_contour(idx, d * A, w, cycles)
+            if not ok:
+                return False, why
+            end = time.monotonic() + secs + 0.5
+            while time.monotonic() < end:
+                if self._stop.is_set():
+                    return True, ""
+                time.sleep(0.05)
+            return self._await_joints(q0, {**step, "tolerance_deg": 1.0,
+                                           "timeout_s": 10.0})
+
+        if kind == "joint_stop_start":
+            # Short moves with a stop between each: transients, repeated.
+            # Every step is long enough to REACH the cell's speed, so the
+            # label on the run is a speed the joint actually had.
+            q0 = self.ctx.joints()
+            if not q0 or len(q0) < 6:
+                return False, "the robot is not reporting joint angles"
+            idx = int(step.get("joint", 2))
+            v = float(params.get("joint_vel", step.get("joint_vel", 0.4)))
+            a = float(step.get("accel", 3.0))
+            n = max(1, int(step.get("steps", 2)))
+            dwell = float(step.get("dwell_s", 0.4))
+            d = 1 if float(step.get("direction", 1)) >= 0 else -1
+            stp = math.radians(float(step.get("step_deg", 20.0)))
+            if stp < v * v / a:
+                return False, (f"a {math.degrees(stp):.0f} deg step at "
+                               f"{a:g} rad/s^2 never reaches {v:g} rad/s")
+            cap = self.ctx.max_joint_speed()
+            if cap and v > cap + 1e-9:
+                return False, (f"{v:g} rad/s is above this cell's joint speed "
+                               f"limit of {cap:g} rad/s")
+            far = list(q0)
+            far[idx] += d * stp * n
+            ok, why = self._excursion_ok(q0, far)
+            if not ok:
+                return False, why
+            self._say(f"Joint {idx + 1} in {n} stops of "
+                      f"{math.degrees(stp):.0f} deg each way at {v:g} rad/s.")
+            seq = [q0[idx] + d * stp * k for k in range(1, n + 1)] + \
+                  [q0[idx] + d * stp * k for k in range(n - 1, -1, -1)]
+            for target_j in seq:
+                if self._stop.is_set():
+                    return True, ""
+                target = list(q0)
+                target[idx] = target_j
+                ok, why = self.ctx.move_joints(target, v, a)
+                if not ok:
+                    return False, why
+                ok, why = self._await_joints(target, step)
+                if not ok:
+                    return False, why
+                self._stop.wait(dwell)
+            return True, ""
+
+        if kind == "campaign_session":
+            import campaign_runner as cr
+            path = step.get("state_path") or cr.STATE_PATH
+            st = cr.load_state(path)
+            car = self.ctx.carrier() or {}
+            why = cr.refit_problem(int(step.get("session", 0)), st, car)
+            if why:
+                return False, why
+            sess = st["sessions"].setdefault(str(step.get("session", 0)), {})
+            sess.setdefault("started_utc",
+                            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            sess["carrier_saved_utc"] = car.get("saved_utc")
+            sess["carrier_id"] = car.get("carrier_id")
+            cr.save_state(st, path)
+            return True, ""
+
+        if kind == "campaign_mark":
+            import campaign_runner as cr
+            path = getattr(self, "_last_run_path", "") or ""
+            audit = {}
+            if path and Path(path).exists():
+                audit = (_audit_runs(Path(path).parent, only=Path(path).name)
+                         .get(Path(path).name, {}))
+            res = cr.mark(step.get("state_path") or cr.STATE_PATH,
+                          step.get("run_id", ""), int(step.get("session", 0)),
+                          path, audit)
+            if res["ok"]:
+                self._say(f"{step.get('run_id')}: checked and marked done.", "ok")
+            else:
+                self._say(f"{step.get('run_id')}: NOT marked done — "
+                          + "; ".join(res["notes"])
+                          + ". Running this session again re-records it.",
+                          "warn")
+            return True, ""
+
+        if kind == "imu_excite":
+            # Each joint out, stop, back past the start, stop, home, stop.
+            # The moves give the gyro something to line up in time and three
+            # axes to pin the mounting; the stops, at a different wrist
+            # attitude each time, give the accelerometer gravity from several
+            # directions.
+            import imu_align
+            q0 = self.ctx.joints()
+            if not q0 or len(q0) < 6:
+                return False, "the robot is not reporting joint angles"
+            v = min(float(step.get("speed", imu_align.EXCITE_SPEED)),
+                    float(self.ctx.max_joint_speed() or 1.0))
+            pause = float(step.get("pause_s", imu_align.EXCITE_PAUSE_S))
+            targets = imu_align.excitation_targets(q0)
+            for tgt in targets:
+                ok, why = self._excursion_ok(q0, tgt)
+                if not ok:
+                    return False, why
+            self._say(f"Turning the wrist through {len(targets)} moves about "
+                      f"four joints, stopping {pause:g} s after each "
+                      f"(about {imu_align.excitation_seconds(v, pause):.0f} s).")
+            for tgt in targets:
+                if self._stop.is_set():
+                    return True, ""
+                ok, why = self.ctx.move_joints(tgt, v, imu_align.EXCITE_ACCEL)
+                if not ok:
+                    return False, why
+                ok, why = self._await_joints(tgt, step)
+                if not ok:
+                    return False, why
+                self._stop.wait(pause)
+            return True, ""
+
+        if kind == "imu_calibrate":
+            import imu_align
+            ur_csv = getattr(self, "_last_ur_log", "") or ""
+            imu_csv = getattr(self, "_last_imu_log", "") or ""
+            if not ur_csv or not imu_csv:
+                return False, ("the robot log and the inertial log must both "
+                               "be recorded and closed before this step")
+            try:
+                cal = imu_align.calibrate(ur_csv, imu_csv, step.get("unit"))
+            except (OSError, ValueError) as e:
+                return False, f"could not read the logs: {e}"
+            for line in imu_align.summary(cal).splitlines():
+                self._say(line.strip())
+            if not cal["ok"]:
+                return False, cal.get("error", "calibration not determined")
+            # which carrier this describes: a refit moves the IMU
+            cal["carrier_saved_utc"] = (self.ctx.carrier() or {}).get("saved_utc")
+            out = Path(self.ctx.out_dir()) / imu_align.CAL_PATH
+            imu_align.save(cal, out)
+            self.produced.append(str(out))
+            self._say(f"IMU calibration saved to {out}. The simulator and "
+                      "the gap scoring use it from now on.", "ok")
             return True, ""
 
         if kind == "joint_move":
@@ -931,7 +1133,11 @@ class Runner:
             return True, ""
 
         if kind == "record_start":
-            run_id = self._run_id(step, params, iteration, job)
+            # A planned run is recorded under the PLAN's id, verbatim, so the
+            # real run and its simulated twin pair by construction and a
+            # resumed session knows which runs it has already got.
+            run_id = step.get("run_id_exact") or \
+                self._run_id(step, params, iteration, job)
             args = {
                 "run_id": run_id,
                 # rad/s at the elbow. From the sweep when the job sweeps it,
@@ -940,7 +1146,8 @@ class Runner:
                                               step.get("joint_vel", 0.4))),
                 "arm_config": step.get("arm_config", "mid_workspace"),
                 "traj_type": step.get("traj_type", "contour"),
-                "repeat_idx": int(params.get("repeat_idx", 0)),
+                "repeat_idx": int(step.get("repeat_idx",
+                                           params.get("repeat_idx", 0))),
                 # "none" rather than a plausible-looking version string. The
                 # inertial channels do not need a hand-eye transform, so these
                 # runs are valid -- but a run that names a calibration it was
@@ -949,7 +1156,7 @@ class Runner:
                     "calib_version") or "none",
                 "rate_hz": float(step.get("rate_hz", 125.0)),
                 "operator": step.get("operator", "automation"),
-                "notes": job.notes,
+                "notes": step.get("notes") or job.notes,
             }
             # What is bolted to the flange goes in every run, because the
             # simulated twin's payload is built from it. A run stamped 0 kg
@@ -972,6 +1179,7 @@ class Runner:
             res = self.ctx.record_stop()
             if not res.get("ok"):
                 return False, res.get("error", "could not close the run file")
+            self._last_run_path = res.get("path", "")
             rate = res.get("achieved_rate_hz")
             self._say(f"Saved {res.get('n', 0)} samples to "
                       f"{res.get('path', '')}"
@@ -1002,6 +1210,7 @@ class Runner:
             res = self.ctx.imu_log_stop()
             if res.get("path"):
                 self.produced.append(res["path"])
+                self._last_imu_log = res["path"]
             self._say(f"Inertial log closed: {res.get('rows', 0)} rows.", "ok")
             return True, ""
 
@@ -1015,6 +1224,41 @@ class Runner:
             return True, ""
 
         return False, f"step {kind!r} is not implemented"
+
+    def _excursion_ok(self, q_from, q_to) -> tuple[bool, str]:
+        """
+        Will the tool stay inside the safe envelope on the way from q_from to
+        q_to? Checked through the kinematics BEFORE the joint move is sent.
+
+        Joint moves bypass the envelope check that tool-space moves get,
+        because the controller is handed joint angles rather than a pose. An
+        unattended campaign makes hundreds of them from configurations chosen
+        by hand, so each one is checked here: the tool's path is sampled, each
+        sample is the tool's current position plus the flange displacement
+        the kinematics predict, and the move is refused if any leaves the box.
+        """
+        check = getattr(self.ctx, "pose_allowed", None)
+        if check is None or not q_from or not q_to:
+            return True, ""
+        try:
+            import ur_kin
+        except Exception:       # noqa: BLE001
+            return True, ""
+        tcp = self.ctx.tcp_pose()
+        if not tcp:
+            return True, ""
+        base = ur_kin.fk(q_from)[:3, 3]
+        for k in range(1, 9):
+            f = k / 8.0
+            q = [a + f * (b - a) for a, b in zip(q_from, q_to)]
+            p = ur_kin.fk(q)[:3, 3]
+            pose = [float(tcp[i]) + float(p[i] - base[i]) for i in range(3)]
+            ok, why = check(pose + [0.0, 0.0, 0.0])
+            if not ok:
+                return False, (f"this move would take the tool outside the safe "
+                               f"envelope ({why}) about {100 * f:.0f}% of the "
+                               f"way through. Nothing was sent.")
+        return True, ""
 
     def _await_joints(self, target, step) -> tuple[bool, str]:
         """Wait until every joint is where it was sent, or say that it is not."""
@@ -1260,6 +1504,27 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
                 {"kind": "ur_log_stop"},
             ],
         ),
+        "imu_mount_cal": Job(
+            name="imu_mount_cal",
+            notes="About a minute. Finds when the IMU's samples really happened "
+                  "relative to the robot's, and which way the IMU is bolted to "
+                  "the flange. Run it after the carrier is fitted or refitted, "
+                  "before a campaign session; the simulator needs both to "
+                  "compare its IMU with the real one. The wrist turns about "
+                  "four joints by up to 40 deg and returns to where it started.",
+            requires=["robot", "imu"],
+            steps=[
+                {"kind": "preflight"},
+                {"kind": "ur_log_start"},
+                {"kind": "imu_log_start"},
+                {"kind": "dwell", "seconds": 2.0},
+                {"kind": "imu_excite"},
+                {"kind": "dwell", "seconds": 1.0},
+                {"kind": "imu_log_stop"},
+                {"kind": "ur_log_stop"},
+                {"kind": "imu_calibrate"},
+            ],
+        ),
         "scan_shaped": Job(
             name="scan_shaped",
             notes="A tool-space box, the shape a real inspection scan traces. "
@@ -1488,7 +1753,7 @@ def _carrier_words(car: dict) -> str:
     return f"{car.get('carrier_id', '?')}: {m:.3f} kg on the flange{where}."
 
 
-def _audit_runs(runs_dir) -> dict:
+def _audit_runs(runs_dir, only: str | None = None) -> dict:
     """
     Read back what was actually written, per run: how many samples, over what
     span, at what rate, with what worst gap, and whether the commanded joint
@@ -1504,6 +1769,8 @@ def _audit_runs(runs_dir) -> dict:
         return out
     for f in sorted(runs_dir.iterdir()):
         if not f.is_file() or f.suffix != ".jsonl":
+            continue
+        if only is not None and f.name != only:
             continue
         declared, ts, with_target = None, [], 0
         labelled_vel, peak_qd, held = None, 0.0, 0.0
@@ -1543,14 +1810,25 @@ def _audit_runs(runs_dir) -> dict:
                     qv = row.get("q")
                     if isinstance(qv, list):
                         qt = tuple(qv)
-                        if qt == last_q:
-                            repeats += 1
-                        else:
+                        # A repeat only counts as STALE while the arm was
+                        # commanded to move. Standing still, identical joint
+                        # angles are simply correct -- and every planned run
+                        # stands still before and after its motion, and
+                        # between the stops of a stop-start. Counting those
+                        # rejected sound runs and would have had an
+                        # unattended campaign re-record them for ever.
+                        tq = row.get("target_qd")
+                        moving = (isinstance(tq, list) and tq and
+                                  max(abs(float(x)) for x in tq) > 1e-3)
+                        if moving:
+                            n_q += 1
+                            if qt == last_q:
+                                repeats += 1
+                        if qt != last_q:
                             if last_q is not None:
                                 jumps.append(max(abs(a - b)
                                                  for a, b in zip(qt, last_q)))
                             last_q = qt
-                        n_q += 1
                     tqd = row.get("target_qd")
                     if isinstance(tqd, list) and tqd and isinstance(t, (int, float)):
                         w = max(abs(float(v)) for v in tqd)
@@ -1638,19 +1916,19 @@ def _audit_runs(runs_dir) -> dict:
         if n_q:
             frac = repeats / n_q
             block["repeated_robot_state_frac"] = round(frac, 4)
-            block["distinct_robot_states"] = n_q - repeats
+            block["distinct_robot_states_in_motion"] = n_q - repeats
             if jumps:
                 block["worst_joint_jump_deg"] = round(math.degrees(max(jumps)), 2)
             if frac > 0.25:
                 notes.append(
-                    f"{100 * frac:.0f}% of this run's rows repeat the previous "
-                    f"row's robot state, and when it does change the joints "
+                    f"{100 * frac:.0f}% of this run's rows taken while the arm "
+                    f"was moving repeat the previous row's robot state, and when it does change the joints "
                     f"jump by up to "
                     f"{math.degrees(max(jumps)) if jumps else 0:.0f} degrees. "
-                    f"The robot link was stalling: this file holds "
-                    f"{n_q - repeats} real robot readings wearing the shape of "
-                    f"{n_q} samples. Do not measure a gap against it — check "
-                    f"the robot is on RTDE and re-record")
+                    f"The robot link was stalling: while the arm was moving, "
+                    f"this file holds {n_q - repeats} real robot readings "
+                    f"wearing the shape of {n_q} samples. Do not measure a gap "
+                    f"against it — check the robot is on RTDE and re-record")
         if ages:
             block["robot_age_median_s"] = round(st.median(ages), 4)
             block["robot_age_p95_s"] = round(sorted(ages)[int(.95 * len(ages))], 4)

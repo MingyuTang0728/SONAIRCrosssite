@@ -156,6 +156,12 @@ class GapReport:
     # temporal, ms
     lag_ms: float = 0.0
     lag_corr: float = 0.0
+    # angular rate at the IMU, rad/s, after its own latency is taken out
+    gyro_n: int = 0
+    gyro_median_rad_s: float = 0.0
+    gyro_p95_rad_s: float = 0.0
+    gyro_rel_rms: float = 0.0
+    imu_lag_applied_ms: float = 0.0
     # distributional
     wasserstein_pos_mm: float = 0.0
     # floor context (filled by attach_floor)
@@ -184,7 +190,8 @@ class GapReport:
 
 
 def gap_between(real_run, sim_run, lever_arm_m: float = 0.15,
-                compute_lag: bool = True) -> GapReport:
+                compute_lag: bool = True, imu_lag_s: float = 0.0,
+                imu_unit: str = "ind0") -> GapReport:
     """
     The gap between one real run and its simulated counterpart.
 
@@ -228,6 +235,30 @@ def gap_between(real_run, sim_run, lever_arm_m: float = 0.15,
             rep.ori_errors_deg = oerrs
             rep.ori_median_deg = statistics.median(oerrs)
             rep.ori_p95_deg = percentile(oerrs, 95)
+
+    # angular rate: what the real IMU measured against what the simulated
+    # one read. The real IMU's samples arrive `imu_lag_s` after the motion
+    # they describe (imu_align measures it); comparing them uncorrected at
+    # 0.9 rad/s and 100 ms of latency charges the simulator with 0.09 rad/s
+    # it did not cause. Both are in the IMU's own axes: the simulator rotates
+    # its flange reading by the measured mounting before writing it.
+    gt, gv = real_run.imu_series(imu_unit, "gyro")
+    sgt, sgv = sim_run.imu_series(imu_unit, "gyro")
+    if len(gt) > 16 and len(sgt) > 16:
+        rep.imu_lag_applied_ms = imu_lag_s * 1000.0
+        keep = [(t - imu_lag_s, v) for t, v in zip(gt, gv)
+                if sgt[0] <= t - imu_lag_s <= sgt[-1]]
+        if keep:
+            sv = resample_to([k[0] for k in keep], sgt, sgv)
+            gerr = [math.dist(k[1], b) for k, b in zip(keep, sv)]
+            ref = [math.hypot(*b) for b in sv]
+            rep.gyro_n = len(gerr)
+            rep.gyro_median_rad_s = statistics.median(gerr)
+            rep.gyro_p95_rad_s = percentile(gerr, 95)
+            den = math.sqrt(sum(r * r for r in ref) / len(ref))
+            if den > 1e-6:
+                rep.gyro_rel_rms = math.sqrt(
+                    sum(e * e for e in gerr) / len(gerr)) / den
 
     # temporal: correlate the speed profiles, which have sharp features that
     # a position profile does not
@@ -276,6 +307,9 @@ def aggregate_by_cell(reports: list[GapReport]) -> dict[str, dict]:
             "pos_p95_spread_mm": (statistics.pstdev(p95s) if len(p95s) > 1 else 0.0),
             "ori_median_deg": statistics.fmean(omeds) if omeds else 0.0,
             "lag_ms": statistics.fmean(lags) if lags else 0.0,
+            "gyro_median_rad_s": (statistics.fmean(
+                [r.gyro_median_rad_s for r in reps if r.gyro_n]) if any(
+                r.gyro_n for r in reps) else None),
             "tail_ratio": (statistics.fmean(p95s) / statistics.fmean(meds))
                           if meds and statistics.fmean(meds) > 1e-9 else 0.0,
         }

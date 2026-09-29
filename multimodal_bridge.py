@@ -1736,7 +1736,7 @@ class _CellContext:
         return ur_bridge_ext.UR.controller.movel_path(
             list(poses), a=0.5, v=float(speed), blend=float(blend))
 
-    def move_joints(self, q, speed):
+    def move_joints(self, q, speed, accel=None):
         """
         Joint-space move. `speed` is ANGULAR, rad/s, and it is the quantity
         the benchmark's condition cells are defined by — which is why this
@@ -1744,7 +1744,21 @@ class _CellContext:
         """
         if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
             return False, "the robot link has not been started"
-        return ur_bridge_ext.UR.controller.movej(list(q), a=1.2, v=float(speed))
+        return ur_bridge_ext.UR.controller.movej(
+            list(q), a=float(accel) if accel else 1.2, v=float(speed))
+
+    def joint_contour(self, joint, amp, w, cycles):
+        """One joint through a sinusoid, run as a program on the controller."""
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.joint_sine(int(joint), float(amp),
+                                                      float(w), int(cycles))
+
+    def pose_allowed(self, pose):
+        """The controller's own safe-envelope check, for a planned tool pose."""
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return True, ""
+        return ur_bridge_ext.UR.controller.envelope.accepts_pose(list(pose))
 
     def halt(self):
         if _HAS_EXT and ur_bridge_ext.UR.jog is not None:
@@ -1877,7 +1891,44 @@ def _handle_automation(data: dict):
         return {"type": "auto_res", "cmd": "export",
                 **CELL.export_dataset(data.get("name") or "dataset")}
 
+    if str(mtype).startswith("camp_"):
+        return _handle_campaign(mtype, data)
+
     return None
+
+
+def _handle_campaign(mtype: str, data: dict) -> dict:
+    """The planned campaign: teach configurations, preview, run, progress."""
+    import campaign_runner as cr
+    st = cr.load_state()
+    session = int(data.get("session", 0) or 0)
+    if mtype == "camp_status":
+        return {"type": "camp_res", "cmd": "status", "ok": True,
+                **cr.progress(st)}
+    if mtype == "camp_teach":
+        res = cr.teach(data.get("config", ""), CELL.joints(),
+                       int(data.get("direction", 1) or 1))
+        return {"type": "camp_res", "cmd": "teach", **res,
+                **cr.progress(cr.load_state())}
+    if mtype == "camp_preview":
+        pv = cr.preview(session, st, envelope_ok=CELL.pose_allowed,
+                        tcp_now=CELL.tcp_pose(), q_now=CELL.joints())
+        pv["refit_problem"] = cr.refit_problem(session, st, CELL.carrier() or {})
+        pv["imu_note"] = cr.imu_cal_note(CELL.carrier() or {}, CELL.out_dir())
+        return {"type": "camp_res", "cmd": "preview", **pv}
+    if mtype == "camp_run":
+        pv = cr.preview(session, st, envelope_ok=CELL.pose_allowed,
+                        tcp_now=CELL.tcp_pose(), q_now=CELL.joints())
+        if not pv["ok"]:
+            return {"type": "camp_res", "cmd": "run", "ok": False,
+                    "error": "; ".join(pv["problems"]), **pv}
+        if pv["runs"] == 0:
+            return {"type": "camp_res", "cmd": "run", "ok": False,
+                    "error": f"every run of session {session} is already done"}
+        job = cr.build_job(session, st)
+        return {"type": "camp_res", "cmd": "run", **RUNNER.start(job),
+                "runs": pv["runs"], "minutes": pv["minutes"]}
+    return {"type": "camp_res", "ok": False, "error": f"unknown {mtype}"}
 
 
 async def local_handler(websocket):
@@ -2220,7 +2271,7 @@ async def _dispatch(websocket, data, mtype, prefs):
     # that no route reaches is indistinguishable, from the operator's side,
     # from a handler that is not there, and it presents as a button that spins
     # forever.
-    if str(mtype or "").startswith(("auto_", "carrier_")):
+    if str(mtype or "").startswith(("auto_", "carrier_", "camp_")):
         reply = await asyncio.to_thread(_handle_automation, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))

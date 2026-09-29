@@ -319,6 +319,44 @@ class URController:
         lines.append("sonair_path()")
         return self.script.send("\n".join(lines))
 
+    def joint_sine(self, joint: int, amp: float, w: float, cycles: int,
+                   dt: float = 0.008, a: float = 5.0) -> tuple[bool, str]:
+        """
+        One joint through q0 + amp*(1 - cos(w t)) for `cycles` periods, as a
+        velocity loop running ON THE CONTROLLER.
+
+        Streaming set-points from this side would make the motion's
+        smoothness depend on the network and on the agent keeping up, and
+        both of those have been shown to stall on this cell. Here the whole
+        profile is one short program: the controller integrates it at its
+        own rate and the link only has to deliver it once. Velocity starts and
+        ends at zero, and after whole cycles the joint is back where it began.
+        """
+        joint = int(joint)
+        if not 0 <= joint < 6:
+            return False, f"joint index {joint} is not in 0..5"
+        if w <= 0 or cycles < 1:
+            return False, "bad sinusoid parameters"
+        peak = abs(amp) * w
+        if peak > self.envelope.max_joint_speed + 1e-9:
+            return False, (f"peak {peak:.2f} rad/s exceeds the joint speed limit "
+                           f"{self.envelope.max_joint_speed:g} rad/s")
+        T = cycles * 2 * math.pi / w
+        vec = ",".join(f"{f(amp * w)}*sin({f(w)}*t)" if i == joint else "0"
+                       for i in range(6))
+        prog = "\n".join([
+            "def sonair_sine():",
+            "  t = 0.0",
+            f"  while t < {f(T)}:",
+            f"    speedj([{vec}], {f(a)}, {f(dt)})",
+            f"    t = t + {f(dt)}",
+            "  end",
+            f"  stopj({f(a)})",
+            "end",
+            "sonair_sine()",
+        ])
+        return self.script.send(prog)
+
     def movej(self, q, a=1.0, v=0.5, r=0.0, is_pose=False) -> tuple[bool, str]:
         if is_pose:
             ok, why = self.envelope.accepts_pose(q)

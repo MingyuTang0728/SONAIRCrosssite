@@ -2250,6 +2250,97 @@
     }});
   });
 
+  /* ---- the planned campaign ------------------------------------------ */
+  var CFGS = ["near_singular", "mid_workspace", "extended"];
+  function campSession() { return parseInt((($("campSession") || {}).value) || "0", 10); }
+
+  // Written out rather than built from the list, so the wiring audit can see
+  // every one of these ids bound.
+  function teach(c, dirId) {
+    if (!S.require("campMsg")) return;
+    say("campMsg", "Saving the " + c.replace("_", " ") + " configuration…", "info");
+    send({ type: "camp_teach", config: c,
+           direction: parseInt((($(dirId) || {}).value) || "1", 10) });
+  }
+  on("btnTeach_near_singular", "click", function () { teach("near_singular", "cfgD_near_singular"); });
+  on("btnTeach_mid_workspace", "click", function () { teach("mid_workspace", "cfgD_mid_workspace"); });
+  on("btnTeach_extended", "click", function () { teach("extended", "cfgD_extended"); });
+  on("btnCampPreview", "click", function () {
+    if (!S.require("campMsg")) return;
+    say("campMsg", "Checking the session…", "info");
+    send({ type: "camp_preview", session: campSession() });
+  });
+  on("btnCampRun", "click", function () {
+    if (!S.require("campMsg")) return;
+    say("campMsg", "Starting…", "info");
+    send({ type: "camp_run", session: campSession() });
+  });
+
+  function renderCampProgress(d) {
+    if (d.configs) {
+      CFGS.forEach(function (c) {
+        var t = d.configs[c];
+        if ($("cfgT_" + c)) $("cfgT_" + c).textContent = t
+          ? (t.taught_utc || "yes").replace("T", " ").replace("Z", "") : "not yet";
+        if (t && $("cfgD_" + c)) $("cfgD_" + c).value = String(t.direction || 1);
+      });
+    }
+    if (d.planned != null && $("campTag")) {
+      $("campTag").textContent = d.done + " of " + d.planned + " runs done"
+        + (d.rejected ? ", " + d.rejected + " to redo" : "");
+    }
+    if (d.sessions && $("campSession")) {
+      Array.prototype.forEach.call($("campSession").options, function (o) {
+        var s = d.sessions[o.value];
+        if (s) o.textContent = "Session " + (parseInt(o.value, 10) + 1)
+          + (o.value === "2" ? " (after the carrier refit)" : "")
+          + " — " + s.done + "/" + s.planned;
+      });
+    }
+  }
+
+  function renderCampCells(d) {
+    var host = $("campCells");
+    if (!host) return;
+    if (!d.cells || !d.cells.length) { host.innerHTML = ""; return; }
+    host.innerHTML = '<table class="data" style="margin-top:10px"><thead><tr>'
+      + '<th>Condition</th><th>Runs</th><th class="n">Elbow travel</th>'
+      + '<th class="n">Seconds</th><th>Set</th></tr></thead><tbody>'
+      + d.cells.map(function (c) {
+          var k = c.cell.split("|");
+          return "<tr><td>" + esc(k[0] + " rad/s · " + k[1].replace("_", " ")
+            + " · " + k[2].replace(/_/g, " ")) + "</td><td>" + c.runs
+            + '</td><td class="n">' + c.excursion_deg + '°</td><td class="n">'
+            + c.seconds + "</td><td>" + (c.held_out ? "held out" : "published")
+            + "</td></tr>";
+        }).join("") + "</tbody></table>";
+  }
+
+  S.on("camp_res", function (d) {
+    renderCampProgress(d);
+    if (d.cmd === "teach") {
+      say("campMsg", d.ok ? "Saved the " + d.config.replace("_", " ")
+        + " configuration." : (d.error || "Could not save it."), d.ok ? "ok" : "bad");
+    } else if (d.cmd === "preview") {
+      renderCampCells(d);
+      var probs = (d.problems || []).slice();
+      if (d.refit_problem) probs.push(d.refit_problem);
+      if (probs.length) {
+        say("campMsg", "Not ready: " + probs.join(" · "), "bad");
+      } else {
+        say("campMsg", d.runs + " runs left in this session, about " + d.minutes
+          + " minutes, " + d.held_out_cells + " of its conditions held out. "
+          + "Every move checked against the safe envelope."
+          + (d.imu_note ? " " + d.imu_note : ""), d.imu_note ? "warn" : "ok");
+      }
+    } else if (d.cmd === "run") {
+      renderCampCells(d);
+      say("campMsg", d.ok ? "Running " + d.runs + " runs, about " + d.minutes
+        + " minutes. Progress shows in the bar at the top of every page."
+        : (d.error || "Could not start."), d.ok ? "ok" : "bad");
+    }
+  });
+
   S.on("carrier_res", function (d) {
     if (d.cmd === "get" && !d.ok && !d.measured) {
       say("carMsg", "Not described yet. Weigh what is bolted to the flange and "
@@ -2350,7 +2441,15 @@
     imu_log_start: "start logging every inertial sample",
     imu_log_stop: "close the inertial log",
     "export": "write the dataset folder",
-    message: "note in the log"
+    message: "note in the log",
+    path: "run the blended tool path",
+    ur_log_start: "start logging every robot packet",
+    ur_log_stop: "close the robot log",
+    goto_joints: "go to a taught arm configuration",
+    joint_contour: "sweep one joint continuously",
+    joint_stop_start: "step one joint with stops between",
+    imu_excite: "turn the wrist about four joints, stopping between",
+    imu_calibrate: "find the IMU time offset and mounting, and save them"
   };
 
   function renderJob() {
@@ -2557,6 +2656,7 @@
     send({ type: "auto_jobs", arm_config: armConfig() });
     send({ type: "auto_status" });
     send({ type: "carrier_get" });
+    send({ type: "camp_status" });
     sendPreflight();
   });
 

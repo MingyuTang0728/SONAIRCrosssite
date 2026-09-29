@@ -1534,6 +1534,54 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   </section>
 
   <section class="block">
+    <h3>The benchmark campaign <span class="tag" id="campTag">&mdash;</span></h3>
+    <div class="note info">The planned campaign: 6 elbow speeds &times; 3 arm
+    configurations &times; 3 trajectory types = 54 conditions, 5 repeats each
+    over 3 sessions. Teach the three configurations once, then run one session
+    at a time. A session that stops can simply be run again &mdash; runs already
+    done and checked are skipped, and any run whose file failed its check is
+    recorded again. Run the <b>imu mount cal</b> job from the list below once
+    the carrier is fitted, and again after the refit.</div>
+
+    <table class="data" style="margin-top:12px" id="campCfgTable">
+      <thead><tr><th>Configuration</th><th>Taught</th><th>Elbow moves</th>
+        <th></th></tr></thead>
+      <tbody>
+        <tr><td>Near singular</td><td id="cfgT_near_singular">&mdash;</td>
+          <td><select id="cfgD_near_singular" aria-label="Elbow direction for near singular">
+            <option value="1">+ (positive)</option><option value="-1">&minus; (negative)</option></select></td>
+          <td><button class="btn" id="btnTeach_near_singular">Teach here</button></td></tr>
+        <tr><td>Mid workspace</td><td id="cfgT_mid_workspace">&mdash;</td>
+          <td><select id="cfgD_mid_workspace" aria-label="Elbow direction for mid workspace">
+            <option value="1">+ (positive)</option><option value="-1">&minus; (negative)</option></select></td>
+          <td><button class="btn" id="btnTeach_mid_workspace">Teach here</button></td></tr>
+        <tr><td>Extended</td><td id="cfgT_extended">&mdash;</td>
+          <td><select id="cfgD_extended" aria-label="Elbow direction for extended">
+            <option value="1">+ (positive)</option><option value="-1">&minus; (negative)</option></select></td>
+          <td><button class="btn" id="btnTeach_extended">Teach here</button></td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Jog the arm into each configuration with the carrier clear of
+    everything, choose which way the elbow has room to move, and press Teach
+    here. The elbow travels up to about 65&deg; from the taught position in
+    that direction at the fastest speed, and every move is checked against the
+    safe envelope before it is sent.</p>
+
+    <div class="row" style="margin-top:12px;align-items:flex-end">
+      <div class="field"><label>Session</label>
+        <select id="campSession">
+          <option value="0">Session 1</option>
+          <option value="1">Session 2</option>
+          <option value="2">Session 3 (after the carrier refit)</option>
+        </select></div>
+      <button class="btn" id="btnCampPreview">Check this session</button>
+      <button class="btn go" id="btnCampRun">Run this session</button>
+    </div>
+    <div class="note info" id="campMsg">&mdash;</div>
+    <div id="campCells" style="overflow-x:auto"></div>
+  </section>
+
+  <section class="block">
     <h3>What is on the flange</h3>
     <div class="note info">The simulated arm's payload is built from these
     numbers. A campaign recorded without them is compared against a simulation

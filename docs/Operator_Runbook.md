@@ -367,6 +367,16 @@ The cost of skipping it is not a warning in a log. It is a campaign of angular
 rates 57× too large and an inverted orientation, discovered afterwards, with
 the arm time already spent.
 
+### Measure the IMU's timing and mounting — run `imu_mount_cal` once per carrier
+
+The IMU's samples reach the PC later than the robot's, by a different route.
+On this cell the difference was about 100 ms. The IMU is also bolted to the
+flange at some rotation. The simulator needs both before its IMU can be
+compared with the real one. Run the **`imu_mount_cal`** job after the carrier
+is fitted, and again after any refit. It takes about a minute, the wrist turns
+up to 40° about four joints, and it saves the result for the simulator and the
+gap scoring. See [The benchmark campaign](The_Benchmark_Campaign.md).
+
 ### Running
 
 Pick a job, set the repeats and the speeds to sweep, press **Run the job**.

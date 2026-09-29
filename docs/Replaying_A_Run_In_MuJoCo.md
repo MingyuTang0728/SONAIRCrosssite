@@ -64,6 +64,13 @@ frames at the first sample and refuses beyond 50 mm rather than producing a
 number. The 28 September runs pass without it, so that cell's pendant offset is
 zero.
 
+**`--imu-cal calib\imu_cal.json`** (the default path). This is the IMU's
+mounting and latency, measured by the `imu_mount_cal` job. With it, the
+simulated IMU is written in the real IMU's axes, and `gap` removes the IMU's
+latency before comparing gyros. Without it, the replay warns you, and the gyro
+channels cannot be compared axis by axis. See
+[The benchmark campaign](The_Benchmark_Campaign.md).
+
 The flange payload is **not** a flag you have to remember: it comes from the
 run's own manifest, which is where the carrier you entered on the Automate page
 is recorded. `--carrier-mass-kg` remains, as a deliberate override for asking
