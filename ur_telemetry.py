@@ -84,6 +84,25 @@ OUTPUT_RECIPE: list[tuple[str, str]] = [
     ("tcp_force_scalar",                "DOUBLE"),
     ("output_double_register_0",        "DOUBLE"),
     ("speed_scaling",                   "DOUBLE"),
+    # The rest of what the controller will part with. Asked for because the
+    # point of a capture campaign is that the channel you did not record is the
+    # one you want six months later, and because a field the controller does
+    # not know comes back NOT_FOUND and is dropped -- so asking costs nothing
+    # on an older PolyScope beyond a line in the log.
+    ("target_qdd",                      "VECTOR6D"),   # commanded joint accel
+    ("target_current",                  "VECTOR6D"),
+    ("joint_control_output",            "VECTOR6D"),
+    ("actual_joint_voltage",            "VECTOR6D"),
+    ("joint_mode",                      "VECTOR6INT32"),
+    ("actual_main_voltage",             "DOUBLE"),
+    ("actual_execution_time",           "DOUBLE"),
+    ("momentum",                        "DOUBLE"),
+    ("actual_tool_current",             "DOUBLE"),
+    ("tool_output_voltage",             "INT32"),
+    ("tool_output_current",             "DOUBLE"),
+    ("tool_temperature",                "DOUBLE"),
+    ("tool_analog_input0",              "DOUBLE"),
+    ("tool_analog_input1",              "DOUBLE"),
 ]
 
 _FMT = {
@@ -338,6 +357,7 @@ class URTelemetry:
         self._state: dict = {}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._sinks: list = []
         self.health = TelemetryHealth()
 
     def start(self) -> None:
@@ -360,10 +380,37 @@ class URTelemetry:
 
     # --- internals -----------------------------------------------------------
 
+    def subscribe(self, fn) -> None:
+        """
+        Every packet, as it lands, rather than the latest one when someone
+        happens to look.
+
+        A poller running beside a 125 Hz stream sees some packets twice and
+        misses others, and a capture that quietly loses samples is worth very
+        little. The continuous UR log is the subscriber this exists for.
+        """
+        with self._lock:
+            if fn not in self._sinks:
+                self._sinks.append(fn)
+
+    def unsubscribe(self, fn) -> None:
+        with self._lock:
+            if fn in self._sinks:
+                self._sinks.remove(fn)
+
     def _publish(self, raw: dict, source: str) -> None:
         with self._lock:
-            self._state = decorate(raw, source)
+            st = self._state = decorate(raw, source)
             self.health.packets += 1
+            sinks = list(self._sinks)
+        # Outside the lock. A subscriber that blocks on a disk write while
+        # holding it would stall the socket read behind it, and a stalled read
+        # drops packets in the kernel where nothing can count them.
+        for fn in sinks:
+            try:
+                fn(st)
+            except Exception as e:      # noqa: BLE001
+                log.debug("UR telemetry sink failed: %s", e)
 
     def _loop(self) -> None:
         backoff = 1.0

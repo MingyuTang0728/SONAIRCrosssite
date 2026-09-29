@@ -275,6 +275,50 @@ class URController:
             f"movel(p[{f(pose[0])},{f(pose[1])},{f(pose[2])},"
             f"{f(pose[3])},{f(pose[4])},{f(pose[5])}], a={f(a)}, v={f(v)}, r={f(r)})")
 
+    def movel_path(self, poses, a=0.5, v=0.1, blend=0.005) -> tuple[bool, str]:
+        """
+        One continuous path through many waypoints, sent as a single program.
+
+        Issuing a `movel` per waypoint and waiting for each to arrive is not a
+        path -- it is a series of moves, and the arm decelerates to a full stop
+        at every one of them. For a scan that is wrong twice over: it takes
+        several times as long, and what the sensors see is sixty start-stop
+        transients rather than the smooth sweep a real inspection traces.
+
+        A blend radius lets the controller round each corner without stopping,
+        so the tool keeps moving from the first waypoint to the last. The whole
+        thing goes in one URScript block because the blend on waypoint N can
+        only be planned when waypoint N+1 is already known.
+
+        EVERY pose is checked against the envelope before ANY of it is sent. A
+        batch program is not stopped between points, so a path that is refused
+        half way through would leave the arm somewhere nobody chose -- the
+        check has to be all-or-nothing, and it is.
+        """
+        poses = [list(p) for p in poses]
+        if not poses:
+            return False, "no waypoints"
+        for i, p in enumerate(poses):
+            if len(p) < 6:
+                return False, f"waypoint {i + 1} is not a full pose"
+            ok, why = self.envelope.accepts_pose(p)
+            if not ok:
+                return False, (f"waypoint {i + 1} of {len(poses)} is outside "
+                               f"the safe envelope: {why}. Nothing was sent.")
+        v = self.envelope.clamp_linear(v)
+        blend = max(0.0, float(blend))
+        lines = ["def sonair_path():"]
+        for i, p in enumerate(poses):
+            # The last waypoint has no successor to blend into, so it is the
+            # one place the arm is meant to come to rest.
+            r = 0.0 if i == len(poses) - 1 else blend
+            lines.append(
+                f"  movel(p[{f(p[0])},{f(p[1])},{f(p[2])},"
+                f"{f(p[3])},{f(p[4])},{f(p[5])}], a={f(a)}, v={f(v)}, r={f(r)})")
+        lines.append("end")
+        lines.append("sonair_path()")
+        return self.script.send("\n".join(lines))
+
     def movej(self, q, a=1.0, v=0.5, r=0.0, is_pose=False) -> tuple[bool, str]:
         if is_pose:
             ok, why = self.envelope.accepts_pose(q)

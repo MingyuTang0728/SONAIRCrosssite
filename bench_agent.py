@@ -53,6 +53,13 @@ except ImportError:  # pragma: no cover - the package travels with this file
     log.warning("sonair_benchmark package not importable — recording disabled")
 
 try:
+    import ur_telemetry
+    _HAS_URT = True
+except Exception:       # noqa: BLE001
+    ur_telemetry = None
+    _HAS_URT = False
+
+try:
     import sensor_hub
     _HAS_SENSORS = True
 except Exception:       # noqa: BLE001
@@ -482,6 +489,202 @@ def imu_row(unit: str, t: float, rec: dict) -> list[str]:
     return row
 
 
+# ---------------------------------------------------------------------------
+# the robot's own record
+# ---------------------------------------------------------------------------
+
+# Joint names in UR order, used to name the six columns a VECTOR6D becomes.
+# "j1..j6" would be shorter and would need a lookup table every time the file
+# is read; a column called `joint_temperatures_elbow_c` does not.
+UR_JOINT_NAMES = ("base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3")
+_POSE_AXES = ("x", "y", "z", "rx", "ry", "rz")
+_VEC3_AXES = ("x", "y", "z")
+
+# Fields whose six components are a TOOL POSE (x y z rx ry rz), not six joints.
+_POSE_FIELDS = {"actual_TCP_pose", "target_TCP_pose", "actual_TCP_speed",
+                "actual_TCP_force"}
+
+
+def ur_columns(recipe=None) -> list:
+    """
+    The flat column set for the robot log, derived from the RTDE recipe.
+
+    Derived rather than written out, so a field added to the recipe appears in
+    the file without a second edit -- and, more importantly, so the column set
+    is the SAME on every controller. A field this controller does not provide
+    is a present, empty column, which states "this robot does not report joint
+    voltages"; a missing column only raises the question.
+    """
+    if recipe is None:
+        recipe = ur_telemetry.OUTPUT_RECIPE if _HAS_URT else []
+    cols = ["t_s", "host_time_s", "source"]
+    for name, typ in recipe:
+        if typ.startswith("VECTOR6"):
+            axes = _POSE_AXES if name in _POSE_FIELDS else UR_JOINT_NAMES
+            cols += [f"{name}_{a}" for a in axes]
+        elif typ == "VECTOR3D":
+            cols += [f"{name}_{a}" for a in _VEC3_AXES]
+        else:
+            cols.append(name)
+    # The decoded text of the mode fields. The integers are in the file too --
+    # these are for the person reading it, and cost three short strings a row.
+    cols += ["robot_mode_text", "safety_mode_text", "runtime_state_text"]
+    return cols
+
+
+def ur_row(t: float, st: dict, recipe=None) -> list:
+    if recipe is None:
+        recipe = ur_telemetry.OUTPUT_RECIPE if _HAS_URT else []
+    out = [_cell(round(float(t), 6)),
+           _cell(st.get("_host_time")), _cell(st.get("_source"))]
+    for name, typ in recipe:
+        v = st.get(name)
+        n = 6 if typ.startswith("VECTOR6") else 3 if typ == "VECTOR3D" else 1
+        if n == 1:
+            out.append(_cell(v))
+            continue
+        for i in range(n):
+            try:
+                out.append(_cell(v[i]))
+            except Exception:       # noqa: BLE001
+                out.append("")
+    out += [_cell(st.get("robot_mode_text")), _cell(st.get("safety_mode_text")),
+            _cell(st.get("runtime_state_text"))]
+    return out
+
+
+class UrLogger:
+    """
+    Every packet the robot sends, to a CSV, for as long as it is running.
+
+    The run file records the robot on the benchmark's fixed sample grid and
+    holds only the channels the gap is scored on. That is the right shape for
+    scoring and the wrong shape for everything else: joint temperatures drift
+    over a campaign, currents and torques say what the arm was working against,
+    and none of it is in the run file. This is the other half -- the complete
+    record, at the controller's own rate, one row per packet, with a column set
+    that does not change between controllers.
+
+    It SUBSCRIBES rather than polls, for the same reason the inertial logger
+    does: a poller beside a 125 Hz stream sees some packets twice and misses
+    others, and the misses are invisible afterwards.
+    """
+
+    FLUSH_EVERY_S = 2.0
+
+    def __init__(self, out_dir: str | Path = "ur_logs"):
+        self.out_dir = Path(out_dir)
+        self._fh = None
+        self.path: Path | None = None
+        self.rows = 0
+        self.dropped = 0
+        self.error = ""
+        self.started_at = 0.0
+        self._t0 = 0.0
+        self._last_flush = 0.0
+        self._lock = threading.Lock()
+        self._service = None
+
+    def _telemetry(self):
+        try:
+            import ur_bridge_ext
+            if ur_bridge_ext.UR.enabled and ur_bridge_ext.UR.telemetry:
+                return ur_bridge_ext.UR.telemetry
+        except Exception:       # noqa: BLE001
+            pass
+        return None
+
+    def start(self, path: str | None = None) -> dict:
+        with self._lock:
+            if self._fh is not None:
+                return {"ok": False, "error": "already logging the robot",
+                        **self.status()}
+        svc = self._telemetry()
+        if svc is None:
+            return {"ok": False, "error":
+                    "the robot link has not been started, so there is nothing "
+                    "to log. Connect to the robot first."}
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        name = path or f"ur_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        target = self.out_dir / name
+        try:
+            fh = target.open("w", encoding="utf-8", newline="")
+            fh.write(",".join(ur_columns()) + "\n")
+        except Exception as e:      # noqa: BLE001
+            return {"ok": False, "error": f"could not open {target}: {e}"}
+        with self._lock:
+            self._fh = fh
+            self.path = target
+            self.rows = 0
+            self.dropped = 0
+            self.started_at = time.perf_counter()
+            self._t0 = MASTER.now()
+            self._last_flush = self.started_at
+            self.error = ""
+            self._service = svc
+        svc.subscribe(self._on_sample)
+        log.info("robot logging to %s", target)
+        return {"ok": True, **self.status()}
+
+    def _on_sample(self, st: dict) -> None:
+        with self._lock:
+            fh = self._fh
+            if fh is None:
+                return
+            try:
+                fh.write(",".join(ur_row(MASTER.now(), st)) + "\n")
+                self.rows += 1
+            except Exception as e:      # noqa: BLE001
+                self.dropped += 1
+                self.error = str(e)
+                return
+            now = time.perf_counter()
+            if now - self._last_flush >= self.FLUSH_EVERY_S:
+                self._last_flush = now
+                try:
+                    fh.flush()
+                except Exception:
+                    pass
+
+    def stop(self) -> dict:
+        svc, self._service = self._service, None
+        if svc is not None:
+            try:
+                svc.unsubscribe(self._on_sample)
+            except Exception:       # noqa: BLE001
+                pass
+        with self._lock:
+            fh, path, rows = self._fh, self.path, self.rows
+            dur = (time.perf_counter() - self.started_at) if self.started_at else 0.0
+            self._fh = None
+        if fh is None:
+            return {"ok": False, "error": "the robot was not being logged",
+                    "running": False}
+        try:
+            fh.flush()
+            fh.close()
+        except Exception:
+            pass
+        size = path.stat().st_size if path and path.exists() else 0
+        rate = rows / dur if dur > 0 else 0.0
+        log.info("robot log closed: %s rows=%d", path, rows)
+        return {"ok": True, "running": False, "path": str(path.resolve()),
+                "rows": rows, "bytes": size, "seconds": round(dur, 1),
+                "rate_hz": round(rate, 1), "dropped": self.dropped,
+                "columns": len(ur_columns())}
+
+    def status(self) -> dict:
+        with self._lock:
+            dur = (time.perf_counter() - self.started_at) if self.started_at else 0.0
+            return {"running": self._fh is not None,
+                    "path": str(self.path.resolve()) if self.path else None,
+                    "rows": self.rows, "dropped": self.dropped,
+                    "seconds": round(dur, 1),
+                    "rate_hz": round(self.rows / dur, 1) if dur > 0.5 else 0.0,
+                    "columns": len(ur_columns()),
+                    "error": self.error}
+
+
 class ImuLogger:
     """
     Writes every inertial sample to a CSV as it arrives, for as long as it is
@@ -602,6 +805,7 @@ class ImuLogger:
 
 
 LOGGER = ImuLogger()
+UR_LOGGER = UrLogger()
 
 
 def export_ring(units=None, path=None) -> dict:
@@ -1269,6 +1473,7 @@ def status() -> dict:
         "attitude": HUB.tracker_status(),
         "recorder": RECORDER.status(),
         "imu_log": LOGGER.status(),
+        "ur_log": UR_LOGGER.status(),
         "bench_available": _HAS_BENCH,
         "transports": sorted(imu_link.TRANSPORTS) if _HAS_LINK else [],
         "transport_error": "" if _HAS_LINK else _LINK_ERR,

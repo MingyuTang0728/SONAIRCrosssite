@@ -36,6 +36,11 @@ import logging
 import math
 import shutil
 import statistics as st
+
+try:
+    import scan_paths
+except Exception:       # noqa: BLE001
+    scan_paths = None
 import threading
 import time
 from dataclasses import dataclass, field
@@ -53,6 +58,7 @@ log = logging.getLogger("automation")
 JOINT_ACCEL = 1.2
 
 STEP_KINDS = (
+    "path", "ur_log_start", "ur_log_stop",
     "preflight",        # run the checks; fail the job if any check fails
     "dwell",            # wait, so a move can settle before a capture
     "move",             # go to one tool pose
@@ -555,6 +561,14 @@ class Runner:
                               "closed: " + str(res["path"]), "warn")
         except Exception as e:      # noqa: BLE001
             self._say(f"Could not close the earlier inertial log: {e}", "bad")
+        try:
+            if self.ctx.ur_logging():
+                res = self.ctx.ur_log_stop()
+                if res.get("path"):
+                    self._say("A robot log was still open and has been closed: "
+                              + str(res["path"]), "warn")
+        except Exception as e:      # noqa: BLE001
+            self._say(f"Could not close the earlier robot log: {e}", "bad")
 
     def _close_everything(self) -> None:
         try:
@@ -571,6 +585,14 @@ class Runner:
                 self._say(f"Closed the inertial log: {res.get('path', '')}", "warn")
         except Exception as e:      # noqa: BLE001
             self._say(f"Could not close the inertial log: {e}", "bad")
+        try:
+            if self.ctx.ur_logging():
+                res = self.ctx.ur_log_stop()
+                if res.get("path"):
+                    self.produced.append(res["path"])
+                self._say(f"Closed the robot log: {res.get('path', '')}", "warn")
+        except Exception as e:      # noqa: BLE001
+            self._say(f"Could not close the robot log: {e}", "bad")
         try:
             self.ctx.halt()
         except Exception:
@@ -615,6 +637,70 @@ class Runner:
             if not ok:
                 return False, why
             return self._await_arrival(pose, step)
+
+        if kind == "path":
+            # ONE CONTINUOUS PATH, not a queue of moves.
+            #
+            # `trajectory` sends a movel per waypoint and waits for each to
+            # land within a couple of millimetres, which means the arm comes to
+            # a complete stop at every one. For a scan of two hundred waypoints
+            # that is wrong twice: it takes several times as long, and the
+            # sensors see two hundred start-stop transients instead of the
+            # smooth sweep a real inspection traces. Here the whole path goes
+            # to the controller as a single blended program and the arm never
+            # stops until the end.
+            poses = step.get("poses") or []
+            if not poses:
+                return False, "no waypoints given"
+            speed = float(step.get("speed", 0.045))
+            cap = self.ctx.max_linear_speed()
+            if cap and speed > cap + 1e-9:
+                return False, (f"{speed:g} m/s is above this cell's linear "
+                               f"speed limit of {cap:g} m/s; the arm would be "
+                               "held at the limit while the run recorded the "
+                               "higher figure.")
+            blend = float(step.get("blend_m", 0.004))
+            shape = scan_paths.describe(poses, speed) if scan_paths else {}
+            self._say(
+                f"Scanning: {len(poses)} waypoints, "
+                f"{shape.get('path_length_m', 0):.2f} m of tool travel at "
+                f"{speed:g} m/s, about {shape.get('duration_s', 0):.0f} s. The "
+                f"tool stays normal to the part, so it also turns through "
+                f"{shape.get('total_rotation_deg', 0):.0f}° — about "
+                f"{shape.get('mean_angular_rate_deg_s', 0):.1f}°/s, which is "
+                f"what makes this worth recording.")
+            ok, why = self.ctx.move_path(poses, speed, blend)
+            if not ok:
+                return False, why
+            # Generous, and derived: a path that has to travel two metres
+            # cannot be judged stalled on the same timeout as a single move.
+            budget = float(step.get("timeout_s", 0)) or \
+                max(30.0, 3.0 * float(shape.get("duration_s", 30.0)) + 15.0)
+            ok, why = self._await_arrival(
+                poses[-1], {**step, "timeout_s": budget,
+                            "tolerance_mm": step.get("tolerance_mm", 6.0)})
+            if not ok:
+                return False, why
+            return True, ""
+
+        if kind == "ur_log_start":
+            res = self.ctx.ur_log_start(step.get("path"))
+            if not res.get("ok"):
+                return False, res.get("error", "could not start the robot log")
+            self._say(f"Logging every packet the robot sends to "
+                      f"{res.get('path', '')} — {res.get('columns', 0)} columns.",
+                      "ok")
+            return True, ""
+
+        if kind == "ur_log_stop":
+            if not self.ctx.ur_logging():
+                return True, ""
+            res = self.ctx.ur_log_stop()
+            if not res.get("ok"):
+                return False, res.get("error", "could not close the robot log")
+            self._say(f"Robot log closed: {res.get('rows', 0)} rows at "
+                      f"{res.get('rate_hz', 0):.0f} a second.", "ok")
+            return True, ""
 
         if kind == "trajectory":
             poses = step.get("poses") or []
@@ -938,6 +1024,39 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
     square = [shifted(), shifted(dx=0.08), shifted(dx=0.08, dy=0.08),
               shifted(dy=0.08), shifted()]
 
+    # THE ONE THAT IS WORTH RECORDING.
+    #
+    # Generated from a PART rather than from a box: a zig-zag over a curved
+    # surface with the tool held normal to it, which is how a probe, a camera
+    # at fixed standoff or an ultrasonic wheel is actually carried. Sweeping
+    # across the curve therefore rotates the tool by the part's own curvature
+    # -- continuously, and for free, because it is what the job requires rather
+    # than a wiggle added to give the sensors something to look at.
+    #
+    # The flat box above was measured on the real cell: 0.9 degrees of rotation
+    # in 46 seconds, linear acceleration flat on the sensor's noise floor.
+    # Orientation and angular rate are two of the three channels the benchmark
+    # scores, so that run carried nothing to score. This one turns the tool
+    # roughly 14 degrees a second, which is over a hundred times the measured
+    # noise floor, for about a minute.
+    #
+    # The part is assumed to sit a little in front of and below the tool's
+    # current pose, with its axis along the robot's X. Nobody has to type
+    # coordinates; if the real part is somewhere else, the poses are visible in
+    # the step list and can be changed before pressing Run.
+    arc = []
+    if scan_paths is not None:
+        try:
+            arc = scan_paths.arc_zigzag(
+                centre=(p[0], p[1] - 0.14, p[2] - 0.10),
+                axis=(1.0, 0.0, 0.0),
+                radius=0.12, standoff=0.05, arc_deg=70.0,
+                length=0.18, passes=12, points_per_pass=16,
+                start_offset=-0.09)
+        except Exception as e:      # noqa: BLE001
+            log.warning("could not build the arc scan path: %s", e)
+            arc = []
+
     # The campaign's own factor. campaign.py defines the sweep over elbow
     # angular velocity in rad/s, bracketing ~0.6 rad/s where the simulator is
     # already known to change behaviour, so the motion that carries it has to
@@ -1032,6 +1151,30 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
                 {"kind": "imu_log_stop"},
             ],
         ),
+        "arc_scan": Job(
+            name="arc_scan",
+            notes="A minute of realistic inspection: a zig-zag over a curved "
+                  "part with the tool held normal to the surface, so it turns "
+                  "through the part's curvature as it sweeps. Records the "
+                  "benchmark run, every inertial sample, AND every packet the "
+                  "robot sends. This is the one to replay in a simulator.",
+            requires=["robot", "imu"],
+            steps=[
+                {"kind": "preflight"},
+                {"kind": "ur_log_start"},
+                {"kind": "imu_log_start"},
+                {"kind": "record_start", "traj_type": "contour",
+                 "joint_vel": 0.0, "arm_config": arm_config,
+                 "rate_hz": 125.0},
+                {"kind": "dwell", "seconds": 2.0},
+                {"kind": "path", "poses": arc, "speed": 0.045,
+                 "blend_m": 0.004},
+                {"kind": "dwell", "seconds": 2.0},
+                {"kind": "record_stop"},
+                {"kind": "imu_log_stop"},
+                {"kind": "ur_log_stop"},
+            ],
+        ),
         "scan_shaped": Job(
             name="scan_shaped",
             notes="A tool-space box, the shape a real inspection scan traces. "
@@ -1063,7 +1206,8 @@ def builtin_jobs(tcp_pose=None, arm_config="mid_workspace") -> dict:
 DATASET_VERSION = "sonair-dataset/1"
 
 
-def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
+def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx,
+                   ur_dir="ur_logs") -> dict:
     """
     Gather a campaign into one self-describing folder.
 
@@ -1084,16 +1228,18 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
     try:
         (folder / "runs").mkdir(parents=True, exist_ok=True)
         (folder / "inertial").mkdir(parents=True, exist_ok=True)
+        (folder / "robot").mkdir(parents=True, exist_ok=True)
     except Exception as e:      # noqa: BLE001
         return {"ok": False, "error": f"could not create {folder}: {e}"}
 
     # Only what this campaign produced. Sweeping up everything in the runs
     # folder would quietly fold last week's runs into this week's dataset.
     since = ctx.job_started_at() or 0.0
-    copied_runs, copied_imu = [], []
+    copied_runs, copied_imu, copied_ur = [], [], []
     for src, dest, bucket in (
         (Path(runs_dir), folder / "runs", copied_runs),
         (Path(imu_dir), folder / "inertial", copied_imu),
+        (Path(ur_dir), folder / "robot", copied_ur),
     ):
         if not src.exists():
             continue
@@ -1130,6 +1276,7 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
         "contents": {
             "runs": copied_runs,
             "inertial": copied_imu,
+            "robot": copied_ur,
         },
         # Measured from the files, not copied from what was asked for. A run
         # file's own manifest records the rate the recorder was ASKED for; if
@@ -1142,6 +1289,16 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx) -> dict:
                 "One benchmark run each. First line is the run manifest "
                 "(parameters, calibration version, sample rate); every line "
                 "after it is one sample on a fixed time grid."),
+            "robot/*.csv": (
+                "Every packet the controller sent, at its own rate, one row "
+                "per packet -- joint angles, velocities, currents, torques and "
+                "TEMPERATURES, the tool pose, speed and force, the wrist "
+                "accelerometer, voltages, safety and runtime state. A fixed "
+                "column set derived from the RTDE recipe, so a field this "
+                "controller does not provide is a present, empty column rather "
+                "than a missing one. This is the complete record; the run "
+                "files hold the subset the gap is scored on, on the "
+                "benchmark's fixed sample grid."),
             "inertial/*.csv": (
                 "Every inertial sample at the sensor's own rate, one row per "
                 "reading, fixed column set. Columns a unit does not provide "
@@ -1410,6 +1567,7 @@ Format `{m['dataset_version']}`.
 |---|---|
 | `runs/` | {len(m['contents']['runs'])} benchmark run files (`.jsonl`) |
 | `inertial/` | {len(m['contents']['inertial'])} continuous inertial logs (`.csv`) |
+| `robot/` | {len(m['contents'].get('robot', []))} continuous robot logs (`.csv`), every RTDE packet |
 | `manifest.json` | the machine-readable version of this file |
 
 ## Before you use it for anything

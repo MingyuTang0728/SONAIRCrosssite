@@ -21,7 +21,7 @@ Run:  python tests/dry_run_cell.py
 Needs mujoco and a menagerie checkout for the last stage; without them the
 first five stages still run and the replay is skipped.
 """
-import sys, math, time, json, tempfile, threading
+import sys, math, time, json, tempfile, threading, types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import automation, carrier, bench_agent, imu_link
@@ -38,9 +38,15 @@ try:
     if sim_mujoco.available()[0] and \
             (_men / "universal_robots_ur5e" / "scene.xml").exists():
         _arm = sim_mujoco.Arm(sim_mujoco.ensure_model(_men))
+        # MuJoCo's MjData is not thread safe, and this is called from the
+        # runner, the recorder and the stand-in RTDE feeder at once. Without
+        # the lock the process segfaults part way through a job -- which it
+        # did, the first time the feeder was added.
+        _fk_lock = threading.Lock()
         def FK(q):                      # noqa: E301
-            _arm.reset(list(q))
-            return _arm.tcp_position()[:3]
+            with _fk_lock:
+                _arm.reset(list(q))
+                return _arm.tcp_position()[:3]
 except Exception as _e:      # noqa: BLE001
     FK = None
 print("forward kinematics:", "from MuJoCo" if FK else "not available — the "
@@ -67,7 +73,10 @@ class Cell:
         return {"q": list(self.q), "tcp": self.tcp(), "qd": list(self.qd),
                 "target_q": list(self.q), "target_qd": list(self.qd),
                 "speed_scaling": 1.0}
+    _pose = None
     def tcp(self):
+        if self._pose is not None:
+            return list(self._pose)
         # Forward kinematics from the same model the replay uses, when it is
         # available. A stand-in robot whose reported tool pose does not follow
         # its own joints is exactly the frame disagreement the replay refuses
@@ -132,6 +141,19 @@ class Cell:
     def is_recording(self): return bench_agent.RECORDER.is_recording()
     def record_start(self, args): return bench_agent.RECORDER.start(**args)
     def record_stop(self): return bench_agent.RECORDER.stop()
+    def move_path(self, poses, speed, blend=0.004):
+        """Walk the path at the right speed, so the timing is realistic."""
+        import math
+        for a, b in zip([self.tcp()] + list(poses), poses):
+            d = math.dist(a[:3], b[:3])
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < d / max(speed, 1e-6):
+                time.sleep(0.002)
+            self._pose = list(b)
+        return True, ""
+    def ur_logging(self): return bench_agent.UR_LOGGER.status().get("running")
+    def ur_log_start(self, path=None): return bench_agent.UR_LOGGER.start(path)
+    def ur_log_stop(self): return bench_agent.UR_LOGGER.stop()
     def imu_logging(self): return bench_agent.LOGGER.status().get("running")
     def imu_log_start(self, path=None): return bench_agent.LOGGER.start(path)
     def imu_log_stop(self): return bench_agent.LOGGER.stop()
@@ -190,6 +212,41 @@ def feeder():
         bench_agent.HUB.push("ind0", bench_agent.MASTER.to_master("ind0", FROZEN_NS / 1e9), rec)
 
 threading.Thread(target=feeder, daemon=True).start()
+
+# --- a stand-in RTDE stream, so the robot log has something to log ----------
+import ur_telemetry as _urt
+_svc = _urt.URTelemetry("dry-run")
+_fake_ur = types.ModuleType("ur_bridge_ext")
+class _UR:
+    enabled = True
+    telemetry = _svc
+_fake_ur.UR = _UR
+sys.modules.setdefault("ur_bridge_ext", _fake_ur)
+sys.modules["ur_bridge_ext"] = _fake_ur
+
+def ur_feeder():
+    i = 0
+    while not stop.is_set():
+        time.sleep(1 / 125.0)
+        i += 1
+        _svc._publish({
+            "timestamp": i / 125.0,
+            "actual_q": list(cell.q), "actual_qd": list(cell.qd),
+            "target_q": list(cell.q), "target_qd": list(cell.qd),
+            "actual_current": [0.3, -1.5, -1.9, -0.2, 0.02, -0.01],
+            # A slow thermal drift, which is the sort of thing only a
+            # continuous robot log ever captures.
+            "joint_temperatures": [31.0 + i * 2e-4, 34.8, 38.1 + i * 3e-4,
+                                   29.5, 29.4, 28.9],
+            "actual_TCP_pose": cell.tcp(),
+            "actual_TCP_force": [-1.1, 0.8, 1.4, 0.01, -0.04, -0.03],
+            "actual_tool_accelerometer": [0.09, -0.03, -9.8],
+            "speed_scaling": 1.0, "momentum": 0.42,
+            "actual_main_voltage": 47.9, "tool_temperature": 30.1,
+            "robot_mode": 7, "safety_mode": 1,
+        }, "rtde-125")
+
+threading.Thread(target=ur_feeder, daemon=True).start()
 time.sleep(1.5)
 
 R = automation.Runner(cell)
@@ -200,7 +257,7 @@ pf = automation.preflight(cell, ["robot","imu"])
 print("   ok:", pf["ok"], " blocking:", pf["blocking"])
 
 print("\n=== 2. settle_sensors ===")
-print("   start:", R.start(jobs["settle_sensors"]))
+print("   start:", R.start(jobs["settle_sensors"]).get("ok"))
 while R.status()["state"] in ("running","starting"): time.sleep(0.2)
 print("   final:", R.status()["state"])
 
@@ -219,10 +276,30 @@ for c in pf["checks"]:
         print(f"   [{c['state']}] {c['label']}: {c['detail'][:120]}")
 
 print("\n=== 4. single_run ===")
-print("   start:", R.start(jobs["single_run"]))
+print("   start:", R.start(jobs["single_run"]).get("ok"))
 while R.status()["state"] in ("running","starting"): time.sleep(0.2)
 st = R.status(); print("   final:", st["state"])
 for e in st["log"][-8:]: print("     ", e["level"], "|", e["text"][:130])
+
+print("\n=== 4b. arc_scan — the minute-long inspection path ===")
+import scan_paths
+_arc = [st for st in jobs["arc_scan"].steps if st["kind"] == "path"][0]
+print("   ", scan_paths.describe(_arc["poses"], _arc["speed"]))
+# Run a shortened version here: the geometry and the plumbing are what this
+# rehearsal tests, and sixty seconds of wall clock proves nothing extra.
+short = dict(jobs["arc_scan"].__dict__)
+short["steps"] = [dict(x) for x in jobs["arc_scan"].steps]
+for st in short["steps"]:
+    if st["kind"] == "path":
+        st["poses"] = st["poses"][::12]
+        st["speed"] = 0.22
+    if st["kind"] == "dwell":
+        st["seconds"] = 0.2
+J = automation.Job(**{k: v for k, v in short.items() if not k.startswith("_")})
+print("   start:", R.start(J).get("ok"))
+while R.status()["state"] in ("running", "starting"): time.sleep(0.2)
+st = R.status(); print("   final:", st["state"])
+for e in st["log"][-7:]: print("     ", e["level"], "|", e["text"][:145])
 
 print("\n=== 5. export ===")
 ex = cell.export_dataset("dryrun")

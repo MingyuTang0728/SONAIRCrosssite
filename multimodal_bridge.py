@@ -1706,6 +1706,13 @@ class _CellContext:
             return False, "the robot link has not been started"
         return ur_bridge_ext.UR.controller.movel(list(pose), a=0.5, v=float(speed))
 
+    def move_path(self, poses, speed, blend=0.004):
+        """A whole scan path as one blended URScript program."""
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.movel_path(
+            list(poses), a=0.5, v=float(speed), blend=float(blend))
+
     def move_joints(self, q, speed):
         """
         Joint-space move. `speed` is ANGULAR, rad/s, and it is the quantity
@@ -1732,6 +1739,19 @@ class _CellContext:
     def imu_logging(self) -> bool:
         return bool(_HAS_BENCH and bench_agent.LOGGER.running())
 
+    def ur_logging(self) -> bool:
+        return bool(_HAS_BENCH and bench_agent.UR_LOGGER.status().get("running"))
+
+    def ur_log_start(self, path=None) -> dict:
+        if not _HAS_BENCH:
+            return {"ok": False, "error": "benchmark package not importable"}
+        return bench_agent.UR_LOGGER.start(path)
+
+    def ur_log_stop(self) -> dict:
+        if not _HAS_BENCH:
+            return {"ok": False, "error": "benchmark package not importable"}
+        return bench_agent.UR_LOGGER.stop()
+
     def imu_log_start(self, path=None) -> dict:
         return bench_agent.LOGGER.start(path)
 
@@ -1744,7 +1764,7 @@ class _CellContext:
     def export_dataset(self, name) -> dict:
         return automation.export_dataset(
             name, out_root=Path("datasets"), runs_dir=Path("bench_runs"),
-            imu_dir=Path("imu_logs"), ctx=self)
+            imu_dir=Path("imu_logs"), ur_dir=Path("ur_logs"), ctx=self)
 
 
 CELL = _CellContext()
