@@ -338,6 +338,21 @@ class ImuHub:
             tr = self._trackers.get(unit)
             if tr is None:
                 tr = self._trackers[unit] = AttitudeTracker(unit)
+                # The six-face correction for THIS unit, if one has been made.
+                # Loaded once, when the unit is first seen, rather than on
+                # every sample: a calibration made mid-run must not change the
+                # scale half way through a recording.
+                try:
+                    import accel_cal
+                    cal = accel_cal.load(accel_cal.DEFAULT_PATH
+                                         if unit == "ind0"
+                                         else f"accel_cal_{unit}.json")
+                    if cal.get("ok"):
+                        tr.accel_cal = cal
+                        log.info("accelerometer calibration loaded for %s: %s",
+                                 unit, accel_cal.describe(cal))
+                except Exception as e:      # noqa: BLE001
+                    log.debug("no accelerometer calibration for %s: %s", unit, e)
             return tr
 
     def reset_tracker(self, unit: str) -> bool:
@@ -1319,6 +1334,7 @@ class BenchRecorder:
                 target_qd=st.get("target_qd"),
                 target_moment=st.get("target_moment"),
                 speed_scaling=st.get("speed_scaling"),
+                robot_age_s=st.get("robot_age_s"),
                 imu=HUB.snapshot(),
                 sensors=extra,
             )
@@ -1452,7 +1468,8 @@ def unit_report() -> dict:
         tr = trackers.get(u) or {}
         for k in ("quat_convention", "quat_convention_basis",
                   "quat_gravity_residual_deg", "quat_source", "sensor_clock_ok",
-                  "clock_jumps"):
+                  "clock_jumps", "accel_calibrated", "accel_scale_spread_pct",
+                  "accel_still_median", "accel_still_samples"):
             if k in tr:
                 row[k] = tr[k]
         rec = latest.get(u) or {}

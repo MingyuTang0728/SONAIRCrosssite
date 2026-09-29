@@ -115,6 +115,7 @@ class Sample:
     # trajectory from the one commanded, and without this nothing downstream
     # can tell.
     speed_scaling: float | None = None
+    robot_age_s: float | None = None
     # inertial channels, keyed by unit id ("ind0" industrial, "con0" consumer,
     # "d435i" the camera's own BMI055)
     imu: dict[str, dict[str, Sequence[float]]] = field(default_factory=dict)
@@ -149,6 +150,12 @@ class Sample:
             d["target_moment"] = [round(float(v), 4) for v in self.target_moment]
         if self.speed_scaling is not None:
             d["speed_scaling"] = round(float(self.speed_scaling), 4)
+        # How old the robot reading in this sample was when it was written.
+        # Near zero on a healthy link. Anything above a sample interval means
+        # this row repeats the previous one's robot state, and a file full of
+        # those is a frozen instant wearing the shape of a trajectory.
+        if self.robot_age_s is not None:
+            d["robot_age_s"] = round(float(self.robot_age_s), 4)
         if self.imu:
             d["imu"] = self.imu
         if self.em:

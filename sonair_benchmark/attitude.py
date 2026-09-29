@@ -409,6 +409,49 @@ def _median(vals):
     return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
 
 
+class StillnessWatch:
+    """
+    How much one g varies with which way up the unit is.
+
+    An accelerometer at rest reads one g in every orientation, and this one
+    does not: over a two-minute scan the carrier's part read 8.31 to 10.09
+    m/s^2 on samples where it was demonstrably still, and the value tracked
+    attitude. That is a per-axis scale error, it leaks gravity into
+    `linear_accel` as a function of pose, and it looks exactly like a
+    pose-dependent sim-to-real gap.
+
+    Nothing here corrects it -- correcting it needs six static faces and
+    `accel_cal` does that. This only measures the symptom continuously, from
+    whatever the unit is already doing, so the operator is told the part needs
+    calibrating instead of discovering it in the analysis afterwards.
+    """
+
+    STILL_RATE_DEG_S = 1.5      # below this the unit is not turning
+    KEEP = 4000
+
+    def __init__(self):
+        self.samples: deque = deque(maxlen=self.KEEP)
+
+    def feed(self, accel, gyro_deg_s) -> None:
+        if accel is None or gyro_deg_s is None or gyro_deg_s > self.STILL_RATE_DEG_S:
+            return
+        n = math.sqrt(sum(float(v) * float(v) for v in accel))
+        if n > 1e-6:
+            self.samples.append(n)
+
+    def status(self) -> dict:
+        if len(self.samples) < 200:
+            return {"accel_scale_spread_pct": None, "accel_still_samples":
+                    len(self.samples)}
+        lo, hi = min(self.samples), max(self.samples)
+        spread = 100.0 * (hi - lo) / GRAVITY
+        return {
+            "accel_scale_spread_pct": round(spread, 2),
+            "accel_still_median": round(_median(self.samples), 4),
+            "accel_still_samples": len(self.samples),
+        }
+
+
 class AttitudeTracker:
     """
     One per inertial unit. Feed it whatever the unit reports; it fills in what
@@ -434,6 +477,11 @@ class AttitudeTracker:
         # degree orientation error and 1.9 m/s^2 of fictitious linear
         # acceleration on a stationary arm.
         self.convention = QuatConvention(quat_convention)
+        # Measured continuously, corrected nowhere: see StillnessWatch.
+        self.stillness = StillnessWatch()
+        # The six-face correction, when one has been made for this unit. Handed
+        # in rather than loaded here, so this module keeps no file access.
+        self.accel_cal = None
         self.seeded = False
         self.t_last: float | None = None
         self.n = 0
@@ -462,6 +510,11 @@ class AttitudeTracker:
         accel = rec.get("accel")
         gyro = rec.get("gyro")
         dev_q = rec.get("quat")
+        if accel and self.accel_cal and self.accel_cal.get("ok"):
+            b = self.accel_cal["bias"]
+            sc = self.accel_cal["scale"]
+            accel = [(float(accel[i]) - b[i]) / sc[i] for i in range(3)]
+            rec = {**rec, "accel": accel}
         # A source that has not yet established what units its gyroscope
         # reports in marks its rows. Integrating those would be integrating a
         # number whose scale is unknown, so the gyro is ignored until the
@@ -539,6 +592,10 @@ class AttitudeTracker:
             self.quat = list(self.est_quat)
             self.quat_source = "estimated"
 
+        if accel and gyro:
+            self.stillness.feed(accel, math.degrees(
+                math.sqrt(sum(float(v) * float(v) for v in gyro))))
+
         euler = q_to_euler_deg(self.quat)
         out = {
             "quat": [round(v, 6) for v in self.quat],
@@ -586,4 +643,7 @@ class AttitudeTracker:
                 "sensor_clock_ok": self.sensor_clock_ok,
                 "clock_jumps": self.n_clock_jumps,
                 "seeded": self.seeded,
+                "accel_calibrated": bool(self.accel_cal
+                                         and self.accel_cal.get("ok")),
+                **self.stillness.status(),
                 **self.convention.status(), **self.bias.status()}

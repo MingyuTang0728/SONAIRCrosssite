@@ -136,6 +136,41 @@ def preflight(ctx, requires=None) -> dict:
                             f"{rate:.0f} readings a second from "
                             f"{ctx.robot_host()}."))
 
+    # --- is the robot being read properly, or merely at all? ------------
+    #
+    # Blocking, and it is the check this file most needed. A two-minute arc
+    # scan was recorded against the FALLBACK interface on port 30003 because
+    # RTDE would not start and nothing said so: the console showed a healthy
+    # link, pre-flight passed, the run file filled up. Afterwards the data
+    # showed the robot state refreshing for five seconds in every nineteen --
+    # 88% of the rows were a repeat of a stale state, joints jumped up to 52
+    # degrees when it caught up, and only 16% of the run carried anything
+    # fresh. Every one of those numbers was invisible while it was happening.
+    #
+    # "Connected" was never the right question. WHICH INTERFACE is.
+    health = ctx.robot_health() or {}
+    degraded = health.get("degraded") or ""
+    if ctx.robot_enabled() and degraded:
+        checks.append(Check("robot_interface", "Robot interface", "fail",
+                            (degraded[:1].upper() + degraded[1:])
+                            + ". RTDE is the only interface that carries the "
+                              "full field set at a steady rate; the fallback "
+                              "gives a fraction of the fields and, on this "
+                              "cell, five seconds of data in every nineteen. "
+                              "Recording a campaign on it produces run files "
+                              "that look complete and are mostly one stale "
+                              "state repeated. Check that nothing else holds "
+                              "port 30004 — another copy of this agent, or a "
+                              "program left running — then reconnect.",
+                            blocking="robot" in requires))
+    elif ctx.robot_enabled():
+        nf = len(health.get("fields") or [])
+        dropped = health.get("dropped_fields") or []
+        checks.append(Check("robot_interface", "Robot interface", "pass",
+                            f"RTDE on port 30004, {nf} fields"
+                            + (f" ({len(dropped)} the controller does not have)"
+                               if dropped else "") + "."))
+
     mode = str(st.get("robot_mode_text") or "").upper()
     safety = str(st.get("safety_mode_text") or "").upper()
     if mode and mode not in ("RUNNING", "IDLE"):
@@ -305,6 +340,41 @@ def preflight(ctx, requires=None) -> dict:
     else:
         checks.append(Check("carrier", "Carrier described", "pass",
                             _carrier_words(car)))
+
+    # --- does one g read as one g, whichever way up? --------------------
+    #
+    # A warning rather than a gate. An uncalibrated accelerometer still gives
+    # usable orientation and angular rate; what it corrupts is acceleration and
+    # the gravity removal that produces `linear_accel`, and it corrupts them as
+    # a function of POSE -- which looks like a pose-dependent sim-to-real gap
+    # and survives averaging. Worth stopping a campaign for once it is known,
+    # not worth blocking a bring-up over.
+    worst = None
+    for u, v in live.items():
+        sp = v.get("accel_scale_spread_pct")
+        if isinstance(sp, (int, float)) and (worst is None or sp > worst[1]):
+            worst = (u, sp, bool(v.get("accel_calibrated")))
+    if worst and worst[1] > 3.0:
+        checks.append(Check("accel_scale", "Accelerometer scale", "warn",
+                            f"On {worst[0]}, one g reads over a range of "
+                            f"{worst[1]:.1f}% of g depending on which way up "
+                            f"the carrier is"
+                            + (" — and it is already calibrated, so the "
+                               "calibration no longer fits; redo it"
+                               if worst[2] else
+                               ", which is a per-axis scale error and is not "
+                               "calibrated out") +
+                            ". It leaks gravity into the acceleration channel "
+                            "as a function of pose, which is indistinguishable "
+                            "from a pose-dependent gap afterwards. Run the "
+                            "six-face calibration: rest the carrier on each of "
+                            "its six sides for a few seconds each.",
+                            blocking=False))
+    elif worst:
+        checks.append(Check("accel_scale", "Accelerometer scale", "pass",
+                            f"one g reads to within {worst[1]:.1f}% of g "
+                            f"whichever way up {worst[0]} is"
+                            + (", calibrated" if worst[2] else "")))
 
     # --- is time real on every channel? --------------------------------
     clk = ctx.clock_status() or {}
@@ -1260,6 +1330,12 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx,
         "cell": {
             "robot": "UR5e",
             "robot_host": ctx.robot_host(),
+            # WHICH INTERFACE, and how well it was working. The manifest used
+            # to say "UR5e" and stop, so a dataset recorded over the degraded
+            # fallback interface was indistinguishable from a good one until
+            # somebody analysed the files. Recorded here, with the reason RTDE
+            # was not used when it was not.
+            "robot_link": _robot_link(ctx),
             "camera": ctx.camera_info(),
             "inertial": ctx.imu_status(),
             # The payload the simulated twin has to be given. Recorded at the
@@ -1364,6 +1440,29 @@ def export_dataset(name: str, *, out_root, runs_dir, imu_dir, ctx,
                      f"definitions and the clock they are all on.")}
 
 
+def _robot_link(ctx) -> dict:
+    h = ctx.robot_health() or {}
+    return {
+        "interface": ("RTDE, port 30004" if h.get("source") == "rtde"
+                      else "primary, port 30003 (FALLBACK)"
+                      if h.get("source") else "none"),
+        "source": h.get("source"),
+        "rate_hz": h.get("rate_hz"),
+        "fields": len(h.get("fields") or []),
+        "controller_version": h.get("controller_version"),
+        "reconnects": h.get("reconnects"),
+        "errors": h.get("errors"),
+        "rtde_unavailable_reason": h.get("rtde_unavailable_reason") or "",
+        "degraded": h.get("degraded") or "",
+        "warning": (
+            "" if not (h.get("degraded") or "") else
+            "These runs were recorded over the fallback interface, which "
+            "carries a fraction of the fields and does not stream steadily. "
+            "Check `measured` for how much of each run holds fresh robot "
+            "state before using any of it."),
+    }
+
+
 def _carrier_words(car: dict) -> str:
     m = float(car.get("carrier_mass_kg") or 0.0)
     com = car.get("carrier_com_m") or [0.0, 0.0, 0.0]
@@ -1394,6 +1493,8 @@ def _audit_runs(runs_dir) -> dict:
         declared, ts, with_target = None, [], 0
         labelled_vel, peak_qd, held = None, 0.0, 0.0
         qd_hist = []
+        ages, jumps = [], []
+        last_q, repeats, n_q = None, 0, 0
         try:
             with f.open(encoding="utf-8") as fh:
                 for i, line in enumerate(fh):
@@ -1422,6 +1523,19 @@ def _audit_runs(runs_dir) -> dict:
                     # mislabelled condition cell that nothing downstream can
                     # detect, which is the one defect that silently invalidates
                     # a whole campaign rather than one run.
+                    if isinstance(row.get("robot_age_s"), (int, float)):
+                        ages.append(float(row["robot_age_s"]))
+                    qv = row.get("q")
+                    if isinstance(qv, list):
+                        qt = tuple(qv)
+                        if qt == last_q:
+                            repeats += 1
+                        else:
+                            if last_q is not None:
+                                jumps.append(max(abs(a - b)
+                                                 for a, b in zip(qt, last_q)))
+                            last_q = qt
+                        n_q += 1
                     tqd = row.get("target_qd")
                     if isinstance(tqd, list) and tqd and isinstance(t, (int, float)):
                         w = max(abs(float(v)) for v in tqd)
@@ -1500,6 +1614,37 @@ def _audit_runs(runs_dir) -> dict:
                     f"down, not a cruise, so this cell is not really distinct "
                     f"from a slower one. Give the move room (plateau_s) and "
                     f"re-record")
+        # IS THE ROBOT STATE IN THIS FILE ACTUALLY MOVING?
+        #
+        # A stalled link does not produce an empty file, it produces a full one
+        # in which the same reading is written over and over. Every row is
+        # well-formed; the trajectory is a staircase. This is measured from the
+        # file because it cannot be seen in it.
+        if n_q:
+            frac = repeats / n_q
+            block["repeated_robot_state_frac"] = round(frac, 4)
+            block["distinct_robot_states"] = n_q - repeats
+            if jumps:
+                block["worst_joint_jump_deg"] = round(math.degrees(max(jumps)), 2)
+            if frac > 0.25:
+                notes.append(
+                    f"{100 * frac:.0f}% of this run's rows repeat the previous "
+                    f"row's robot state, and when it does change the joints "
+                    f"jump by up to "
+                    f"{math.degrees(max(jumps)) if jumps else 0:.0f} degrees. "
+                    f"The robot link was stalling: this file holds "
+                    f"{n_q - repeats} real robot readings wearing the shape of "
+                    f"{n_q} samples. Do not measure a gap against it — check "
+                    f"the robot is on RTDE and re-record")
+        if ages:
+            block["robot_age_median_s"] = round(st.median(ages), 4)
+            block["robot_age_p95_s"] = round(sorted(ages)[int(.95 * len(ages))], 4)
+            block["robot_age_max_s"] = round(max(ages), 3)
+            if st.median(ages) > 0.05:
+                notes.append(
+                    f"the robot reading in a typical row of this run was "
+                    f"{st.median(ages) * 1000:.0f} ms old when it was written, "
+                    f"and the worst was {max(ages):.1f} s")
         block["notes"] = notes
         out[f.name] = block
     return out

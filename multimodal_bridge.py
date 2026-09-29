@@ -1612,7 +1612,13 @@ class _CellContext:
 
     def robot_health(self) -> dict:
         st = (ur_bridge_ext.UR.status() if _HAS_EXT else {}) or {}
-        return st.get("health", {}) or {}
+        h = dict(st.get("health", {}) or {})
+        # `degraded` sits beside the health block rather than inside it, and
+        # the gate that refuses to record on a fallback interface reads it from
+        # here, so it has to be carried across.
+        if st.get("degraded") is not None:
+            h["degraded"] = st.get("degraded")
+        return h
 
     def robot_host(self) -> str:
         return robot_host()
@@ -2478,6 +2484,20 @@ async def main():
                 q = st.get("actual_q")
                 pose = st.get("actual_TCP_pose")
                 if q and pose:
+                    # HOW OLD THIS READING IS, carried with it.
+                    #
+                    # The recorder samples on a fixed grid and takes whatever
+                    # the link last published. If the link stalls, it takes the
+                    # same state again, and again, and the run file fills with
+                    # rows that are individually well-formed and collectively a
+                    # single frozen instant. That happened: 88% of a two-minute
+                    # arc scan was a repeat of a stale state, with joints
+                    # jumping 52 degrees whenever the link caught up, and
+                    # nothing in the file said so. An age costs one number a
+                    # row and makes it impossible to miss.
+                    mono = st.get("_mono")
+                    age = (time.perf_counter() - float(mono)) \
+                        if isinstance(mono, (int, float)) else None
                     return {
                         "q": list(q),
                         "tcp": list(pose),
@@ -2486,6 +2506,7 @@ async def main():
                         "target_qd": _seq(st.get("target_qd")),
                         "target_moment": _seq(st.get("target_moment")),
                         "speed_scaling": _num(st.get("speed_scaling")),
+                        "robot_age_s": round(age, 4) if age is not None else None,
                     }
             with data_lock:
                 return {"q": list(global_actual_q), "tcp": list(global_tcp_pose)}

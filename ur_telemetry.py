@@ -208,11 +208,28 @@ class RTDEClient:
         # body: recipe id (1 byte) + comma-separated granted types
         types = body[1:].decode("utf-8").split(",")
         granted = []
+        self.dropped = []
         for (name, _want), got in zip(recipe, types):
             if got == "NOT_FOUND":
                 log.warning("RTDE field not available on this controller: %s", name)
+                self.dropped.append((name, "not available on this controller"))
+                continue
+            if got not in _FMT:
+                # A type this parser cannot unpack costs THAT FIELD, not the
+                # whole stream. Building the format string straight from the
+                # granted types meant one unfamiliar type raised KeyError,
+                # RTDE was abandoned, and the console fell back to the primary
+                # interface -- which is a far worse stream and said nothing.
+                # Asking for more fields must never be able to cost the link.
+                log.warning("RTDE field %s has type %s, which this parser does "
+                            "not know; dropping the field and carrying on",
+                            name, got)
+                self.dropped.append((name, f"unsupported type {got}"))
                 continue
             granted.append((name, got))
+        if not granted:
+            raise ConnectionError(
+                "the controller granted none of the requested RTDE fields")
         self.recipe = granted
         self._unpack_fmt = ">" + "".join(_FMT[t][0] for _n, t in granted)
         self._unpack_size = sum(_FMT[t][1] for _n, t in granted)
@@ -338,6 +355,28 @@ class TelemetryHealth:
     last_error: str = ""
     fields: list = field(default_factory=list)
     rtde_unavailable_reason: str = ""
+    reconnects: int = 0
+    dropped_fields: list = field(default_factory=list)
+
+    def degraded(self) -> str:
+        """
+        Why this link is not good enough to record a campaign on, or "".
+
+        The primary interface is a FALLBACK, not an alternative. It carries a
+        fraction of the fields, has no version negotiation, and on the cell
+        that exposed this it delivered five seconds in every nineteen. A
+        campaign was recorded on it anyway, because nothing anywhere said which
+        interface was in use -- the dataset manifest recorded the robot as the
+        string "UR5e" and left it there.
+        """
+        if not self.connected:
+            return "the robot link is not connected"
+        if self.source != "rtde":
+            why = self.rtde_unavailable_reason or "no reason recorded"
+            return (f"the robot is being read over the FALLBACK interface on "
+                    f"port 30003, not RTDE on 30004, because RTDE would not "
+                    f"start: {why}")
+        return ""
 
 
 class URTelemetry:
@@ -348,6 +387,9 @@ class URTelemetry:
     mid-session must not require the operator to restart the agent, because
     during a data campaign that means losing the run you were in the middle of.
     """
+
+    # How long to wait before trying RTDE again once it has refused.
+    RTDE_RETRY_S = 20.0
 
     def __init__(self, host: str, frequency: float = 125.0, prefer_rtde: bool = True):
         self.host = host
@@ -376,7 +418,8 @@ class URTelemetry:
 
     def status(self) -> dict:
         with self._lock:
-            return {"health": asdict(self.health), "has_state": bool(self._state)}
+            return {"health": asdict(self.health), "has_state": bool(self._state),
+                    "degraded": self.health.degraded()}
 
     # --- internals -----------------------------------------------------------
 
@@ -414,11 +457,20 @@ class URTelemetry:
 
     def _loop(self) -> None:
         backoff = 1.0
+        rtde_next = 0.0
         while not self._stop.is_set():
             ok = False
+            started = time.monotonic()
+            before = self.health.packets
             try:
-                if self.prefer_rtde:
+                # RTDE is retried on a slower schedule once it has been shown
+                # to fail. Attempting it on EVERY reconnect cost several
+                # seconds of connect-and-refuse each time, and those seconds
+                # were silence on the only working stream.
+                if self.prefer_rtde and time.monotonic() >= rtde_next:
                     ok = self._run_rtde()
+                    if not ok:
+                        rtde_next = time.monotonic() + self.RTDE_RETRY_S
                 if not ok and not self._stop.is_set():
                     ok = self._run_primary()
             except Exception as e:                       # noqa: BLE001
@@ -431,8 +483,19 @@ class URTelemetry:
             with self._lock:
                 self.health.connected = False
                 self.health.source = "none"
+                self.health.reconnects += 1
+            # A stream that WAS delivering and then dropped is a hiccup, and
+            # the right answer is to reconnect at once. Doubling the wait to
+            # ten seconds is for a link that was never there -- applied to a
+            # working one it turned a momentary drop into a fourteen second
+            # hole, and a campaign came back with fresh robot state in 16% of
+            # its samples because of exactly that.
+            delivered = (self.health.packets - before) > 50 and \
+                (time.monotonic() - started) > 1.0
+            if delivered:
+                backoff = 0.2
             time.sleep(backoff)
-            backoff = min(backoff * 2, 10.0) if not ok else 1.0
+            backoff = 0.2 if delivered else min(backoff * 2, 10.0)
 
     def _run_rtde(self) -> bool:
         client = RTDEClient(self.host, RTDE_PORT, self.frequency)
@@ -454,6 +517,7 @@ class URTelemetry:
             self.health.connected = True
             self.health.controller_version = client.controller_version
             self.health.fields = [n for n, _ in granted]
+            self.health.dropped_fields = list(getattr(client, "dropped", []))
             self.health.rtde_unavailable_reason = ""
         log.info("RTDE streaming %d fields at %.0f Hz (controller %s)",
                  len(granted), self.frequency, client.controller_version or "unknown")
@@ -547,6 +611,11 @@ def decorate(raw: dict, source: str) -> dict:
     out = dict(raw)
     out["_source"] = source
     out["_host_time"] = time.time()
+    # A monotonic stamp as well as a wall one. "How old is this state" has to
+    # survive an NTP correction, and it is the number that tells a recorder
+    # whether it is about to write a fresh reading or the same stale one for
+    # the four hundredth time.
+    out["_mono"] = time.perf_counter()
 
     mode = raw.get("robot_mode")
     if mode is not None:
