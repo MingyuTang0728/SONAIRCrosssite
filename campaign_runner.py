@@ -68,7 +68,14 @@ ELBOW = 2
 # amplitude, and nothing could separate them (pilot sessions 1 and 2). Every
 # speed now travels the same 45 deg, and the acceleration is raised to
 # 3 rad/s^2 so that even 0.9 rad/s still cruises for over half a second.
-PROTOCOL = 2
+#
+# PROTOCOL 3 (contour only): the sinusoid is stepped once per 2 ms control
+# tick instead of every 8 ms, which gave a staircase commanded acceleration
+# and motor currents that two identical runs could not reproduce. Point-to-
+# point and stop-start are unchanged, so their protocol-2 runs still count;
+# contour runs from before protocol 3 are recorded again.
+PROTOCOL = 3
+MIN_PROTOCOL = {"contour": 3}   # per trajectory type; anything else: 2
 PTP_AMP_DEG = 45.0       # elbow travel out (and back), every speed
 PTP_ACCEL = 3.0          # rad/s^2
 PTP_TURN_S = 0.5         # pause at the turn, timed by the controller
@@ -193,7 +200,20 @@ def done_ids(state: dict | None) -> set:
     it again.
     """
     return {k for k, v in (state or {}).get("done", {}).items()
-            if int((v or {}).get("protocol", 1)) == PROTOCOL}
+            if _current(k, v)}
+
+
+def _traj_of(run_id: str) -> str:
+    for tt in ("point_to_point", "contour", "stop_start"):
+        if f"_{tt}_" in run_id:
+            return tt
+    return ""
+
+
+def _current(run_id: str, entry) -> bool:
+    """Was this run recorded under a protocol its trajectory still accepts?"""
+    need = MIN_PROTOCOL.get(_traj_of(run_id), 2)
+    return int((entry or {}).get("protocol", 1)) >= need
 
 
 def bend_problem(config: str, q) -> str:
@@ -687,7 +707,7 @@ def build_job(session: int, state: dict, state_path=STATE_PATH):
         key = r.cell_key()
         steps += [
             {"kind": "goto_joints", "q": list(cfg["q"]), "speed": 0.4,
-             "label": r.arm_config},
+             "label": r.arm_config, "run_start": True},
             {"kind": "dwell", "seconds": 1.0},
             {"kind": "zero_ft"},
             {"kind": "record_start", "run_id_exact": r.run_id,
@@ -755,8 +775,8 @@ def progress(state: dict) -> dict:
     pilot = len(state.get("done", {})) - len(done)
     return {"planned": len(runs), "done": len({r.run_id for r in runs} & done),
             "protocol": PROTOCOL, "earlier_protocol_runs": pilot,
-            "rejected": sum(1 for v in state.get("rejected", {}).values()
-                            if int((v or {}).get("protocol", 1)) == PROTOCOL),
+            "rejected": sum(1 for k, v in state.get("rejected", {}).items()
+                            if _current(k, v)),
             "cells": len({r.cell_key() for r in runs}),
             "held_out_cells": len(held),
             "sessions": {str(k): v for k, v in sorted(by_session.items())},

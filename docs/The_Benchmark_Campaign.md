@@ -42,6 +42,24 @@ are then timed by the controller's own `sleep()`, not by how quickly the
 agent notices that the arm has arrived. The wrist force sensor is zeroed at
 the start pose before every run.
 
+**Protocol 3 (contour only).** Session 1 showed that the contour's commanded
+acceleration was a staircase. The velocity was stepped every 8 ms, so the
+controller reached each step at the full `speedj` acceleration and then
+held it. A 0.9 rad/s sinusoid, whose true peak is 2.3 rad/s², was commanded
+at 5.1 rad/s². The motor current of two identical runs then differed by up
+to 1.3 A, against 0.1 A for the other two trajectory types. The sinusoid is
+now stepped once per 2 ms control tick, so the commanded acceleration is the
+sinusoid's own. The E1 excitations use the same 2 ms step. Contour runs
+recorded before protocol 3 are recorded again. Point-to-point and
+stop-start runs from protocol 2 still count.
+
+**If the IMU goes off the air,** the job pauses with the arm standing still
+and carries on by itself when the sensor is back. The bar at the top of
+every page says it is waiting, and Stop still works. A run during which the
+sensor dropped out is recorded again straight away, up to three times. The
+earlier file is kept. In Session 1 a 30 s limit on this wait ended the
+whole job.
+
 Runs recorded under protocol 1 stay in the state file as history, but they
 do not count as done: running a session records them again. A run that is
 recorded again never overwrites the earlier file. The old file is kept next

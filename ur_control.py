@@ -326,7 +326,7 @@ class URController:
         return self.script.send("\n".join(lines))
 
     def joint_sine(self, joint: int, amp: float, w: float, cycles: int,
-                   dt: float = 0.008, a: float = 5.0) -> tuple[bool, str]:
+                   dt: float = 0.002, a: float = 5.0) -> tuple[bool, str]:
         """
         One joint through q0 + amp*(1 - cos(w t)) for `cycles` periods, as a
         velocity loop running ON THE CONTROLLER.
@@ -337,6 +337,14 @@ class URController:
         profile is one short program: the controller integrates it at its
         own rate and the link only has to deliver it once. Velocity starts and
         ends at zero, and after whole cycles the joint is back where it began.
+
+        ONE STEP PER CONTROL TICK (2 ms on an e-series). With 8 ms steps the
+        controller reached each new velocity at the full `a` within the first
+        couple of milliseconds and then held it, so the commanded acceleration
+        was a staircase: 5.1 rad/s^2 peaks on a sinusoid whose true peak is
+        2.3, and the motor current of two identical runs differed by up to
+        1.3 A (Session 1). At one step per tick the per-tick change IS the
+        sinusoid's acceleration.
         """
         joint = int(joint)
         if not 0 <= joint < 6:

@@ -1378,8 +1378,12 @@ class BenchRecorder:
             # A run recorded again -- rejected, or re-recorded under a revised
             # protocol -- never overwrites the earlier file. It is kept beside
             # it under a name the dataset reader does not pick up.
-            old = path.with_name(
-                f"{path.name}.{time.strftime('%Y%m%dT%H%M%S')}.superseded")
+            stamp = time.strftime('%Y%m%dT%H%M%S')
+            old = path.with_name(f"{path.name}.{stamp}.superseded")
+            k = 1
+            while old.exists():
+                k += 1
+                old = path.with_name(f"{path.name}.{stamp}-{k}.superseded")
             try:
                 path.replace(old)
                 log.info("kept the earlier %s as %s", path.name, old.name)

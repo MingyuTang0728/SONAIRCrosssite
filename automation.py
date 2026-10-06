@@ -618,19 +618,32 @@ class Runner:
         self._clear_stale()
 
         failed = ""
+        self._run_start_i = 0
+        self._jump_to = None
+        self._retries = {}
         try:
-            for i, (iteration, params, step) in enumerate(plan):
+            i = 0
+            while i < len(plan):
+                iteration, params, step = plan[i]
                 if self._stop.is_set():
                     self._say("Stopped by the operator.", "warn")
                     break
                 with self._lock:
                     self.step_i = i + 1
                     self.current = step.get("kind", "?")
+                if step.get("run_start"):
+                    self._run_start_i = i
                 ok, detail = self._do(step, params, iteration, job)
                 if not ok:
                     failed = f"{step.get('kind')}: {detail}"
                     self._say(f"FAILED at step {i+1} — {failed}", "bad")
                     break
+                if self._jump_to is not None:
+                    # a run spoiled by an inertial dropout: record it again,
+                    # from its own first step, now that the sensor is back
+                    i, self._jump_to = self._jump_to, None
+                    continue
+                i += 1
         except Exception as e:      # noqa: BLE001
             failed = f"{type(e).__name__}: {e}"
             self._say(f"The job hit an unexpected error: {failed}", "bad")
@@ -966,8 +979,20 @@ class Runner:
             res = cr.mark(step.get("state_path") or cr.STATE_PATH,
                           step.get("run_id", ""), int(step.get("session", 0)),
                           path, audit, bucket=step.get("bucket", ""))
+            imu_only = (not res["ok"] and res["notes"] and
+                        all(n.startswith("the inertial sensor") for n in res["notes"]))
+            rid = step.get("run_id", "")
             if res["ok"]:
                 self._say(f"{step.get('run_id')}: checked and marked done.", "ok")
+            elif imu_only and self._retries.get(rid, 0) < MAX_IMU_RETRIES:
+                # The run itself was sound; the sensor dropped out during it.
+                # Wait for the sensor and record it again, rather than leaving
+                # a hole for the next session to fill.
+                self._retries[rid] = self._retries.get(rid, 0) + 1
+                self._say(f"{rid}: the inertial sensor dropped out during this "
+                          f"run, so it is recorded again as soon as the sensor "
+                          f"is back (attempt {self._retries[rid] + 1}).", "warn")
+                self._jump_to = self._run_start_i
             else:
                 self._say(f"{step.get('run_id')}: NOT marked done — "
                           + "; ".join(res["notes"])
@@ -1266,7 +1291,8 @@ class Runner:
                 if car.get(k) is not None:
                     args[k] = car[k]
             if "imu" in (job.requires or []):
-                ok, why = self._await_imu(float(step.get("imu_wait_s", 30.0)))
+                w = step.get("imu_wait_s")
+                ok, why = self._await_imu(float(w) if w is not None else None)
                 if not ok:
                     return False, why
             res = self.ctx.record_start(args)
@@ -1374,7 +1400,7 @@ class Runner:
         return any((v.get("age_s") is not None and v["age_s"] < 0.5)
                    and (v.get("rate_hz") or 0) > 1 for v in units.values())
 
-    def _await_imu(self, timeout: float) -> tuple[bool, str]:
+    def _await_imu(self, timeout: float | None) -> tuple[bool, str]:
         """
         Do not start a run while the inertial sensor is off the air.
 
@@ -1385,16 +1411,35 @@ class Runner:
         """
         if self._imu_live():
             return True, ""
-        self._say("Waiting for the inertial sensor to reconnect before "
-                  "recording…", "warn")
-        end = time.monotonic() + timeout
-        while time.monotonic() < end:
-            if self._stop.is_set():
-                return True, ""
-            if self._imu_live():
-                self._say("The inertial sensor is back; recording.", "ok")
-                return True, ""
-            time.sleep(0.25)
+        # PAUSE, DO NOT ABORT. Session 1 was ended by a 30 s limit here: the
+        # sensor went off the air between runs and the whole job stopped.
+        # The arm is standing still at the run's start pose, so waiting costs
+        # nothing; the operator is told, can see it in the progress bar, and
+        # can still press Stop.
+        self._say("Paused: the inertial sensor is not delivering. The arm is "
+                  "standing still. Check the sensor is switched on and "
+                  "charged; the job carries on by itself as soon as it is "
+                  "back, or press Stop.", "warn")
+        with self._lock:
+            before, self.current = self.current, "waiting for the inertial sensor"
+        t0 = time.monotonic()
+        nag = t0 + 60.0
+        try:
+            while timeout is None or time.monotonic() < t0 + timeout:
+                if self._stop.is_set():
+                    return True, ""
+                if self._imu_live():
+                    self._say(f"The inertial sensor is back after "
+                              f"{time.monotonic() - t0:.0f} s; carrying on.", "ok")
+                    return True, ""
+                if time.monotonic() > nag:
+                    nag += 60.0
+                    self._say(f"Still waiting for the inertial sensor "
+                              f"({time.monotonic() - t0:.0f} s).", "warn")
+                time.sleep(0.25)
+        finally:
+            with self._lock:
+                self.current = before
         return False, (f"the inertial sensor has not delivered for "
                        f"{timeout:.0f} s. Check it is switched on and charged, "
                        f"and look at the Sensors page; running this job again "
@@ -2160,6 +2205,7 @@ def _audit_runs(runs_dir, only: str | None = None) -> dict:
 # Longer than this without a new inertial reading is a dropout, not jitter:
 # about 25 samples at 100 Hz, and far beyond the bursts Bluetooth delivers in.
 IMU_GAP_S = 0.25
+MAX_IMU_RETRIES = 3     # times one run is re-recorded after an inertial dropout
 
 
 def _clock_block(ctx) -> dict:

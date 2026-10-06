@@ -2771,7 +2771,10 @@
       bar.classList.toggle("live", running);
       bar.classList.toggle("failed", st === "failed");
     }
-    if ($("rbState")) $("rbState").textContent = running ? "running a job" : st;
+    var waiting = running && /^waiting/.test(d.current || "");
+    if ($("rbState")) $("rbState").textContent = waiting
+      ? "paused — " + d.current + " (it carries on by itself)"
+      : running ? "running a job" : st;
     if ($("rbJob")) $("rbJob").textContent = d.job || "—";
     if ($("rbStep")) {
       $("rbStep").textContent = d.steps

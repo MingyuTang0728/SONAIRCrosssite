@@ -20,7 +20,7 @@ what identification benchmarks do (Weigand et al.; PACE):
 
 HOW IT RUNS. Each excitation is one URScript program on the controller: a
 loop that computes the joint velocities from the time and hands them to
-speedj every 8 ms, then stops and drives back to the start. Nothing is
+speedj every control tick (2 ms), then stops and drives back to the start. Nothing is
 streamed from this side, so the motion does not depend on the network or on
 the agent keeping up -- the same reason the campaign's sinusoid runs this way.
 
@@ -49,7 +49,10 @@ except Exception:       # noqa: BLE001
 
 import campaign_runner as cr
 
-DT = 0.008              # one controller tick at 125 Hz, the speedj period
+# One speedj step per e-series control tick. At 8 ms the controller met each
+# new velocity at full acceleration and then held it, and the commanded
+# acceleration became a staircase (see ur_control.joint_sine).
+DT = 0.002
 TAPER_S = 2.0           # velocity eased in and out over this long
 V_MAX = 0.8             # rad/s at any joint, before the cell's own limit
 A_MAX = 2.5             # rad/s^2 at any joint
@@ -73,7 +76,7 @@ LOADS = ("bare", "added")
 LOAD_WORDS = {"bare": "the carrier alone", "added": "the carrier with the added mass"}
 MIN_ADDED_KG = 0.2      # the added load must weigh at least this much more
 SCALES = (1.0, 0.7, 0.5)  # tried in turn when the full size does not fit
-CHECK_EVERY = 4         # ticks between kinematic checks (32 ms)
+CHECK_EVERY = 16        # ticks between kinematic checks (32 ms)
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +415,7 @@ def build_job(load: str, state: dict, fitted: dict, state_path=cr.STATE_PATH):
         n += 1
         steps += [
             {"kind": "goto_joints", "q": list(configs[r["arm_config"]]["q"]),
-             "speed": 0.4, "label": r["arm_config"]},
+             "speed": 0.4, "label": r["arm_config"], "run_start": True},
             {"kind": "dwell", "seconds": 1.0},
             {"kind": "zero_ft"},
             {"kind": "record_start", "run_id_exact": r["run_id"],
