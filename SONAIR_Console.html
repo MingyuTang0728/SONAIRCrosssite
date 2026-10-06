@@ -550,6 +550,197 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   background:rgba(8,12,18,.72);padding:4px 9px;border-radius:var(--r-xs);z-index:3}
 @media(max-width:1100px){.streams{grid-template-columns:1fr}
   .att{grid-template-columns:1fr}}
+
+/* ===========================================================================
+   INDUSTRIAL WORKSTATION SKIN
+   Follows high-performance HMI practice (ANSI/ISA-101): a neutral grey
+   ground, colour spent ONLY on machine state -- green running, amber
+   attention, red alarm/stop -- so a colour on screen always means something.
+   Square faceplate panels with title bars, condensed labels, monospaced
+   numbers that do not jitter as they update, and the stop and the cell's
+   state in the same place on every page.
+   =========================================================================== */
+:root{
+  --bg:#111315; --surface:#181b1e; --surface-2:#1f2327; --raised:#272c31;
+  --line:#2c3238; --line-strong:#3a4148;
+  --text:#e3e6e9; --text-2:#a2aab2; --text-3:#717a83;
+  --accent:#3f86c6; --accent-dim:#25557f;           /* selection / interaction */
+  --ok:#3daf5c; --ok-bg:rgba(61,175,92,.13);
+  --warn:#e3a428; --warn-bg:rgba(227,164,40,.13);
+  --bad:#e5484d; --bad-bg:rgba(229,72,77,.14);
+  --idle:#5d666f;
+  --panel:#1b1f23; --panel-2:#22272c;
+  --ok-text:#8fd8a2; --warn-text:#f0c870; --bad-text:#ff9b9e;
+  --focus:#f0b429;
+  --r-xs:2px; --r-sm:2px; --r-md:3px; --r-lg:3px;
+  --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --cond:"Bahnschrift","DIN Alternate","DIN 2014","Roboto Condensed","Arial Narrow",
+         "Segoe UI",sans-serif;
+  --mono:"Cascadia Mono","Consolas","SF Mono",ui-monospace,Menlo,monospace;
+}
+body{font-size:13.5px}
+
+/* ---- header: station, lamps, clock, guidance, STOP ---- */
+header.top{background:#0c0e10;border-bottom:1px solid var(--line-strong);
+  padding:0 0 0 16px;gap:16px;min-height:58px;align-items:stretch}
+header.top .brand{align-items:center;gap:11px}
+header.top .brand .mark{width:26px;height:26px;flex:none;border:2px solid var(--text-2);
+  background:linear-gradient(135deg,transparent 46%,var(--text-2) 46% 54%,transparent 54%)}
+header.top h1{font-family:var(--cond);font-size:19px;font-weight:700;letter-spacing:.16em;
+  line-height:1.05}
+header.top .sub{display:block;font-family:var(--cond);font-size:10.5px;letter-spacing:.08em;
+  color:var(--text-3);margin-top:2px}
+.lamps{gap:0;align-items:stretch;margin-left:auto;border-left:1px solid var(--line)}
+.lamp{border-radius:0;border:none;border-right:1px solid var(--line);background:transparent;
+  min-width:138px;padding:8px 14px;gap:10px}
+.lamp i{width:11px;height:11px;border-radius:1px;box-shadow:none;background:#3a4047;
+  border:1px solid #4a525a}
+.lamp.ok i{background:var(--ok);border-color:#71d58d;box-shadow:0 0 8px rgba(61,175,92,.55)}
+.lamp.warn i{background:var(--warn);border-color:#f5cd6e;box-shadow:0 0 8px rgba(227,164,40,.5)}
+.lamp.bad i{background:var(--bad);border-color:#ff8a8d;box-shadow:0 0 8px rgba(229,72,77,.55);
+  animation:lampblink 1s steps(2,start) infinite}
+@keyframes lampblink{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.lamp.bad i{animation:none}}
+.lamp .lt{font-family:var(--cond);font-size:10px;letter-spacing:.1em}
+.lamp .lv{font-family:var(--cond);font-size:13px;font-weight:600;letter-spacing:.01em}
+.hdrtools{display:flex;align-items:center;gap:10px;padding:0 14px;border-right:1px solid var(--line)}
+.clock{font-family:var(--mono);font-size:15px;color:var(--text);letter-spacing:.04em;
+  font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
+.btn.guide{padding:6px 11px;font-size:12px}
+.btn.guide.on{background:var(--accent-dim);border-color:var(--accent);color:#fff}
+header.top .estop{flex:none;align-self:stretch;min-width:118px;border:none;margin:0;
+  color:#fff;font-family:var(--cond);font-weight:700;cursor:pointer;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;
+  background:
+    linear-gradient(var(--bad),var(--bad)) padding-box,
+    repeating-linear-gradient(-45deg,#f2c230 0 8px,#141414 8px 16px) border-box;
+  border:5px solid transparent}
+header.top .estop span{font-size:21px;letter-spacing:.14em}
+header.top .estop small{font-size:10px;letter-spacing:.2em;text-transform:uppercase;
+  margin-top:3px;opacity:.9}
+header.top .estop:hover{filter:brightness(1.12)}
+header.top .estop:active{filter:brightness(.88)}
+@media(max-width:1180px){.lamp{min-width:0;padding:8px 10px} .hdrtools .clock{display:none}}
+@media(max-width:820px){
+  header.top{flex-wrap:wrap;padding:0 0 0 12px}
+  .lamps{order:3;width:100%;margin-left:0;border-left:none;border-top:1px solid var(--line)}
+  .lamp{flex:1 1 0}
+  .hdrtools{margin-left:auto}
+  header.top .estop{min-width:96px}
+}
+
+/* ---- status strip ---- */
+.runbar{background:#15181b;padding:0 16px;gap:0;min-height:34px;
+  border-bottom:1px solid var(--line-strong)}
+.runbar .rb{padding:0 14px;border-right:1px solid var(--line);align-self:stretch}
+.runbar .rb:first-child{padding-left:0}
+.runbar .rb .k{font-family:var(--cond);font-size:10px;letter-spacing:.11em}
+.runbar .rb .v{font-size:12.5px}
+.runbar .bar{height:8px;border-radius:0;margin:0 14px;background:#0c0e10;
+  border:1px solid var(--line)}
+.runbar.live{background:#13201a}
+.runbar.failed{background:#241517}
+.runbar .btn{margin-left:12px;padding:5px 12px}
+
+/* ---- rail ---- */
+nav.rail{background:#14171a;width:190px;padding:10px 0}
+nav.rail .step{border-radius:0;margin:0;padding:10px 14px;gap:11px;
+  border-left:3px solid transparent}
+nav.rail .step:hover{background:var(--surface-2)}
+nav.rail .step[aria-current="true"]{background:var(--surface-2);color:#fff;
+  border-left-color:var(--accent)}
+nav.rail .step[aria-current="true"] .n{background:var(--accent);color:#fff}
+nav.rail .step[aria-current="true"] small{color:var(--text-2)}
+nav.rail .n{border-radius:2px;font-family:var(--cond);width:22px;height:22px}
+nav.rail .lbl{font-family:var(--cond);font-size:14px;font-weight:600;letter-spacing:.02em}
+.railgroup{font-family:var(--cond);padding:14px 16px 6px;letter-spacing:.16em}
+.railfoot{margin:16px 14px 0;padding-top:10px;border-top:1px solid var(--line);
+  font-size:11px;line-height:1.45;color:var(--text-3)}
+@media(max-width:820px){nav.rail .step{border-left:none;border-bottom:3px solid transparent}
+  nav.rail .step[aria-current="true"]{border-bottom-color:var(--accent)}
+  .railfoot{display:none}}
+
+/* ---- pages and faceplate panels ---- */
+main.page{padding:18px 22px 84px}
+main.page > *{max-width:1240px}
+.page h2{font-family:var(--cond);font-size:23px;font-weight:600;letter-spacing:.02em}
+.page .lead{font-size:13px;margin-bottom:16px}
+section.block{border-radius:var(--r-lg);padding:0 16px 14px;background:var(--surface);
+  border:1px solid var(--line)}
+section.block > h3{margin:0 -16px 13px;padding:8px 14px;min-height:36px;
+  background:var(--surface-2);border-bottom:1px solid var(--line);color:var(--text-2);
+  font-family:var(--cond);font-size:12.5px;letter-spacing:.12em}
+section.block > h3 .tag{border-radius:2px;font-family:var(--mono);font-size:10.5px;
+  padding:2px 8px;background:#121417;border:1px solid var(--line-strong)}
+section.block section.block > h3{background:var(--raised)}
+.helpbtn{font:600 10.5px var(--cond);letter-spacing:.08em;text-transform:uppercase;
+  padding:3px 9px;border-radius:2px;border:1px solid var(--line-strong);
+  background:transparent;color:var(--text-3);margin-left:8px}
+section.block > h3 .tag + .helpbtn{margin-left:8px}
+section.block > h3 .helpbtn:first-of-type:not(.tag + .helpbtn){margin-left:auto}
+.helpbtn:hover{color:var(--text);border-color:var(--text-3)}
+.helpbtn.on{color:#fff;border-color:var(--accent);background:var(--accent-dim)}
+body:not(.guide) section.block:not(.showhelp) .help{display:none}
+.help.note.info,.help.hint{border-left-color:var(--accent-dim)}
+
+/* sticky section bar (Automate) */
+.subnav{position:sticky;top:-18px;z-index:5;display:flex;flex-wrap:wrap;gap:0;
+  margin:0 -22px 16px;padding:0 22px;background:#15181b;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line-strong)}
+main.page > .subnav{max-width:none}
+.subnav a{font:600 12px var(--cond);letter-spacing:.06em;color:var(--text-2);
+  text-decoration:none;padding:10px 14px;border-bottom:2px solid transparent}
+.subnav a:hover{color:#fff;border-bottom-color:var(--accent)}
+section.block[id]{scroll-margin-top:52px}
+#secJobs{scroll-margin-top:52px}
+
+/* ---- readouts ---- */
+.tile{border-radius:var(--r-md);background:#141719;padding:9px 12px}
+.tile .k{font-family:var(--cond);font-size:10.5px;letter-spacing:.1em}
+.tile .v{font-size:22px;font-weight:600}
+table.data th{font-family:var(--cond);font-size:10.5px;letter-spacing:.09em;
+  background:#15181b}
+table.data td{padding:6px 9px}
+.chk-row{background:#16191c}
+.chk-row .s{border-radius:2px;font-family:var(--cond);letter-spacing:.12em}
+
+/* ---- controls ---- */
+.btn{border-radius:var(--r-sm);font-family:var(--cond);font-size:13.5px;font-weight:600;
+  letter-spacing:.02em;padding:8px 15px;min-height:36px;background:#2a2f35;
+  border-color:#434b53;box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+.btn:hover:not(:disabled){background:#323840;border-color:#5a636c;color:#fff}
+.btn.primary{background:var(--accent);border-color:#5b9fdc}
+.btn.go{background:#2f8f4a;border-color:#4cc06b;color:#fff}
+.btn.go:hover:not(:disabled){background:#36a254;border-color:#6bd486}
+.btn.danger{background:#b9353a;border-color:#e5484d;color:#fff}
+.btn.danger:hover:not(:disabled){background:#cf3c42;border-color:#ff6b6f}
+.segb{font-family:var(--cond);font-size:13px}
+.field label{font-family:var(--cond);font-size:12.5px;font-weight:500;letter-spacing:.02em}
+.field input,.field select{border-radius:2px;background:#0e1012;height:36px}
+.field input:focus,.field select:focus{border-color:var(--accent);
+  box-shadow:0 0 0 2px rgba(63,134,198,.25)}
+.note{border-radius:2px}
+.flow .fs{border-radius:2px;font-family:var(--cond)}
+.chip{border-radius:2px}
+.card{border-radius:var(--r-lg)}
+.card h4{font-family:var(--cond);font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+.dev{border-radius:var(--r-md);background:#141719}
+.dev .ic{border-radius:2px;font:700 11px var(--cond);letter-spacing:.1em;
+  color:var(--text-2);border:1px solid var(--line-strong);background:#1c2024}
+.dev.ok .ic{color:var(--ok);border-color:var(--ok)}
+.dev.warn .ic{color:var(--warn);border-color:var(--warn)}
+.dev.bad .ic{color:var(--bad);border-color:var(--bad)}
+.dev .dt{font-family:var(--cond);font-size:14px;letter-spacing:.02em}
+
+/* a status line with nothing to say yet takes no room */
+.note.idle{display:none}
+/* the view's caption sits under its toolbar, not behind it */
+.viewport .vlabel{top:auto;bottom:9px}
+
+/* ---- jog dock ---- */
+.dock{border-radius:3px;box-shadow:0 12px 36px rgba(0,0,0,.55);border-color:#4a525a}
+.dockbar{background:#2a2f35}
+.dockbar .t{font-family:var(--cond);font-size:13px;letter-spacing:.06em;text-transform:uppercase}
 </style>
 </head>
 <body>
@@ -557,14 +748,26 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
 
 <header class="top">
   <div class="brand">
-    <h1>SONAIR Inspection Console</h1>
-    <span class="sub">UR5e &middot; RealSense &middot; IMU</span>
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>SONAIR</h1>
+      <span class="sub">Sim-to-real cell &middot; UR5e &middot; LPMS-B2 &middot; RealSense</span>
+    </div>
   </div>
   <div class="lamps">
+    <div class="lamp" id="lampAgent"><i></i><div><div class="lt">Agent</div><div class="lv" id="lampAgentV">Not connected</div></div></div>
     <div class="lamp" id="lampRobot"><i></i><div><div class="lt">Robot</div><div class="lv" id="lampRobotV">Not connected</div></div></div>
     <div class="lamp" id="lampCam"><i></i><div><div class="lt">Camera</div><div class="lv" id="lampCamV">Not connected</div></div></div>
     <div class="lamp" id="lampImu"><i></i><div><div class="lt">Motion sensor</div><div class="lv" id="lampImuV">Not connected</div></div></div>
   </div>
+  <div class="hdrtools">
+    <div class="clock" id="hdrClock" aria-label="Station time">--:--:--</div>
+    <button class="btn guide" id="btnGuide" aria-pressed="false"
+      title="Show or hide the explanations under each section">Guidance</button>
+  </div>
+  <button class="estop" id="btnEstop"
+    title="Software stop only. The physical emergency stop is the safety device.">
+    <span>STOP</span><small>robot</small></button>
 </header>
 
 <!-- ============ what the cell is doing, on every page ============ -->
@@ -604,9 +807,8 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   <button class="step" data-page="record">
     <span class="n">&#9679;</span><span><span class="lbl">Record</span><small>Capture by hand</small></span></button>
 
-  <button class="estop" id="btnEstop">STOP ROBOT</button>
-  <div class="hint" style="padding:0 4px">Software stop only. The physical
-  e-stop is the safety device.</div>
+  <div class="railfoot">STOP (top right) is a software stop. The physical
+  emergency stop is the safety device.</div>
 </nav>
 
 <!-- ==================== 1. CONNECT ==================== -->
@@ -630,11 +832,11 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   <section class="block">
     <h3>Devices</h3>
     <div class="grid g3">
-      <div class="dev" id="devRobot"><div class="ic">&#129302;</div>
+      <div class="dev" id="devRobot"><div class="ic">ARM</div>
         <div><div class="dt">Robot arm</div><div class="dd" id="devRobotD">Waiting for the agent.</div></div></div>
-      <div class="dev" id="devCam"><div class="ic">&#128247;</div>
+      <div class="dev" id="devCam"><div class="ic">CAM</div>
         <div><div class="dt">Depth camera</div><div class="dd" id="devCamD">Waiting for the agent.</div></div></div>
-      <div class="dev" id="devImu"><div class="ic">&#128336;</div>
+      <div class="dev" id="devImu"><div class="ic">IMU</div>
         <div><div class="dt">Motion sensor</div><div class="dd" id="devImuD">Waiting for the agent.</div></div></div>
     </div>
   </section>
@@ -651,7 +853,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     </div>
     <div class="note warn" id="urStartMsg">The pendant must be in <b>Remote
     Control</b>, and this PC must be on the same network as the robot.</div>
-    <div class="note info">This one address is used by <b>every</b> channel to
+    <div class="help note info">This one address is used by <b>every</b> channel to
     the robot &mdash; the live joint data, the motion commands, power and
     brake release, and the program list. They used to be able to disagree,
     which is what made half the buttons on the Robot page do nothing while
@@ -822,7 +1024,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
         </div>
       </div>
       <div class="stepgrid" id="stepGrid"></div>
-      <div class="hint">Each press moves exactly that far and stops. Use this to
+      <div class="help hint">Each press moves exactly that far and stops. Use this to
       set a position you need to repeat &mdash; the smooth pads are for getting
       roughly there quickly.</div>
     </div>
@@ -834,7 +1036,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
 
   <section class="block">
     <h3>Power &amp; recovery</h3>
-    <p class="hint" style="margin-top:0">The same buttons as the pendant's
+    <p class="help hint" style="margin-top:0">The same buttons as the pendant's
     initialisation screen. Use these when the arm is powered down, or after a
     protective stop.</p>
     <div class="row" style="margin-top:11px">
@@ -866,7 +1068,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
 
   <section class="block">
     <h3>Hand guiding</h3>
-    <p class="hint" style="margin-top:0">With this on you can push the arm
+    <p class="help hint" style="margin-top:0">With this on you can push the arm
     around by hand. It holds only while the button is held down, so letting go
     always stops it.</p>
     <div class="row" style="margin-top:11px">
@@ -987,7 +1189,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <div>
       <section class="block">
         <h3>3D scan <span class="tag" id="mvTag">not started</span></h3>
-        <p class="hint" style="margin-top:0">One view sees one side. To measure
+        <p class="help hint" style="margin-top:0">One view sees one side. To measure
         a part properly the camera has to look at it from several angles and
         the views have to be merged. Draw a box round the part, and the angles
         are worked out from its size.</p>
@@ -1183,7 +1385,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
 
   <section class="block">
     <h3>Depth processing</h3>
-    <p class="hint" style="margin-top:0">These run on the camera's output before
+    <p class="help hint" style="margin-top:0">These run on the camera's output before
     anything measures it. Fewer is usually better: filling holes invents depth
     that was never measured, which looks better on screen and measures worse.</p>
     <div class="grid g3" style="margin-top:10px">
@@ -1295,7 +1497,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
        that makes the readings mean anything. ============================= -->
   <section class="block">
     <h3>Every reading, live <span class="tag" id="imuCardsTag">waiting</span></h3>
-    <p class="hint" style="margin-top:0">The charts are drawn about twenty
+    <p class="help hint" style="margin-top:0">The charts are drawn about twenty
     times a second, which is a picture of the sensor rather than all of it.
     The file written by <b>Record every sample to a file</b> below holds every
     single reading at the sensor's own rate &mdash; that is the one to use for
@@ -1359,7 +1561,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   <!-- =============== getting it out =============== -->
   <section class="block">
     <h3>Get the data out <span class="tag" id="imuLogTag">not recording</span></h3>
-    <p class="hint" style="margin-top:0">Two different things, and the
+    <p class="help hint" style="margin-top:0">Two different things, and the
     difference matters. <b>Record every sample</b> writes each reading to a
     file as it arrives, for as long as you leave it running &mdash; use it for
     an experiment. <b>Save what is on screen</b> writes out only what is still
@@ -1381,7 +1583,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
 
   <section class="block">
     <h3>Every measurement channel</h3>
-    <p class="hint" style="margin-top:0">Channels marked <b>scored</b> count
+    <p class="help hint" style="margin-top:0">Channels marked <b>scored</b> count
     toward the benchmark: they can be measured cheaply on real hardware and
     simulated faithfully. The rest are evidence for the inspection case, not
     benchmark numbers &mdash; the distinction is deliberate.</p>
@@ -1516,9 +1718,17 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
   differ &mdash; which is the whole basis on which two numbers from them can be
   compared.</p>
 
-  <section class="block">
+    <nav class="subnav" aria-label="Sections of this page">
+    <a href="#secPreflight">1 &middot; Pre-flight</a>
+    <a href="#secFlange">2 &middot; Flange</a>
+    <a href="#secCampaign">3 &middot; Campaign (E2)</a>
+    <a href="#secE1">4 &middot; Identification (E1)</a>
+    <a href="#secJobs">5 &middot; Jobs</a>
+    <a href="#secDataset">6 &middot; Dataset</a>
+  </nav>
+  <section class="block" id="secPreflight">
     <h3>Is the cell fit to run? <span class="tag" id="pfTag">not checked</span></h3>
-    <p class="hint" style="margin-top:0">Checked before every job, and the job
+    <p class="help hint" style="margin-top:0">Checked before every job, and the job
     is <b>refused</b> rather than warned if anything here fails. A campaign
     that starts against a robot in local mode, or with no calibration loaded,
     fills a folder with files that look exactly like good ones &mdash; and
@@ -1533,10 +1743,39 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     </div>
     <div class="note info" id="pfMsg">&mdash;</div>
   </section>
-
-  <section class="block">
+  <section class="block" id="secFlange">
+    <h3>What is on the flange</h3>
+    <div class="help note info">The simulated arm's payload is built from these
+    numbers. A campaign recorded without them is compared against a simulation
+    carrying <b>nothing</b>, and afterwards that difference cannot be told apart
+    from the sim-to-real gap it contaminates. Weigh the carrier — sensor,
+    bracket, cable and all — on a kitchen scale; that is accurate enough.
+    <b>Zero is a fine answer</b> if the flange really is bare. Enter it once per
+    build; re-enter it after any refit.</div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="field wide"><label>Carrier name</label>
+        <input id="carId" value="carrier-v1"/></div>
+      <div class="field"><label>Mass on the flange (kg)</label>
+        <input id="carMass" type="number" value="0" min="0" max="5" step="0.001"/></div>
+    </div>
+    <div class="grid g3" style="margin-top:12px">
+      <div class="field"><label>Centre of mass X (mm from flange)</label>
+        <input id="carComX" type="number" value="0" step="1"/></div>
+      <div class="field"><label>Centre of mass Y (mm)</label>
+        <input id="carComY" type="number" value="0" step="1"/></div>
+      <div class="field"><label>Centre of mass Z (mm, along the tool)</label>
+        <input id="carComZ" type="number" value="0" step="1"/></div>
+    </div>
+    <div class="field wide" style="margin-top:12px"><label>Note (optional)</label>
+      <input id="carNote" placeholder="e.g. LPMS-B2 on the printed bracket, rev 2"/></div>
+    <div class="row" style="margin-top:11px">
+      <button class="btn primary" id="btnCarSave">Save the carrier</button>
+    </div>
+    <div class="note info" id="carMsg">&mdash;</div>
+  </section>
+  <section class="block" id="secCampaign">
     <h3>The benchmark campaign <span class="tag" id="campTag">&mdash;</span></h3>
-    <div class="note info">The planned campaign: 6 elbow speeds &times; 3 arm
+    <div class="help note info">The planned campaign: 6 elbow speeds &times; 3 arm
     configurations &times; 3 trajectory types = 54 conditions, 5 repeats each
     over 3 sessions. Teach the three configurations once, then run one session
     at a time. A session that stops can simply be run again &mdash; runs already
@@ -1545,7 +1784,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     the carrier is fitted, and again after the refit.</div>
 
     <h4 style="margin:16px 0 6px">Finding the three configurations</h4>
-    <p class="hint">Put the arm somewhere you know is safe &mdash; by hand with
+    <p class="help hint">Put the arm somewhere you know is safe &mdash; by hand with
     <b>Hold to hand-guide</b>, or with the pendant &mdash; then press
     <b>Suggest from here</b>. Three positions are worked out from where the arm
     is, each one checked so that every run's elbow travel keeps the tool at
@@ -1554,6 +1793,8 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <b>only while you hold the button</b>; let go and it stops at once. When it
     arrives, look at it, and if you are happy press <b>Teach here</b> for that
     row in the table below. Keep the emergency stop within reach.</p>
+    <div class="note warn">The arm moves only while you hold a button, slowly.
+    Keep the emergency stop within reach.</div>
     <div class="row" style="margin-top:8px">
       <button class="btn" id="btnCampFreedrive">Hold to hand-guide</button>
       <button class="btn" id="btnCampSuggest">Suggest from here</button>
@@ -1596,7 +1837,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
           <td><button class="btn" id="btnTeach_extended">Teach here</button></td></tr>
       </tbody>
     </table>
-    <p class="hint">Jog the arm into each configuration with the carrier clear of
+    <p class="help hint">Jog the arm into each configuration with the carrier clear of
     everything, choose which way the elbow has room to move, and press Teach
     here. The elbow travels up to about 65&deg; from the taught position in
     that direction (45&deg; for every speed), and every move is checked
@@ -1617,17 +1858,16 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <div class="note info" id="campMsg">&mdash;</div>
     <div id="campCells" style="overflow-x:auto"></div>
   </section>
-
-  <section class="block">
+  <section class="block" id="secE1">
     <h3>Identification set (E1) <span class="tag" id="e1Tag">&mdash;</span></h3>
-    <div class="note info">Training data for the people who use the benchmark:
+    <div class="help note info">Training data for the people who use the benchmark:
     every joint of the arm is moved, not only the elbow, so a simulator can be
     tuned on these runs without ever seeing the runs it is scored on. Each joint
     is swept from slow to fast in turn (about a minute each), then all six move
     together in three different patterns at each configuration. It is recorded
     twice: with the carrier alone, then with a known extra mass bolted on.
     About 20 minutes each. The three configurations above must be taught first.</div>
-    <p class="hint">Every motion is worked out and checked against the safe
+    <p class="help hint">Every motion is worked out and checked against the safe
     envelope before anything moves; one that would leave it is turned the other
     way or made smaller, and if it still does not fit it is left out and you are
     told why. The arm moves faster here than when you drive it to a position
@@ -1635,6 +1875,10 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     hand on the emergency stop</b>. For the second set: bolt on the mass, weigh
     carrier and mass together, save that under <b>What is on the flange</b>,
     and set the same payload on the pendant.</p>
+    <div class="note warn">Faster than guided moves (up to 0.8 rad/s at one
+    joint). Watch the first run with a hand on the emergency stop. For Set 2,
+    weigh carrier + mass, save it under <b>What is on the flange</b> and set
+    the same payload on the pendant.</div>
     <div class="row" style="margin-top:8px;align-items:flex-end">
       <div class="field"><label>What is on the flange</label>
         <select id="e1Load">
@@ -1648,38 +1892,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <div id="e1Rows" style="overflow-x:auto"></div>
   </section>
 
-  <section class="block">
-    <h3>What is on the flange</h3>
-    <div class="note info">The simulated arm's payload is built from these
-    numbers. A campaign recorded without them is compared against a simulation
-    carrying <b>nothing</b>, and afterwards that difference cannot be told apart
-    from the sim-to-real gap it contaminates. Weigh the carrier — sensor,
-    bracket, cable and all — on a kitchen scale; that is accurate enough.
-    <b>Zero is a fine answer</b> if the flange really is bare. Enter it once per
-    build; re-enter it after any refit.</div>
-    <div class="grid g2" style="margin-top:12px">
-      <div class="field wide"><label>Carrier name</label>
-        <input id="carId" value="carrier-v1"/></div>
-      <div class="field"><label>Mass on the flange (kg)</label>
-        <input id="carMass" type="number" value="0" min="0" max="5" step="0.001"/></div>
-    </div>
-    <div class="grid g3" style="margin-top:12px">
-      <div class="field"><label>Centre of mass X (mm from flange)</label>
-        <input id="carComX" type="number" value="0" step="1"/></div>
-      <div class="field"><label>Centre of mass Y (mm)</label>
-        <input id="carComY" type="number" value="0" step="1"/></div>
-      <div class="field"><label>Centre of mass Z (mm, along the tool)</label>
-        <input id="carComZ" type="number" value="0" step="1"/></div>
-    </div>
-    <div class="field wide" style="margin-top:12px"><label>Note (optional)</label>
-      <input id="carNote" placeholder="e.g. LPMS-B2 on the printed bracket, rev 2"/></div>
-    <div class="row" style="margin-top:11px">
-      <button class="btn primary" id="btnCarSave">Save the carrier</button>
-    </div>
-    <div class="note info" id="carMsg">&mdash;</div>
-  </section>
-
-  <div class="grid g2" style="align-items:start">
+  <div class="grid g2" id="secJobs" style="align-items:start">
     <section class="block" style="margin:0">
       <h3>The job</h3>
       <div class="grid g2">
@@ -1734,9 +1947,9 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     </section>
   </div>
 
-  <section class="block">
+  <section class="block" id="secDataset">
     <h3>The dataset <span class="tag" id="dsTag">&mdash;</span></h3>
-    <p class="hint" style="margin-top:0">One self-describing folder: the run
+    <p class="help hint" style="margin-top:0">One self-describing folder: the run
     files, every inertial sample, every packet the robot sent, the hand-eye
     calibration these runs depend on, the camera intrinsics, the clock the
     timestamps are on, and which channels are scored. A dataset that needs the
@@ -1834,7 +2047,7 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <div class="dockxyz">
       <div id="dockX">X &mdash;</div><div id="dockY">Y &mdash;</div><div id="dockZ">Z &mdash;</div>
     </div>
-    <div class="hint" style="margin-top:8px">Same controls as the Robot page.
+    <div class="help hint" style="margin-top:8px">Same controls as the Robot page.
     Keyboard control, when it is switched on there, works on every page too.</div>
   </div>
 </aside>

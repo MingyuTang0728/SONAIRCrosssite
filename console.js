@@ -49,6 +49,80 @@
     return false;
   }
 
+  /* -------------------------------------------------- station chrome ---- */
+  // The clock: a workstation shows the time, so a log line or a run name can
+  // be matched to the moment without leaving the screen.
+  (function clock() {
+    var el = $("hdrClock");
+    if (!el) return;
+    function tick() {
+      var d = new Date();
+      el.textContent = [d.getHours(), d.getMinutes(), d.getSeconds()]
+        .map(function (n) { return (n < 10 ? "0" : "") + n; }).join(":");
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+
+  // GUIDANCE. Each section's long explanation is folded away behind its own
+  // Help button, so a page reads as controls and readings rather than as
+  // paragraphs. The Guidance switch in the header unfolds all of them -- for
+  // a first shift on the cell. Safety warnings are never folded.
+  (function guidance() {
+    var KEY = "sonair.guidance";
+    var on = false;
+    try { on = localStorage.getItem(KEY) === "1"; } catch (e) {}
+    function apply() {
+      document.body.classList.toggle("guide", on);
+      var b = $("btnGuide");
+      if (b) { b.setAttribute("aria-pressed", on ? "true" : "false");
+               b.classList.toggle("on", on); }
+    }
+    var b = $("btnGuide");
+    if (b) b.addEventListener("click", function () {
+      on = !on;
+      try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (e) {}
+      apply();
+    });
+    apply();
+    document.querySelectorAll("section.block").forEach(function (sec) {
+      var h = sec.querySelector(":scope > h3");
+      var mine = Array.prototype.filter.call(sec.querySelectorAll(".help"),
+        function (el) { return el.closest("section.block") === sec; });
+      if (!h || !mine.length) return;
+      var hb = document.createElement("button");
+      hb.type = "button";
+      hb.className = "helpbtn";
+      hb.textContent = "Help";
+      hb.title = "Show the explanation for this section";
+      hb.setAttribute("aria-expanded", "false");
+      hb.addEventListener("click", function () {
+        var open = sec.classList.toggle("showhelp");
+        hb.setAttribute("aria-expanded", open ? "true" : "false");
+        hb.classList.toggle("on", open);
+      });
+      h.appendChild(hb);
+    });
+  })();
+
+  // Status lines that have nothing to report yet ("—") are folded away until
+  // something writes to them, however it writes.
+  (function idleNotes() {
+    function empty(el) { return /^[\s\u2014-]*$/.test(el.textContent); }
+    var mo = new MutationObserver(function (recs) {
+      recs.forEach(function (r) {
+        var el = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+        el = el && el.closest(".note[id]");
+        if (el) el.classList.toggle("idle", empty(el));
+      });
+    });
+    document.querySelectorAll(".note[id]").forEach(function (el) {
+      if (empty(el)) el.classList.add("idle");
+      mo.observe(el, { childList: true, characterData: true, subtree: true,
+                       attributes: true, attributeFilter: ["class"] });
+    });
+  })();
+
   /* -------------------------------------------------- navigation --------- */
   var PAGES = ["connect", "robot", "camera", "sensors", "calib", "auto", "inspect", "record"];
   var dockOffered = false;
@@ -99,6 +173,7 @@
 
     ws.onopen = function () {
       say("connMsg", "Connected to the host agent.", "ok");
+      lamp("lampAgent", "lampAgentV", "ok", "Connected");
       reconnectAt = 1000;
       state.lastFault = "";
       send({ type: "agent_faults" });
@@ -130,6 +205,7 @@
       say("connMsg", "Disconnected from the host agent. " + why
         + (state.lastFault ? " The last thing the agent reported was: "
            + esc(state.lastFault) : ""), "bad");
+      lamp("lampAgent", "lampAgentV", "bad", "Disconnected");
       lamp("lampRobot", "lampRobotV", "", "Not connected");
       lamp("lampCam", "lampCamV", "", "Not connected");
       lamp("lampImu", "lampImuV", "", "Not connected");
