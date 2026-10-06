@@ -15,7 +15,7 @@ FusionHub 是 LP-Research 的产品，但它是一个融合中间件（用于 VR
 在 PyCharm 里运行 **`0 - Install OpenZen + LPMS-Control`**（或在命令行执行
 `python install_openzen.py --lpms-control`）。它会：
 1. 下载 LP-Research 官方的 OpenZen（Python 3.11 版），以及 python.org 官方的嵌入式 Python 3.11。
-   两者只放在 `vendor/openzen/`，**不改动你现有的 Python 3.12，也不改系统**；
+   两者放在 `%LOCALAPPDATA%\SONAIR\openzen`（这台电脑上所有项目副本共用），**不改动你现有的 Python 3.12，也不改系统**；
 2. 启动一次 OpenZen，确认能加载；
 3. 下载 LPMS-Control（OpenMAT 1.3.5）并打开它的安装程序，按提示安装即可。
 
@@ -59,7 +59,7 @@ Sensors 页 → 连接方式选 **"LPMS sensor directly over Bluetooth (OpenZen)
 
 ## 技术说明
 
-- OpenZen 在一个独立进程里运行（`openzen_bridge.py`），使用 `vendor/openzen` 中的 Python 3.11。
+- OpenZen 在一个独立进程里运行（`openzen_bridge.py`），使用 `%LOCALAPPDATA%\SONAIR\openzen` 中的 Python 3.11（旧位置 `vendor/openzen` 也仍然可用）。
   这和机器人数据的读取方式一样：蓝牙驱动即使卡住，也不会拖慢 agent。
 - 时间戳：取过去 10 秒内"到达时间 − 传感器时间"的最小值（也就是延迟最小的那次传送），
   用它把传感器时钟映射到电脑时钟上。这样能跟上两个时钟之间的缓慢漂移，并且映射后的时间

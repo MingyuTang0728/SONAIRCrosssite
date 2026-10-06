@@ -1,6 +1,7 @@
 """
 install_openzen.py -- put LP-Research's OpenZen, and a Python it runs on, in
-vendor/openzen/. Run it once, with any Python, on the PC the sensor talks to:
+%LOCALAPPDATA%\SONAIR\openzen (shared by every copy of the project). Run it once,
+with any Python, on the PC the sensor talks to:
 
     python install_openzen.py
 
@@ -38,7 +39,10 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-HOME = HERE / "vendor" / "openzen"
+# Per user, not per project folder: every copy of the project on this PC (and
+# the agent, whichever copy it is started from) then finds the same install.
+HOME = (Path(os.environ["LOCALAPPDATA"]) / "SONAIR" / "openzen"
+        if os.environ.get("LOCALAPPDATA") else HERE / "vendor" / "openzen")
 PY_URL = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
 OZ_URL = ("https://bitbucket.org/lpresearch/openzen/downloads/"
           "OpenZen-Windows-x64-Python-3.11.zip")

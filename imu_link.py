@@ -1838,6 +1838,20 @@ HERE = Path(__file__).resolve().parent
 OPENZEN_HOME = HERE / "vendor" / "openzen"
 
 
+def openzen_homes() -> list:
+    """
+    Where an installed OpenZen may be. The per-user folder comes first: it is
+    shared by every copy of this project on the PC, so a second checkout
+    (or a fresh download of the branch) finds what the first one installed.
+    """
+    homes = []
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        homes.append(Path(local) / "SONAIR" / "openzen")
+    homes.append(OPENZEN_HOME)
+    return homes
+
+
 def find_openzen() -> dict:
     """
     Where the Python that can load OpenZen is, and where OpenZen is.
@@ -1850,9 +1864,10 @@ def find_openzen() -> dict:
     import importlib.util
     py_name = "python.exe" if os.name == "nt" else "python3"
     cands = []
-    vend_py = OPENZEN_HOME / "python" / py_name
-    if vend_py.exists():
-        cands.append((str(vend_py), str(OPENZEN_HOME / "lib")))
+    for home in openzen_homes():
+        vend_py = home / "python" / py_name
+        if vend_py.exists() and (home / "lib").exists():
+            cands.append((str(vend_py), str(home / "lib")))
     env_py = os.environ.get("SONAIR_OPENZEN_PYTHON", "")
     if env_py:
         cands.append((env_py, os.environ.get("SONAIR_OPENZEN_DIR", "")))
@@ -1864,10 +1879,11 @@ def find_openzen() -> dict:
         sys.path.insert(0, zd)
     if importlib.util.find_spec("openzen") is not None:
         return {"python": sys.executable, "zen_dir": zd}
-    return {"error": ("OpenZen is not installed on this PC. Run "
-                      "install_openzen.py once (it puts LP-Research's OpenZen "
-                      "and a private Python 3.11 in vendor/openzen) and "
-                      "connect again.")}
+    looked = " and ".join(str(h) for h in openzen_homes())
+    return {"error": (f"OpenZen was not found (looked in {looked}). Run "
+                      f"install_openzen.py once from this project folder and "
+                      f"connect again -- it installs for every copy of the "
+                      f"project on this PC")}
 
 
 class OpenZenLink(_Base):
