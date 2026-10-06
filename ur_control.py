@@ -363,6 +363,36 @@ class URController:
         ])
         return self.script.send(prog)
 
+    def joint_sequence(self, targets, v: float, a: float = 1.2,
+                       dwells=None) -> tuple[bool, str]:
+        """
+        Several joint moves, each to a stop, with a pause after each -- as ONE
+        program on the controller.
+
+        Sent one move at a time, the pause between moves was whatever the
+        agent took to see that the arm had arrived and send the next command:
+        measured on the first two campaign sessions, up to 0.6 s different
+        between repeats of the same cell. The pause is part of the motion the
+        simulator replays, so it has to be the controller's own `sleep`, the
+        same every time, not the host's reaction time.
+        """
+        targets = [list(map(float, q)) for q in targets]
+        if not targets:
+            return False, "no joint targets"
+        if any(len(q) != 6 for q in targets):
+            return False, "every joint target needs six angles"
+        dwells = list(dwells or [])
+        dwells += [0.0] * (len(targets) - len(dwells))
+        v = self.envelope.clamp_joint(v)
+        lines = ["def sonair_seq():"]
+        for q, d in zip(targets, dwells):
+            lines.append("  movej([" + ",".join(f(x) for x in q) +
+                         f"], a={f(a)}, v={f(v)}, r=0)")
+            if d > 0:
+                lines.append(f"  sleep({f(d)})")
+        lines += ["end", "sonair_seq()"]
+        return self.script.send("\n".join(lines))
+
     def movej(self, q, a=1.0, v=0.5, r=0.0, is_pose=False) -> tuple[bool, str]:
         if is_pose:
             ok, why = self.envelope.accepts_pose(q)

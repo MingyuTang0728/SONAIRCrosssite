@@ -112,6 +112,22 @@ class Cell:
             self.q, self.qd = list(target), [0.0] * 6
         return True, ""
 
+    def joint_sequence(self, targets, speed, accel=None, dwells=None):
+        """Like the controller: the whole program runs after the send returns."""
+        dwells = list(dwells or []) + [0.0] * len(targets)
+        self.sequences = getattr(self, "sequences", 0) + 1
+
+        def run():
+            for t, d in zip(targets, dwells):
+                self.move_joints(t, speed, accel)
+                time.sleep(d)
+        threading.Thread(target=run, daemon=True).start()
+        return True, ""
+
+    def zero_ft(self):
+        self.ft_zeroed = getattr(self, "ft_zeroed", 0) + 1
+        return True, ""
+
     def joint_contour(self, joint, amp, w, cycles):
         q0 = self.joints()
         T = cycles * 2 * math.pi / w
@@ -231,6 +247,10 @@ def main():
     for name, blk in audit.items():
         assert not [n for n in blk["notes"] if "declares" not in n], (name, blk)
         assert blk["peak_commanded_joint_vel"] >= 0.95 * V, (name, blk)
+    # point-to-point and stop-start went to the controller as one program
+    # each, and the force sensor was zeroed before every run
+    assert getattr(cell, "sequences", 0) == 6, getattr(cell, "sequences", 0)
+    assert getattr(cell, "ft_zeroed", 0) == 9, getattr(cell, "ft_zeroed", 0)
     print(f"  pass  9 planned runs recorded under their plan ids in "
           f"{time.time() - t0:.0f}s, every one reaching {V} rad/s, all marked done")
 

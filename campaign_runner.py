@@ -623,6 +623,7 @@ def build_job(session: int, state: dict, state_path=STATE_PATH):
             {"kind": "goto_joints", "q": list(cfg["q"]), "speed": 0.4,
              "label": r.arm_config},
             {"kind": "dwell", "seconds": 1.0},
+            {"kind": "zero_ft"},
             {"kind": "record_start", "run_id_exact": r.run_id,
              "joint_vel": r.joint_vel, "arm_config": r.arm_config,
              "traj_type": r.traj_type, "repeat_idx": r.repeat_idx,

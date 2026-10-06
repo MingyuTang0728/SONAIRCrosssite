@@ -516,10 +516,24 @@ def _at(rec, key, i):
 
 
 def _cell(v) -> str:
+    """
+    One CSV cell. Floats keep their precision.
+
+    This was `%.6g`, and six significant digits silently destroyed every
+    time column: a host epoch time (1.79e9 s) kept a resolution of 1e3 s,
+    the controller's timestamp past 10 000 s kept 0.1 s, and the log's own
+    t_s past 1000 s kept 0.01 s -- coarser than the 8 ms packet period it was
+    meant to order. Large magnitudes (times) are written to the microsecond;
+    everything else to nine significant digits, well past any sensor here.
+    """
     if v is None:
         return ""
     if isinstance(v, float):
-        return f"{v:.6g}"
+        if v != v or v in (float("inf"), float("-inf")):
+            return ""
+        if abs(v) >= 1e4:
+            return f"{v:.6f}"
+        return f"{v:.9g}"
     return str(v)
 
 
@@ -1229,6 +1243,11 @@ class BenchRecorder:
         self._cost_sum = {"robot": 0.0, "sensors": 0.0, "write": 0.0}
         self._cost_n = 0
         self.state_fn = None  # set by the bridge: () -> (q, tcp_pose)
+        # () -> a telemetry service with subscribe/unsubscribe, or None. When
+        # there is one, every robot packet becomes a row (see _on_packet).
+        self.packet_source = None
+        self._svc = None
+        self.mode = "poll"
 
     def is_recording(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -1300,11 +1319,106 @@ class BenchRecorder:
         self._stop.clear()
         self.current = {"run_id": run_id, "path": str(path),
                         "started": MASTER.now(), "rate_hz": rate_hz, "n": 0}
-        self._thread = threading.Thread(target=self._loop, args=(rate_hz,),
+        svc = None
+        if self.packet_source is not None:
+            try:
+                svc = self.packet_source()
+            except Exception:       # noqa: BLE001
+                svc = None
+        self._n = 0
+        self._last_mono = None
+        self._skips = 0
+        self._worst_gap = 0.0
+        # The per-phase costs belong to the polling loop; cleared here so a
+        # packet-mode run never reports the previous run's figures.
+        self._cost = {"robot": 0.0, "sensors": 0.0, "write": 0.0, "total": 0.0}
+        self._cost_sum = {"robot": 0.0, "sensors": 0.0, "write": 0.0}
+        self._cost_n = 0
+        if svc is not None and hasattr(svc, "subscribe"):
+            # EVERY PACKET, NOT THE LATEST ONE WHEN THE TIMER FIRES.
+            #
+            # Sampling the shared robot state on a 125 Hz host timer looked
+            # equivalent and was not. Packets reach this process in bursts (the
+            # reader runs in its own process and hands them over in batches),
+            # so a timer tick sees the same packet several times and then
+            # misses the ones that came and went between ticks. Measured on the
+            # first two campaign sessions: 41.6% of rows held a distinct robot
+            # state -- about 49 Hz of real data under a 125 Hz label -- with
+            # gaps to 1 s. Each packet now becomes exactly one row, stamped with
+            # when it arrived at the socket and carrying the controller's own
+            # timestamp, which is the clock the controller generated it by.
+            self.mode = "packet"
+            self._svc = svc
+            svc.subscribe(self._on_packet)
+            target = self._wait
+            args = ()
+        else:
+            self.mode = "poll"
+            target = self._loop
+            args = (rate_hz,)
+        self._thread = threading.Thread(target=target, args=args,
                                         daemon=True, name=f"bench-rec-{run_id}")
         self._thread.start()
         log.info("recording run %s -> %s", run_id, path)
         return {"ok": True, "run_id": run_id, "path": str(path)}
+
+    def _wait(self) -> None:
+        """Packet mode: the rows are written by _on_packet; this only lives
+        as long as the recording does, so is_recording() means what it says."""
+        while not self._stop.wait(0.2):
+            pass
+
+    def _on_packet(self, st: dict) -> None:
+        """One RTDE packet, one row."""
+        if self._stop.is_set():
+            return
+        mono = st.get("_mono")
+        now_perf = time.perf_counter()
+        t = (float(mono) - MASTER._t0) if isinstance(mono, (int, float)) \
+            else MASTER.now()
+        q, tcp = st.get("actual_q"), st.get("actual_TCP_pose")
+        if not q:
+            return
+        if self._last_mono is not None and isinstance(mono, (int, float)):
+            gap = float(mono) - self._last_mono
+            if gap > 0.25:
+                self._skips += 1
+                self._worst_gap = max(self._worst_gap, gap)
+        if isinstance(mono, (int, float)):
+            self._last_mono = float(mono)
+
+        def seq(v):
+            return [float(x) for x in v] if v else None
+        aux = {}
+        ts = st.get("timestamp")
+        if isinstance(ts, (int, float)):
+            aux["controller_t"] = float(ts)
+        extra = {}
+        if _HAS_SENSORS:
+            try:
+                extra = sensor_hub.HUB.snapshot()
+            except Exception:       # noqa: BLE001
+                extra = {}
+        ss = st.get("speed_scaling")
+        sample = Sample(
+            t=t, q=seq(q), qd=seq(st.get("actual_qd")),
+            tcp_pos=seq(tcp[:3]) if tcp else None,
+            tcp_rot=seq(tcp[3:6]) if tcp and len(tcp) >= 6 else None,
+            target_q=seq(st.get("target_q")), target_qd=seq(st.get("target_qd")),
+            target_moment=seq(st.get("target_moment")),
+            speed_scaling=float(ss) if isinstance(ss, (int, float)) else None,
+            robot_age_s=round(now_perf - float(mono), 4)
+            if isinstance(mono, (int, float)) else None,
+            imu=HUB.snapshot(), aux=aux, sensors=extra)
+        with self._lock:
+            if self._writer:
+                try:
+                    self._writer.write(sample)
+                    self._n += 1
+                    if self.current:
+                        self.current["n"] = self._n
+                except Exception as e:      # noqa: BLE001
+                    log.warning("sample write failed: %s", e)
 
     def _loop(self, rate_hz: float) -> None:
         period = 1.0 / max(1.0, rate_hz)
@@ -1418,6 +1532,12 @@ class BenchRecorder:
     def stop(self) -> dict:
         if not self.is_recording():
             return {"ok": False, "error": "not recording"}
+        svc, self._svc = self._svc, None
+        if svc is not None:
+            try:
+                svc.unsubscribe(self._on_packet)
+            except Exception:       # noqa: BLE001
+                pass
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
@@ -1431,7 +1551,7 @@ class BenchRecorder:
         span = max(1e-6, stopped - float(cur.get("started") or stopped))
         achieved = n / span
         asked = float(cur.get("rate_hz") or 0.0)
-        self.last = {**cur, "n": n, "stopped": stopped,
+        self.last = {**cur, "n": n, "stopped": stopped, "mode": self.mode,
                      "achieved_rate_hz": round(achieved, 1),
                      "skipped_intervals": int(getattr(self, "_skips", 0)),
                      "worst_gap_s": round(float(getattr(self, "_worst_gap", 0.0)), 3)}

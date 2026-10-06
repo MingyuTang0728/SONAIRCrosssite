@@ -1749,6 +1749,20 @@ class _CellContext:
         return ur_bridge_ext.UR.controller.movej(
             list(q), a=float(accel) if accel else 1.2, v=float(speed))
 
+    def joint_sequence(self, targets, speed, accel=None, dwells=None):
+        """Joint moves with stops between, run as one program on the controller."""
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.joint_sequence(
+            [list(q) for q in targets], float(speed),
+            a=float(accel) if accel else 1.2, dwells=dwells)
+
+    def zero_ft(self):
+        """Re-zero the wrist force/torque sensor."""
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.zero_ft_sensor()
+
     def joint_contour(self, joint, amp, w, cycles):
         """One joint through a sinusoid, run as a program on the controller."""
         if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
@@ -2659,6 +2673,12 @@ async def main():
                 return {"q": list(global_actual_q), "tcp": list(global_tcp_pose)}
 
         bench_agent.RECORDER.state_fn = _robot_state
+        # Every RTDE packet becomes one recorded row when the full telemetry
+        # stream is up; the timer-driven poll of _robot_state is the fallback.
+        bench_agent.RECORDER.packet_source = lambda: (
+            ur_bridge_ext.UR.telemetry
+            if _HAS_EXT and getattr(ur_bridge_ext.UR, "enabled", False)
+            else None)
         started = bench_agent.start_sources(
             d435i=BENCH_ENABLE_D435I_IMU and _HAS_VISION,
             fusionhub=BENCH_ENABLE_FUSIONHUB,

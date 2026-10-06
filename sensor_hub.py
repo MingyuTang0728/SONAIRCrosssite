@@ -299,9 +299,9 @@ def install_defaults(hub: SensorHub | None = None) -> SensorHub:
                 units="m, rad, N, Nm", rate_hz=125.0, frame="base",
                 vendor="Universal Robots", transport="RTDE", role="benchmark",
                 fields=["tcp_pose", "q", "qd", "tcp_force", "current"])
-    hub.declare(id="imu_ind0", label="Industrial IMU (FusionHub)",
+    hub.declare(id="imu_ind0", label="Industrial IMU (LPMS-B2)",
                 modality="orientation", units="quaternion, rad/s, m/s^2",
-                rate_hz=200.0, frame="tcp", vendor="FusionHub",
+                rate_hz=100.0, frame="tcp", vendor="LP-Research",
                 transport="UDP/TCP/serial", role="benchmark",
                 fields=["quat", "gyro", "accel"])
     # poll_hz on the camera channels: their readers touch full frames under the

@@ -2615,6 +2615,9 @@
   var STEP_WORDS = {
     preflight: "check the cell is fit to run",
     dwell: "wait for the arm to settle",
+    zero_ft: "zero the wrist force sensor, arm at rest",
+    campaign_session: "start the campaign session",
+    campaign_mark: "check the run and mark it done",
     move: "go to one pose",
     trajectory: "run the tool-space motion",
     joint_move: "drive one joint at the commanded angular velocity",

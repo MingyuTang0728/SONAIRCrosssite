@@ -68,6 +68,7 @@ STEP_KINDS = (
     "imu_calibrate",    # IMU time offset and mounting, from the logs just made
     "preflight",        # run the checks; fail the job if any check fails
     "dwell",            # wait, so a move can settle before a capture
+    "zero_ft",          # re-zero the wrist force sensor, arm at rest
     "move",             # go to one tool pose
     "trajectory",       # go through a list of tool poses
     "joint_move",       # drive ONE joint at a commanded angular velocity
@@ -910,6 +911,14 @@ class Runner:
                       f"{math.degrees(stp):.0f} deg each way at {v:g} rad/s.")
             seq = [q0[idx] + d * stp * k for k in range(1, n + 1)] + \
                   [q0[idx] + d * stp * k for k in range(n - 1, -1, -1)]
+            if hasattr(self.ctx, "joint_sequence"):
+                targets = []
+                for target_j in seq:
+                    t = list(q0)
+                    t[idx] = target_j
+                    targets.append(t)
+                return self._run_sequence(q0, targets, v, a,
+                                          [dwell] * len(targets), step)
             for target_j in seq:
                 if self._stop.is_set():
                     return True, ""
@@ -1119,17 +1128,44 @@ class Runner:
                       f"{speed:g} rad/s — ramping for "
                       f"{speed / accel:.2f} s each end and holding the speed "
                       f"for {held:.2f} s.")
-            for leg, delta in (("out", +amp), ("back", 0.0)):
+            # The pause at the turn is part of the motion, and it is the
+            # controller's own: sent as one program, out, pause, back. Sent as
+            # two commands it was however long the agent took to notice the
+            # arm had arrived, which differed between repeats by up to 0.6 s.
+            turn = float(step.get("dwell_s", 0.5))
+            out = list(q0)
+            out[idx] = q0[idx] + amp
+            if hasattr(self.ctx, "joint_sequence"):
+                return self._run_sequence(q0, [out, list(q0)], speed, accel,
+                                          [turn, 0.0], step)
+            for leg, target in (("out", out), ("back", list(q0))):
                 if self._stop.is_set():
                     return True, ""
-                target = list(q0)
-                target[idx] = q0[idx] + delta
-                ok, why = self.ctx.move_joints(target, speed)
+                ok, why = self.ctx.move_joints(target, speed, accel)
                 if not ok:
                     return False, f"{leg}: {why}"
                 ok, why = self._await_joints(target, step)
                 if not ok:
                     return False, f"{leg}: {why}"
+                if leg == "out":
+                    self._stop.wait(turn)
+            return True, ""
+
+        if kind == "zero_ft":
+            # The wrist force sensor's zero drifted by 9 N over a pilot
+            # session. Zeroed with the arm at rest in the run's own start
+            # pose, every repeat of a cell starts from the same reference.
+            # Not fatal: force is recorded, not scored, and a run is not worth
+            # losing over it.
+            fn = getattr(self.ctx, "zero_ft", None)
+            if fn is None:
+                return True, ""
+            ok, why = fn()
+            if not ok:
+                self._say(f"The force sensor could not be zeroed ({why}); "
+                          "the run goes ahead with the previous zero.", "warn")
+            else:
+                self._stop.wait(float(step.get("settle_s", 0.3)))
             return True, ""
 
         if kind == "record_start":
@@ -1300,6 +1336,47 @@ class Runner:
                        f"{timeout:.0f} s. Check it is switched on and charged, "
                        f"and look at the Sensors page; running this job again "
                        f"carries on where it stopped")
+
+    def _run_sequence(self, q0, targets, v, a, dwells, step) -> tuple[bool, str]:
+        """
+        Send joint moves as one controller program and wait for it to finish.
+
+        The program ends where it began, so "at the final target" is true
+        before it starts as well. The wait is therefore in two parts: first
+        for the arm to leave its start, then for it to be back and still. Both
+        survive an agent stall -- the arm is away for the whole program, and
+        at the end it stays put -- where waiting to catch each turning point
+        would not.
+        """
+        ok, why = self.ctx.joint_sequence(targets, v, a, dwells)
+        if not ok:
+            return False, why
+        # how long the program should take: a trapezoid per move, plus pauses
+        expect, prev = 0.0, list(q0)
+        for t, dw in zip(targets, dwells):
+            dist = max(abs(x - y) for x, y in zip(t, prev))
+            ramp_d = v * v / a
+            expect += (2 * math.sqrt(dist / a) if dist < ramp_d
+                       else 2 * v / a + (dist - ramp_d) / v) + dw
+            prev = t
+        tol = math.radians(float(step.get("tolerance_deg", 0.5)))
+        away = max(2 * tol, math.radians(1.0))
+        end = time.monotonic() + float(step.get("start_timeout_s", 5.0))
+        while True:
+            if self._stop.is_set():
+                return True, ""
+            now = self.ctx.joints()
+            if now and len(now) >= 6 and \
+                    max(abs(now[i] - q0[i]) for i in range(6)) > away:
+                break
+            if time.monotonic() > end:
+                return False, ("the arm did not start moving. The commonest "
+                               "cause is the pendant being in Local mode, "
+                               "where the robot accepts the connection and "
+                               "ignores the command.")
+            time.sleep(0.02)
+        return self._await_joints(targets[-1], {
+            **step, "timeout_s": float(step.get("timeout_s", expect + 10.0))})
 
     def _await_joints(self, target, step) -> tuple[bool, str]:
         """Wait until every joint is where it was sent, or say that it is not."""

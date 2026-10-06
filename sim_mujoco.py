@@ -293,6 +293,19 @@ class ImuMount:
         if cal and cal.get("R_flange_imu"):
             self.R = [[float(v) for v in row] for row in cal["R_flange_imu"]]
             self.q = _mat_to_quat(self.R)
+        # The real gyro's gain against the robot's own angular velocity, as
+        # imu_align measured it (the pilot sessions read 0.98). A sensor gain
+        # error is not a plant gap, so the simulated gyro is given the same
+        # gain rather than charging 2% of every rotation to the simulator.
+        # Applied only inside a plausible band: anything outside it is a units
+        # or kinematics fault that imu_align reports, not a gain.
+        self.gyro_scale = 1.0
+        g = (cal or {}).get("gyro_scale")
+        if isinstance(g, (int, float)) and 0.8 <= g <= 1.2:
+            self.gyro_scale = float(g)
+
+    def gyro(self, v):
+        return [self.gyro_scale * x for x in self.vec(v)]
 
     def vec(self, v):
         if self.R is None:
@@ -309,8 +322,10 @@ class ImuMount:
     def words(self) -> str:
         if self.R is None:
             return "IMU in flange axes (no mounting calibration)"
+        g = (f", gyro gain {self.gyro_scale:.3f}"
+             if abs(self.gyro_scale - 1.0) > 1e-9 else "")
         return (f"IMU rotated into the real IMU's axes "
-                f"(imu_cal {self.cal.get('made_at', '?')})")
+                f"(imu_cal {self.cal.get('made_at', '?')}{g})")
 
 
 def _no_display() -> str:
@@ -464,7 +479,7 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
                 dt = 1.0 / max(1.0, sim.sample_rate_hz)
             arm.drive(s["target_q"], dt)
 
-            gyro = mount.vec(arm.read("imu_gyro"))
+            gyro = mount.gyro(arm.read("imu_gyro"))
             acc = mount.vec(arm.read("imu_acc"))
             quat = mount.quat(arm.read("imu_quat"))
             if degrader is not None:
