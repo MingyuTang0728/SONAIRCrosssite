@@ -292,6 +292,9 @@
      2. MOTION SENSORS — link setup, discovery, attitude, traces
      ======================================================================= */
   var CFG_FIELDS = {
+    "openzen": [["address", "Bluetooth address or sensor name (blank = find it)",
+                 "text", ""],
+                ["rate", "Readings per second", "number", 100]],
     "udp-listen": [["port", "Port on this PC", "number", 5005]],
     "tcp-client": [["host", "FusionHub address", "text", "127.0.0.1"],
                    ["port", "Port", "number", 5005]],
@@ -333,16 +336,26 @@
   on("btnImuStart", "click", function () {
     if (!S.require("imuMsg")) return;
     var lc = linkConfig();
-    say("imuMsg", "Connecting…", "info");
+    ozPoll = lc.kind === "openzen";
+    say("imuMsg", lc.kind === "openzen" ? "Starting the OpenZen reader and "
+      + "connecting to the sensor — this takes a few seconds…" : "Connecting…", "info");
     send({ type: "imu_link_start", unit: $("imuUnit").value, kind: lc.kind,
            config: lc.config, gyro_units: $("imuUnits").value });
   });
   on("btnImuStop", "click", function () {
     if (!S.require("imuMsg")) return;
+    ozPoll = false;
     send({ type: "imu_link_stop", unit: $("imuUnit").value });
   });
   on("btnImuFind", "click", function () {
     if (!S.require("imuMsg")) return;
+    if ((($("imuKind") || {}).value) === "openzen") {
+      say("imuMsg", "Looking for LPMS sensors over Bluetooth for about twelve "
+        + "seconds. The sensor must be switched on and paired in Windows, and "
+        + "FusionHub and LPMS-Control must be closed…", "info");
+      send({ type: "imu_openzen_list", seconds: 12 });
+      return;
+    }
     say("imuMsg", "Listening on every likely port for six seconds. Make sure "
       + "FusionHub is streaming now…", "info");
     send({ type: "imu_discover", seconds: 6 });
@@ -421,6 +434,10 @@
   S.on("imu_transports_res", function (d) {
     var unit = ($("imuUnit") || {}).value || "ind0";
     var l = (d.links || {})[unit];
+    if (l && l.kind === "openzen" && l.state === "failed") {
+      say("imuMsg", openzenWords(l), "bad");
+      return;
+    }
     if (!l || !l.running) return;
 
     // The failure this page used to show as nothing at all: packets arriving
@@ -435,6 +452,15 @@
     }
     if ($("imuKindTag")) {
       $("imuKindTag").textContent = l.kind + " · " + fmt(l.rate_hz, 0) + " Hz";
+    }
+    if (l.kind === "openzen") {
+      // Everything below is about decoding an unknown stream, which an
+      // OpenZen link never is.
+      att.units = { units: "rad", basis: "converted from the sensor's degrees per second" };
+      linkHealth = l;
+      say("imuMsg", openzenWords(l), l.state === "streaming"
+        ? (l.outages_10min ? "warn" : "ok") : (l.state === "failed" ? "bad" : "warn"));
+      return;
     }
     // The units the gyroscope reports in are DECIDED, not assumed, and the
     // operator is told which and on what basis — a silent factor of 57 is
@@ -468,6 +494,47 @@
         + "second.", "info");
     }
   });
+
+  S.on("imu_openzen_list_res", function (d) {
+    if (!d.ok) { say("imuMsg", d.error || "The search did not run.", "bad"); return; }
+    var list = d.sensors || [];
+    if (!list.length) {
+      say("imuMsg", "No LPMS sensor was found. Check it is switched on and "
+        + "charged, that it is paired in Windows Bluetooth settings, and that "
+        + "FusionHub and LPMS-Control are closed.", "warn");
+      return;
+    }
+    var pick = list.filter(function (s) { return /lpms/i.test(s.name || ""); })[0]
+      || list[0];
+    $("imuKind").value = "openzen";
+    renderCfgFields();
+    var f = $("imucfg_address");
+    if (f) f.value = pick.identifier || pick.name || "";
+    say("imuMsg", "Found " + list.length + " sensor" + (list.length > 1 ? "s" : "")
+      + ": " + list.map(function (s) { return s.name + " (" + s.io_type + ")"; })
+        .join(", ") + ". " + (pick.name || "") + " is filled in — press Connect.",
+      "ok");
+  });
+
+  // The OpenZen link reports how the radio is holding up. Shown in words,
+  // because "connected" says nothing about the dropouts that ruin a run.
+  function openzenWords(l) {
+    var parts = [];
+    if (l.state === "streaming") parts.push("Streaming from " + (l.sensor || "the sensor")
+      + " at " + fmt(l.rate_hz, 0) + " a second");
+    else if (l.state === "reconnecting" || l.state === "restarting")
+      parts.push("Lost the sensor " + fmt(l.down_for_s, 1) + " s ago — reconnecting by itself");
+    else if (l.state === "failed") parts.push("Stopped: " + (l.error || "unknown"));
+    else parts.push("Connecting…");
+    if (l.battery != null) parts.push("battery " + fmt(l.battery, 0) + "%");
+    parts.push(l.outages_10min ? l.outages_10min + " dropout"
+      + (l.outages_10min > 1 ? "s" : "") + " in the last 10 minutes, longest "
+      + fmt(l.longest_outage_s, 1) + " s" : "no dropouts");
+    if (l.frames_lost_pct) parts.push(fmt(l.frames_lost_pct, 1) + "% of readings lost on the radio");
+    parts.push(l.timebase === "sensor" ? "timed by the sensor's own clock"
+      : "timed by arrival");
+    return parts.join(" · ") + ".";
+  }
 
   S.on("imu_zero_res", function (d) {
     say("attMsg", d.ok ? "Re-levelled. " + (d.note || "") : (d.note || "Not available."),
@@ -932,6 +999,17 @@
       + ((d.conflicts || []).length ? " " + d.conflicts[0] : ""),
       (d.conflicts || []).length ? "warn" : "info");
   });
+
+  // While an OpenZen link is chosen and this page is on screen, ask how the
+  // radio is doing every two seconds -- dropouts and reconnects are the
+  // thing to watch, and they happen between button presses.
+  var ozPoll = false;
+  setInterval(function () {
+    var k = $("imuKind");
+    if (ozPoll && S.connected() && k && k.offsetParent !== null) {
+      send({ type: "imu_transports" });
+    }
+  }, 2000);
 
   S.page("sensors", function () {
     drawCube(); drawCards();

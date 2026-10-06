@@ -231,6 +231,22 @@ class TimeMaster:
                 ch = self.clocks[channel] = SourceClock(channel)
             ch.fitted = True
 
+    def reset_channel(self, channel: str, offset_s: float | None = None) -> None:
+        """
+        Forget everything learned about a channel's clock -- a new link on it
+        is a new clock -- and optionally declare its offset straight away.
+
+        A declared offset is for a link whose timestamps are ALREADY on this
+        PC's clock (the OpenZen link maps the sensor clock onto perf_counter
+        itself); it is not a way to skip measuring an unknown one.
+        """
+        with self._lock:
+            self.clocks[channel] = SourceClock(channel)
+        self.offsets.pop(channel, None)
+        self.residuals.pop(channel, None)
+        if offset_s is not None:
+            self.set_offset(channel, offset_s)
+
     def clock_of(self, channel: str) -> SourceClock:
         with self._lock:
             ch = self.clocks.get(channel)
@@ -407,9 +423,19 @@ class ImuHub:
             return {u: {"t": round(t, 5), **rec} for u, (t, rec) in self._latest.items()}
 
     def snapshot(self) -> dict:
-        """The per-unit block that goes into one recorded Sample."""
+        """
+        The per-unit block that goes into one recorded Sample.
+
+        Each unit's block carries `_age_s`: how old its latest reading was
+        when the row was written. A sensor that drops out does not leave a
+        hole in a run file -- its last reading is written again and again --
+        so without this a dropout is invisible in the file. With it, the
+        read-back after every run can see it and reject the run.
+        """
+        now = MASTER.now()
         with self._lock:
-            return {u: dict(rec) for u, (_, rec) in self._latest.items()}
+            return {u: {**rec, "_age_s": [round(now - t, 4)]}
+                    for u, (t, rec) in self._latest.items()}
 
     def ring(self, unit: str) -> list:
         with self._lock:
@@ -1029,12 +1055,21 @@ class FusionHubBridge:
             self.error = _LINK_ERR or "imu_link not importable"
             return False
         self.stop()
+        if kind and kind != self.kind and config is None:
+            # A different transport takes different settings; carrying the
+            # last one's over (a UDP port into an OpenZen link) fails to build.
+            config = {}
         if kind:
             self.kind = kind
-        if config:
+        if config is not None:
             self.config = dict(config)
         if gyro_units:
             self.gyro_units = gyro_units
+        # A new link is a new clock. The OpenZen link hands over times already
+        # on this PC's perf_counter, so its offset onto the master is known
+        # exactly; every other transport has to earn one (see SourceClock).
+        MASTER.reset_channel(self.unit, -MASTER._t0 if self.kind == "openzen"
+                             else None)
         try:
             self.link = imu_link.make_link(
                 self.kind, self.unit, gyro_units=self.gyro_units,
@@ -1583,6 +1618,11 @@ def handle_message(data: dict) -> dict | None:
                               data.get("kind", "udp-listen"),
                               data.get("config") or {},
                               data.get("gyro_units", "auto"))}
+    if mtype == "imu_openzen_list":
+        if not _HAS_LINK:
+            return {"type": "imu_openzen_list_res", "ok": False, "error": _LINK_ERR}
+        return {"type": "imu_openzen_list_res",
+                **imu_link.list_openzen(float(data.get("seconds", 12.0)))}
     if mtype == "imu_link_stop":
         return {"type": "imu_link_res", "cmd": "stop",
                 **LINKS.stop(data.get("unit", "ind0"))}

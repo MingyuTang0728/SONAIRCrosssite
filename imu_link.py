@@ -1833,7 +1833,318 @@ def _zmq_connect_endpoint(endpoint: str) -> str:
     return f"{scheme}://{rest}"
 
 
+G0 = 9.80665
+HERE = Path(__file__).resolve().parent
+OPENZEN_HOME = HERE / "vendor" / "openzen"
+
+
+def find_openzen() -> dict:
+    """
+    Where the Python that can load OpenZen is, and where OpenZen is.
+
+    In order: what install_openzen.py put in vendor/openzen/; then an
+    explicit SONAIR_OPENZEN_PYTHON / SONAIR_OPENZEN_DIR; then this very
+    Python, if it happens to import openzen. Returns {"python", "zen_dir"} or
+    {"error"} in words the operator can act on.
+    """
+    import importlib.util
+    py_name = "python.exe" if os.name == "nt" else "python3"
+    cands = []
+    vend_py = OPENZEN_HOME / "python" / py_name
+    if vend_py.exists():
+        cands.append((str(vend_py), str(OPENZEN_HOME / "lib")))
+    env_py = os.environ.get("SONAIR_OPENZEN_PYTHON", "")
+    if env_py:
+        cands.append((env_py, os.environ.get("SONAIR_OPENZEN_DIR", "")))
+    for py, zd in cands:
+        if Path(py).exists():
+            return {"python": py, "zen_dir": zd}
+    zd = os.environ.get("SONAIR_OPENZEN_DIR", "")
+    if zd:
+        sys.path.insert(0, zd)
+    if importlib.util.find_spec("openzen") is not None:
+        return {"python": sys.executable, "zen_dir": zd}
+    return {"error": ("OpenZen is not installed on this PC. Run "
+                      "install_openzen.py once (it puts LP-Research's OpenZen "
+                      "and a private Python 3.11 in vendor/openzen) and "
+                      "connect again.")}
+
+
+class OpenZenLink(_Base):
+    """
+    An LPMS sensor straight through LP-Research's OpenZen -- no FusionHub.
+
+    The sensor is read by openzen_bridge.py in a child process (see there for
+    why); this class starts it, reads what it prints, and keeps it alive:
+
+      * a child that exits for any reason is started again, with backoff;
+      * the child itself reconnects when the sensor drops off the air;
+      * every outage is counted and timed, and frames lost on the way are
+        counted from the sensor's own frame counter.
+
+    TIMESTAMPS come from the sensor's own clock, not from when Bluetooth
+    happened to deliver: the radio delivers in bursts, and arrival time put a
+    few milliseconds of jitter on every sample of the old link. The sensor
+    clock is mapped onto this PC's clock by the smallest observed
+    (arrival - sensor time) over the last ten seconds -- the delivery with
+    the least delay -- which follows a slow drift between the two clocks and
+    never puts a sample after it arrived. If the sensor clock stops
+    advancing, arrival time is used instead, and status says so.
+    """
+    kind = "openzen"
+    WINDOW_S = 10.0
+
+    def __init__(self, address: str = "", rate: int = 100,
+                 python: str = "", zen_dir: str = "",
+                 stall_s: float = 2.0, gap_s: float = 0.25, **kw):
+        kw["gyro_units"] = "rad"            # converted here, from deg/s
+        super().__init__(**kw)
+        self.units = GyroUnits("rad")
+        self.address = str(address or "").strip()
+        self.rate = int(rate or 0)
+        self.python, self.zen_dir = python, zen_dir
+        self.stall_s, self.gap_s = float(stall_s), float(gap_s)
+        self._proc = None
+        self.state = "stopped"
+        self.sensor_name = ""
+        self.battery = None
+        self.connects = 0
+        self.reconnects = 0
+        self.restarts = 0
+        self.outages = []               # (start perf, seconds), most recent last
+        self._down_since = None
+        self.frames_seen = 0
+        self.frames_lost = 0
+        self._fc = None
+        self._fc_steps = deque(maxlen=101)
+        self._offs = deque()            # (rx, rx - ts)
+        self._ts_last = None
+        self.timebase = "sensor"
+        self.notes = []
+
+    # -- lifecycle ---------------------------------------------------------
+    def _open(self):
+        if not self.python:
+            where = find_openzen()
+            if "error" in where:
+                raise RuntimeError(where["error"])
+            self.python, self.zen_dir = where["python"], where["zen_dir"]
+        if not (HERE / "openzen_bridge.py").exists():
+            raise RuntimeError("openzen_bridge.py is missing next to imu_link.py")
+        self.state = "starting"
+
+    def _close(self):
+        self._kill()
+
+    def _kill(self):
+        p, self._proc = self._proc, None
+        if p is None:
+            return
+        try:
+            p.stdin.close()             # the bridge releases the sensor and exits
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3.0)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+
+    def _cmd(self, extra=()):
+        cmd = [self.python, "-u", str(HERE / "openzen_bridge.py"),
+               "--rate", str(self.rate), "--stall", str(self.stall_s)]
+        if self.zen_dir:
+            cmd += ["--zen-dir", self.zen_dir]
+        if self.address:
+            cmd += ["--address", self.address]
+        return cmd + list(extra)
+
+    def _spawn(self):
+        import subprocess
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return subprocess.Popen(
+            self._cmd(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, cwd=str(HERE), creationflags=flags)
+
+    def _run(self):
+        backoff = 1.0
+        while not self._stop.is_set():
+            try:
+                self._proc = self._spawn()
+            except Exception as e:      # noqa: BLE001
+                self.error = f"could not start the OpenZen reader: {e}"
+                self.state = "failed"
+                self._stop.wait(backoff)
+                backoff = min(backoff * 2, 15.0)
+                continue
+            started = time.monotonic()
+            fatal = self._read(self._proc)
+            self._kill()
+            if self._stop.is_set():
+                break
+            self._mark_down()
+            if fatal:
+                # Not installed, wrong Python: retrying will not fix it.
+                self.state = "failed"
+                break
+            self.restarts += 1
+            self.state = "restarting"
+            if time.monotonic() - started > 30:
+                backoff = 1.0
+            self._stop.wait(backoff)
+            backoff = min(backoff * 2, 15.0)
+        if self.state != "failed":
+            self.state = "stopped"
+
+    def _read(self, proc) -> bool:
+        """Consume the bridge's lines until it exits. True if it was fatal."""
+        for raw in proc.stdout:
+            if self._stop.is_set():
+                break
+            try:
+                msg = json.loads(raw)
+            except ValueError:
+                continue
+            ev = msg.get("ev")
+            if ev == "sample":
+                self._sample(raw, msg)
+            elif ev == "connected":
+                self.connects += 1
+                if self.connects > 1:
+                    self.reconnects += 1
+                self.sensor_name = msg.get("name", "")
+                self.battery = msg.get("battery", self.battery)
+                self.notes = msg.get("notes") or []
+                self.state = "streaming"
+                self.error = ""
+                # A new connection may restart the sensor's clock and frame
+                # counter: re-learn the mapping rather than carry it over.
+                self._offs.clear()
+                self._fc = None
+                self._ts_last = None
+            elif ev == "battery":
+                self.battery = msg.get("level")
+            elif ev in ("disconnected", "stalled", "connect_failed"):
+                self._mark_down()
+                self.state = "reconnecting"
+                self.error = f"{ev.replace('_', ' ')}: {msg.get('error', '')}"
+            elif ev == "fatal":
+                self.error = msg.get("error", "OpenZen failed")
+                return True
+        return False
+
+    # -- one sample --------------------------------------------------------
+    def _sample(self, raw, msg):
+        rx = float(msg.get("rx") or time.perf_counter())
+        ts = msg.get("ts")
+        if self._down_since is not None:
+            self.outages.append((self._down_since, rx - self._down_since))
+            self.outages = self.outages[-200:]
+            self._down_since = None
+        fc = msg.get("fc")
+        if isinstance(fc, int):
+            # A gap in the sensor's own frame counter is samples lost on the
+            # radio. The counter may step by more than one per sample sent
+            # (it counts at the sensor's internal rate), so a loss is judged
+            # against the usual step, not against 1. A counter that goes
+            # backwards has restarted.
+            if self._fc is not None and self._fc < fc <= self._fc + 100000:
+                d = fc - self._fc
+                self._fc_steps.append(d)
+                step = sorted(self._fc_steps)[len(self._fc_steps) // 2]
+                if len(self._fc_steps) >= 20 and d >= 1.5 * step:
+                    self.frames_lost += int(round(d / step)) - 1
+            self._fc = fc
+            self.frames_seen += 1
+        t_host = rx
+        if isinstance(ts, (int, float)):
+            if self._ts_last is not None and not (0.0 < ts - self._ts_last < 2.0):
+                self._offs.clear()      # clock restarted or jumped
+            if self._ts_last is None or ts != self._ts_last:
+                self._offs.append((rx, rx - ts))
+                while self._offs and rx - self._offs[0][0] > self.WINDOW_S:
+                    self._offs.popleft()
+                t_host = ts + min(o for _, o in self._offs)
+                self.timebase = "sensor"
+            else:
+                self.timebase = "arrival (the sensor clock is not advancing)"
+            self._ts_last = ts
+        a = msg.get("a") or [0.0, 0.0, 0.0]
+        gyro = None
+        for k in ("g1", "g2", "w"):
+            v = msg.get(k)
+            if v and any(abs(x) > 1e-9 for x in v):
+                gyro = v
+                break
+        rec = {"accel": [x * G0 for x in a],
+               "gyro": [math.radians(x) for x in (gyro or [0.0, 0.0, 0.0])]}
+        q = msg.get("q")
+        if q and any(abs(x) > 1e-9 for x in q):
+            rec["quat"] = list(q)
+        self._emit(raw, t_host, rec, "openzen")
+
+    def _mark_down(self):
+        # The outage began with the last reading that arrived, not when the
+        # loss was noticed -- a silent stall is only declared stall_s later.
+        if self._down_since is None:
+            self._down_since = self.t_last or time.perf_counter()
+
+    def health(self) -> dict:
+        h = super().health()
+        now = time.perf_counter()
+        recent = [d for t0, d in self.outages if now - t0 < 600]
+        cur = (now - self._down_since) if self._down_since is not None else 0.0
+        total = self.frames_seen + self.frames_lost
+        h.update({
+            "state": self.state, "sensor": self.sensor_name,
+            "battery": self.battery, "reconnects": self.reconnects,
+            "reader_restarts": self.restarts,
+            "outages_10min": len(recent),
+            "longest_outage_s": round(max(recent + [cur]), 2) if recent or cur else 0.0,
+            "down_for_s": round(cur, 2),
+            "frames_lost_pct": round(100.0 * self.frames_lost / total, 2) if total else 0.0,
+            "timebase": self.timebase, "python": self.python,
+            "notes": self.notes,
+        })
+        return h
+
+
+def list_openzen(seconds: float = 12.0) -> dict:
+    """The LPMS sensors OpenZen can see from here, for the Find button."""
+    import subprocess
+    where = find_openzen()
+    if "error" in where:
+        return {"ok": False, "error": where["error"]}
+    cmd = [where["python"], "-u", str(HERE / "openzen_bridge.py"), "--list",
+           "--list-seconds", str(seconds)]
+    if where["zen_dir"]:
+        cmd += ["--zen-dir", where["zen_dir"]]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             stdin=subprocess.DEVNULL,
+                             timeout=seconds + 20, cwd=str(HERE),
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"the OpenZen search did not finish: {e}"}
+    sensors, error = [], ""
+    for line in out.stdout.splitlines():
+        try:
+            m = json.loads(line)
+        except ValueError:
+            continue
+        if m.get("ev") == "listed":
+            sensors = m.get("sensors") or []
+        elif m.get("ev") == "fatal":
+            error = m.get("error", "")
+    if error:
+        return {"ok": False, "error": error}
+    return {"ok": True, "sensors": sensors}
+
+
 TRANSPORTS = {
+    "openzen": OpenZenLink,
     "udp-listen": UdpListen,
     "zmq-sub": ZmqSub,
     "websocket-client": WebSocketClient,

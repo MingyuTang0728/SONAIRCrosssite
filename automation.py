@@ -1166,6 +1166,10 @@ class Runner:
             for k in ("carrier_id", "carrier_mass_kg", "carrier_com_m"):
                 if car.get(k) is not None:
                     args[k] = car[k]
+            if "imu" in (job.requires or []):
+                ok, why = self._await_imu(float(step.get("imu_wait_s", 30.0)))
+                if not ok:
+                    return False, why
             res = self.ctx.record_start(args)
             if not res.get("ok"):
                 return False, res.get("error", "could not start the run file")
@@ -1195,6 +1199,12 @@ class Runner:
                           f"{res['worst_gap_s']:.2f} s, over "
                           f"{res.get('skipped_intervals', 0)} interruptions.",
                           "warn")
+            p = Path(self._last_run_path) if self._last_run_path else None
+            if p is not None and p.exists():
+                blk = _audit_runs(p.parent, only=p.name).get(p.name, {})
+                for note in blk.get("notes", []):
+                    if note.startswith("the inertial sensor"):
+                        self._say(note[0].upper() + note[1:] + ".", "warn")
             return True, ""
 
         if kind == "imu_log_start":
@@ -1259,6 +1269,37 @@ class Runner:
                                f"envelope ({why}) about {100 * f:.0f}% of the "
                                f"way through. Nothing was sent.")
         return True, ""
+
+    def _imu_live(self) -> bool:
+        units = self.ctx.imu_status() or {}
+        return any((v.get("age_s") is not None and v["age_s"] < 0.5)
+                   and (v.get("rate_hz") or 0) > 1 for v in units.values())
+
+    def _await_imu(self, timeout: float) -> tuple[bool, str]:
+        """
+        Do not start a run while the inertial sensor is off the air.
+
+        The link reconnects by itself after a dropout; a run started in the
+        middle of one would only be rejected afterwards. So the job waits for
+        the sensor to come back -- up to `timeout` -- and fails plainly if it
+        does not.
+        """
+        if self._imu_live():
+            return True, ""
+        self._say("Waiting for the inertial sensor to reconnect before "
+                  "recording…", "warn")
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self._stop.is_set():
+                return True, ""
+            if self._imu_live():
+                self._say("The inertial sensor is back; recording.", "ok")
+                return True, ""
+            time.sleep(0.25)
+        return False, (f"the inertial sensor has not delivered for "
+                       f"{timeout:.0f} s. Check it is switched on and charged, "
+                       f"and look at the Sensors page; running this job again "
+                       f"carries on where it stopped")
 
     def _await_joints(self, target, step) -> tuple[bool, str]:
         """Wait until every joint is where it was sent, or say that it is not."""
@@ -1776,6 +1817,7 @@ def _audit_runs(runs_dir, only: str | None = None) -> dict:
         labelled_vel, peak_qd, held = None, 0.0, 0.0
         qd_hist = []
         ages, jumps = [], []
+        imu_ages: dict[str, list] = {}
         last_q, repeats, n_q = None, 0, 0
         try:
             with f.open(encoding="utf-8") as fh:
@@ -1807,6 +1849,13 @@ def _audit_runs(runs_dir, only: str | None = None) -> dict:
                     # a whole campaign rather than one run.
                     if isinstance(row.get("robot_age_s"), (int, float)):
                         ages.append(float(row["robot_age_s"]))
+                    for unit, blk in (row.get("imu") or {}).items():
+                        a = (blk or {}).get("_age_s")
+                        if isinstance(a, list) and a and \
+                                isinstance(a[0], (int, float)):
+                            imu_ages.setdefault(unit, []).append(
+                                (float(t) if isinstance(t, (int, float))
+                                 else 0.0, float(a[0])))
                     qv = row.get("q")
                     if isinstance(qv, list):
                         qt = tuple(qv)
@@ -1938,9 +1987,33 @@ def _audit_runs(runs_dir, only: str | None = None) -> dict:
                     f"the robot reading in a typical row of this run was "
                     f"{st.median(ages) * 1000:.0f} ms old when it was written, "
                     f"and the worst was {max(ages):.1f} s")
+        # DID AN INERTIAL SENSOR STOP DELIVERING DURING THE RUN?
+        #
+        # A sensor that drops out leaves no hole in the file: its last reading
+        # is written into every row until it comes back, which looks exactly
+        # like a sensor held perfectly still. Each row records how old that
+        # reading was, so the dropout is measured rather than guessed, and a
+        # run that lost its IMU is rejected -- a planned campaign then
+        # records it again.
+        for unit, seq in sorted(imu_ages.items()):
+            worst_t, worst = max(seq, key=lambda p: p[1])
+            block.setdefault("imu_age_max_s", {})[unit] = round(worst, 3)
+            if worst > IMU_GAP_S:
+                t0 = ts[0] if ts else 0.0
+                notes.append(
+                    f"the inertial sensor {unit} stopped delivering for "
+                    f"{worst:.2f} s during this run (at {worst_t - t0:.1f} s "
+                    f"in). Its last reading was written again and again "
+                    f"meanwhile, so this run's IMU data is not real for that "
+                    f"stretch -- record it again")
         block["notes"] = notes
         out[f.name] = block
     return out
+
+
+# Longer than this without a new inertial reading is a dropout, not jitter:
+# about 25 samples at 100 Hz, and far beyond the bursts Bluetooth delivers in.
+IMU_GAP_S = 0.25
 
 
 def _clock_block(ctx) -> dict:

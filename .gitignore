@@ -9,6 +9,7 @@ campaign/
 calib/
 imu_logs/
 ur_logs/
+vendor/openzen/
 phase0/
 node_modules/
 
