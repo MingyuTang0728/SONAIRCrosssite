@@ -78,20 +78,27 @@ class Twin:
             if not ok:
                 raise RuntimeError(why)
             err = None
-            for d in menagerie_dirs():
-                try:
-                    path = sm.ensure_model(d)
-                    break
-                except FileNotFoundError as e:
-                    err = e
+            # A Track A submission can be the twin instead of S0: the model a
+            # team submitted, running beside the real arm, live.
+            submitted = os.environ.get("SONAIR_TWIN_MODEL", "").strip()
+            if submitted:
+                path = sm.wrap_model(Path(submitted))
             else:
-                raise RuntimeError(
-                    "the MuJoCo model library is not installed. Run: "
-                    "python install_sim.py")
+                for d in menagerie_dirs():
+                    try:
+                        path = sm.ensure_model(d)
+                        break
+                    except FileNotFoundError as e:
+                        err = e
+                else:
+                    raise RuntimeError(
+                        "the MuJoCo model library is not installed. Run: "
+                        "python install_sim.py")
             self.arm = sm.Arm(path, carrier_mass_kg=carrier_mass_kg)
             import mujoco
-            self.model_words = (f"MuJoCo {mujoco.__version__}, menagerie UR5e "
-                                f"(the benchmark's S0), payload "
+            which = (f"submitted model {Path(submitted).name}" if submitted
+                     else "menagerie UR5e (the benchmark's S0)")
+            self.model_words = (f"MuJoCo {mujoco.__version__}, {which}, payload "
                                 f"{carrier_mass_kg:.2f} kg")
             self.why = ""
             del err

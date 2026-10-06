@@ -122,15 +122,33 @@ def build_demo(out: Path) -> int:
 
     fit_pairs = [p for p in pairs if p[0].manifest.cell_key() not in held]
     entries = [
-        score_submission(pairs, None, "baseline: identity (simulation unchanged)",
-                         budget=budget, held_out_cells=held),
+        score_submission(pairs, None, "S0 · reference simulation, unchanged",
+                         budget=budget, held_out_cells=held, track="A",
+                         kind="baseline",
+                         description="the reference simulation; GCR 0 by definition"),
         score_submission(pairs, baseline_constant_offset(pairs, fit_pairs),
-                         "baseline: constant offset", budget=budget, held_out_cells=held),
+                         "B1 · one constant offset", budget=budget,
+                         held_out_cells=held, track="B", kind="baseline",
+                         description="one XYZ offset fitted on the published cells"),
+        score_submission(pairs, _better_sim(pairs), "example: identified servo model",
+                         budget=budget, held_out_cells=held, track="A",
+                         kind="example",
+                         description="a simulator that reproduces the systematic "
+                                     "lag but not the rare large errors"),
         score_submission(pairs, _oracle_half(pairs), "example: 50% oracle correction",
-                         budget=budget, held_out_cells=held),
+                         budget=budget, held_out_cells=held, track="B",
+                         kind="example",
+                         description="moves half way to the real run on ordinary "
+                                     "samples, leaves the outliers"),
     ]
+    by_exp = {"E2": len(runs)}
     doc = write_leaderboard(out / "site" / "leaderboard.json", entries,
-                            budget=budget, gate_c_result=gc)
+                            budget=budget, gate_c_result=gc,
+                            reference="S0 (synthetic demo data)",
+                            dataset={"runs": by_exp,
+                                     "cells": len({p.cell_key() for p in runs}),
+                                     "held_out_cells": len(held),
+                                     "rate_hz": 125.0, "synthetic": True})
 
     print(f"demo dataset: {len(pairs)} paired runs, {len(cell_map)} cells")
     print(f"overall median gap: {overall:.3f} mm   floor: {budget.floor_position_mm():.3f} mm")
@@ -142,6 +160,35 @@ def build_demo(out: Path) -> int:
         print(f"{e['name'][:45]:<46} {e['gcr_p95']:>9.3f} {e['gcr_median']:>9.3f}")
     print(f"\nwritten under {out}/")
     return 0
+
+
+def _better_sim(pairs) -> dict[str, SubmissionRun]:
+    """
+    A Track A example: a simulator that has learnt the systematic, smooth part
+    of the gap (the servo lag, here) and nothing else -- so it closes much of
+    the median error and little of the tail, which is what an identified
+    physics model typically does.
+    """
+    from .clock import resample_to
+    out = {}
+    for real, sim in pairs:
+        rt = [float(s["t"]) for s in real.samples if "tcp_pos" in s]
+        rp = [[float(v) for v in s["tcp_pos"]] for s in real.samples if "tcp_pos" in s]
+        st = [float(s["t"]) for s in sim.samples if "tcp_pos" in s]
+        sp = [[float(v) for v in s["tcp_pos"]] for s in sim.samples if "tcp_pos" in s]
+        r_on_s = resample_to(st, rt, rp)
+        # the smooth part: a 25-sample moving average of the real-minus-sim error
+        d = [[r_[i] - s_[i] for i in range(3)] for s_, r_ in zip(sp, r_on_s)]
+        k = 12
+        smooth = []
+        for j in range(len(d)):
+            win = d[max(0, j - k):j + k + 1]
+            med = [sorted(w[i] for w in win)[len(win) // 2] for i in range(3)]
+            smooth.append(med)
+        pred = [[s_[i] + 0.8 * m[i] for i in range(3)] for s_, m in zip(sp, smooth)]
+        out[real.manifest.run_id] = SubmissionRun(
+            run_id=real.manifest.run_id, t=st, tcp_pos=pred, mode="absolute")
+    return out
 
 
 def _oracle_half(pairs) -> dict[str, SubmissionRun]:

@@ -119,6 +119,26 @@ def ensure_model(menagerie: Path) -> Path:
     return path
 
 
+def wrap_model(model_xml: Path) -> Path:
+    """
+    A SUBMITTED model (Track A), wrapped with the same sensor block S0 has.
+
+    The contract for a submission is small and checked by Arm itself: the six
+    UR joints by their UR names, in UR order; six actuators whose ctrl is the
+    commanded joint position; and a site named attachment_site at the tool
+    flange. Everything else -- masses, friction, armature, gains, solver -- is
+    the submission. The sensors are ours, so every model is measured the same
+    way, at the same point.
+    """
+    model_xml = Path(model_xml).resolve()
+    path = model_xml.parent / f"_sonair_{model_xml.stem}.xml"
+    xml = WRAPPER_XML.replace('<include file="scene.xml"/>',
+                              f'<include file="{model_xml.name}"/>')
+    if not path.exists() or path.read_text(encoding="utf-8") != xml:
+        path.write_text(xml, encoding="utf-8")
+    return path
+
+
 class Arm:
     """The simulated cell: model, data, and the handful of indices we need."""
 
@@ -343,7 +363,8 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
            carrier_mass_kg: float | None = None, settle_s: float = 0.5,
            tcp_offset=None, frame_tol_m: float = 0.05,
            view: bool = False, speed: float = 1.0,
-           imu_cal: dict | None = None) -> dict:
+           imu_cal: dict | None = None, model_xml: Path | None = None,
+           model_name: str = "") -> dict:
     """
     One real run in, one simulated run out, same cell, same rate.
 
@@ -390,7 +411,11 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
                 "These runs predate the commanded-channel fix and cannot be "
                 "used for a gap."}
 
-    arm = Arm(ensure_model(menagerie), carrier_mass_kg=carrier_mass_kg)
+    try:
+        arm = Arm(wrap_model(model_xml) if model_xml else ensure_model(menagerie),
+                  carrier_mass_kg=carrier_mass_kg)
+    except Exception as e:      # noqa: BLE001
+        return {"ok": False, "error": f"the model could not be used: {e}"}
     arm.reset(samples[0]["target_q"])
     arm.settle(samples[0]["target_q"], settle_s)
     if tcp_offset:
@@ -424,7 +449,10 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
         sample_rate_hz=man.sample_rate_hz, started_utc=man.started_utc,
         operator="sim_mujoco",
         experiment=getattr(man, "experiment", "E2"),
-        notes=(f"mujoco {mujoco.__version__}; replayed from {man.run_id}; "
+        notes=(f"mujoco {mujoco.__version__}; "
+               + (f"model {model_name or Path(model_xml).name}; " if model_xml
+                  else "model S0 (menagerie UR5e); ")
+               + f"replayed from {man.run_id}; "
                f"flange payload {carrier_mass_kg:.3f} kg {carrier_src}; "
                f"{mount.words()}"))
     problems = sim.validate()
@@ -544,8 +572,12 @@ def main(argv=None) -> int:
         description="Replay real runs through MuJoCo and write the sim side")
     ap.add_argument("--real", required=True, help="folder of real run files")
     ap.add_argument("--out", required=True, help="where to write the sim runs")
-    ap.add_argument("--menagerie", default="./mujoco_menagerie",
-                    help="clone of google-deepmind/mujoco_menagerie")
+    ap.add_argument("--menagerie", default="",
+                    help="clone of google-deepmind/mujoco_menagerie (found by "
+                         "itself if install_sim.py put it in the usual place)")
+    ap.add_argument("--model", default="",
+                    help="a submitted MJCF model to replay instead of S0 "
+                         "(Track A; see docs/Benchmark_Tracks.md)")
     ap.add_argument("--phase0", default="",
                     help="phase0/ind0.json — applies the measured noise floor")
     ap.add_argument("--carrier-mass-kg", type=float, default=None,
@@ -616,8 +648,15 @@ def main(argv=None) -> int:
 
     out = Path(args.out)
     done = failed = 0
+    men = Path(args.menagerie) if args.menagerie else None
+    if men is None:
+        import twin
+        men = next((d for d in twin.menagerie_dirs()
+                    if (d / MODEL_DIR / "scene.xml").exists()),
+                   Path("./mujoco_menagerie"))
     for r in runs:
-        res = replay(r, out, Path(args.menagerie), degrader=degrader,
+        res = replay(r, out, men, degrader=degrader,
+                     model_xml=Path(args.model) if args.model else None,
                      carrier_mass_kg=args.carrier_mass_kg,
                      tcp_offset=tcp_offset,
                      frame_tol_m=args.frame_tol_mm / 1000.0,

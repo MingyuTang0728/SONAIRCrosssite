@@ -6,9 +6,12 @@ Command line front end.
     python -m sonair_benchmark budget    --phase0 phase0/ind0.json --out calib/budget.json
     python -m sonair_benchmark gap       --real data/real --sim data/sim \
                                          --budget calib/budget.json --out results/gap.json
+    python -m sonair_benchmark simulate  --model subs/team_a/ur5e.xml \
+                                         --real data/real --out subs/team_a/sim
     python -m sonair_benchmark score     --real data/real --sim data/sim \
-                                         --budget calib/budget.json \
-                                         --submission subs/team_a.jsonl --name "Team A" \
+                                         --budget calib/budget.json --plan campaign/plan.json \
+                                         --track-a "Team A=subs/team_a/sim" \
+                                         --track-b "Team B=subs/team_b.jsonl" \
                                          --out site/leaderboard.json
     python -m sonair_benchmark demo      --out demo/   (synthetic end-to-end run)
 """
@@ -25,7 +28,7 @@ from .imu import read_fusionhub_file, stationary_stats, sample_rate_stability
 from .metrics import aggregate_by_cell, gap_between, gate_c
 from .schema import read_dataset, pair_runs, unpaired
 from .scoring import (baseline_constant_offset, baseline_identity, load_submission,
-                      score_submission, write_leaderboard)
+                      score_submission, submission_from_sim_runs, write_leaderboard)
 
 
 def cmd_plan(args) -> int:
@@ -91,6 +94,13 @@ def _load_pairs(real_dir, sim_dir):
         print(f"{n_id} identification runs (E1) left out of scoring")
     real = [r for r in real if r.manifest.experiment != "E1"]
     sim = [r for r in sim if r.manifest.experiment != "E1"]
+    # Runs from the simulated cell (sim_cell.py) are rehearsals, never data.
+    rehearsal = lambda r: str(r.manifest.notes).startswith("SIMULATED CELL")  # noqa: E731
+    n_reh = sum(1 for r in real + sim if rehearsal(r))
+    if n_reh:
+        print(f"{n_reh} simulated-cell rehearsal runs left out")
+    real = [r for r in real if not rehearsal(r)]
+    sim = [r for r in sim if not rehearsal(r)]
     pairs = pair_runs(real, sim)
     lonely_real, lonely_sim = unpaired(real, sim)
     if lonely_real or lonely_sim:
@@ -156,6 +166,27 @@ def cmd_gap(args) -> int:
     return 0
 
 
+def _named(spec: str) -> tuple[str, str]:
+    if "=" not in spec:
+        return Path(spec).stem, spec
+    name, _, path = spec.partition("=")
+    return name.strip(), path.strip()
+
+
+def dataset_summary(real_dir, held=None) -> dict:
+    """What the scores were computed over, for the page's Data section."""
+    runs = [r for r in read_dataset(real_dir, side="real")
+            if not str(r.manifest.notes).startswith("SIMULATED CELL")]
+    by_exp: dict[str, int] = {}
+    for r in runs:
+        by_exp[r.manifest.experiment] = by_exp.get(r.manifest.experiment, 0) + 1
+    e2 = [r for r in runs if r.manifest.experiment != "E1"]
+    return {"runs": by_exp,
+            "cells": len({r.manifest.cell_key() for r in e2}),
+            "held_out_cells": len(held) if held else 0,
+            "rate_hz": max((r.manifest.sample_rate_hz for r in runs), default=0)}
+
+
 def cmd_score(args) -> int:
     pairs = _load_pairs(args.real, args.sim)
     if not pairs:
@@ -172,26 +203,57 @@ def cmd_score(args) -> int:
         fit_pairs = pairs
 
     entries = [
-        score_submission(pairs, None, "baseline: identity (simulation unchanged)",
-                         budget=budget, held_out_cells=held),
+        score_submission(pairs, None, "S0 · MuJoCo menagerie UR5e, unchanged",
+                         budget=budget, held_out_cells=held, track="A",
+                         kind="baseline",
+                         description="the reference simulation; GCR 0 by definition"),
         score_submission(pairs, baseline_constant_offset(pairs, fit_pairs),
-                         "baseline: constant offset", budget=budget, held_out_cells=held),
+                         "B1 · one constant offset", budget=budget,
+                         held_out_cells=held, track="B", kind="baseline",
+                         description="one XYZ offset fitted on the published cells"),
     ]
+    for spec in args.track_a or []:
+        name, path = _named(spec)
+        cand = [r for r in read_dataset(path, side="sim")
+                if r.manifest.experiment != "E1"]
+        if not cand:
+            print(f"WARNING: no simulated runs under {path} for {name}", file=sys.stderr)
+        entries.append(score_submission(
+            pairs, submission_from_sim_runs(cand, pairs), name, budget=budget,
+            held_out_cells=held, track="A"))
+    b_specs = list(args.track_b or [])
     if args.submission:
-        sub = load_submission(args.submission)
-        entries.append(score_submission(pairs, sub, args.name or Path(args.submission).stem,
-                                        budget=budget, held_out_cells=held))
+        b_specs.append(f"{args.name or Path(args.submission).stem}={args.submission}")
+    for spec in b_specs:
+        name, path = _named(spec)
+        entries.append(score_submission(pairs, load_submission(path), name,
+                                        budget=budget, held_out_cells=held,
+                                        track="B"))
 
     reports = [gap_between(r, s, compute_lag=False) for r, s in pairs]
     gc = gate_c(aggregate_by_cell(reports))
-    doc = write_leaderboard(args.out, entries, budget=budget, gate_c_result=gc)
+    doc = write_leaderboard(args.out, entries, budget=budget, gate_c_result=gc,
+                            dataset=dataset_summary(args.real, held))
 
-    print(f"{'entry':<46} {'GCR p95':>9} {'GCR med':>9} {'worst cell':>11}")
+    print(f"{'entry':<46} {'track':>5} {'GCR p95':>9} {'GCR med':>9} {'worst cell':>11}")
     for e in doc["entries"]:
-        print(f"{e['name'][:45]:<46} {e['gcr_p95']:>9.3f} {e['gcr_median']:>9.3f} "
-              f"{e['worst_cell_gcr']:>11.3f}")
+        print(f"{e['name'][:45]:<46} {e['track']:>5} {e['gcr_p95']:>9.3f} "
+              f"{e['gcr_median']:>9.3f} {e['worst_cell_gcr']:>11.3f}")
     print(f"\nleaderboard written to {args.out}")
     return 0
+
+
+def cmd_simulate(args) -> int:
+    """Track A: replay every recorded run through a submitted MuJoCo model."""
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root))
+    import sim_mujoco
+    argv = ["--real", args.real, "--out", args.out, "--model", args.model]
+    if args.menagerie:
+        argv += ["--menagerie", args.menagerie]
+    if args.tcp_offset:
+        argv += ["--tcp-offset", args.tcp_offset]
+    return sim_mujoco.main(argv)
 
 
 def cmd_demo(args) -> int:
@@ -245,10 +307,24 @@ def main(argv=None) -> int:
     p.add_argument("--sim", required=True)
     p.add_argument("--budget")
     p.add_argument("--plan", help="campaign plan, for the held-out cell list")
-    p.add_argument("--submission")
+    p.add_argument("--submission", help="a Track B prediction file (legacy form)")
     p.add_argument("--name")
+    p.add_argument("--track-a", action="append", metavar="NAME=DIR",
+                   help="a Track A entry: a folder of its simulated runs "
+                        "(repeatable)")
+    p.add_argument("--track-b", action="append", metavar="NAME=FILE",
+                   help="a Track B entry: a prediction file (repeatable)")
     p.add_argument("--out", default="site/leaderboard.json")
     p.set_defaults(func=cmd_score)
+
+    p = sub.add_parser("simulate", help="Track A: replay recorded runs through "
+                                        "a submitted MuJoCo model")
+    p.add_argument("--model", required=True, help="the submitted MJCF file")
+    p.add_argument("--real", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--menagerie", default="")
+    p.add_argument("--tcp-offset", default="")
+    p.set_defaults(func=cmd_simulate)
 
     p = sub.add_parser("demo", help="synthetic end-to-end demonstration")
     p.add_argument("--out", default="demo")

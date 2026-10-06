@@ -11,8 +11,14 @@ must build the same thing):
   INPUT to a submission, per run:
       manifest       cell coordinates: joint_vel, arm_config, traj_type
       commanded      the commanded trajectory, exactly as the controller got it
-      sim_sequence   the Isaac-generated sequence: t, tcp_pos, tcp_rot,
+      sim_sequence   the reference simulation (S0, MuJoCo) of the same
+                     commanded trajectory: t, tcp_pos, tcp_rot,
                      imu.{quat,gyro,accel} at the declared rate
+
+  That is Track B. Track A submits a simulator instead -- a MuJoCo model, or
+  simulated runs from any engine -- and its runs are turned into the same
+  absolute predictions (submission_from_sim_runs), so both tracks are scored
+  by this one code path against the same reference.
 
   OUTPUT from a submission, per run:
       pred_sequence  predicted REAL-side sequence: the same fields, on the
@@ -243,9 +249,18 @@ def score_run(real_run, sim_run, submission: SubmissionRun | None,
     return sc
 
 
+TRACKS = {
+    "A": "Simulator fidelity: a better simulation of the same commanded motion",
+    "B": "Sim-to-real correction: predict the real run from the simulated one",
+}
+
+
 @dataclass
 class LeaderboardEntry:
     name: str
+    track: str = "B"                 # "A" | "B" -- see TRACKS
+    kind: str = "submission"         # "baseline" | "example" | "submission"
+    description: str = ""
     submitted: str = ""
     n_runs: int = 0
     n_cells: int = 0
@@ -260,9 +275,36 @@ class LeaderboardEntry:
     version: str = SUBMISSION_VERSION
 
 
+def submission_from_sim_runs(candidate_runs, pairs) -> dict[str, SubmissionRun]:
+    """
+    A Track A entry -- a simulator's own runs -- as an absolute prediction.
+
+    Track A asks for a better SIMULATION of the commanded motion; Track B for
+    a CORRECTION of the reference one. Both end as the same question -- how
+    close does this sequence come to the real one, relative to the reference
+    simulation -- so both are scored by the same code. The candidate's run is
+    matched to the real run by cell and repeat, exactly as sim runs are paired.
+    """
+    index = {(r.manifest.cell_key(), r.manifest.repeat_idx): r for r in candidate_runs}
+    out = {}
+    for real, _ref in pairs:
+        cand = index.get((real.manifest.cell_key(), real.manifest.repeat_idx))
+        if cand is None:
+            continue
+        t = [float(x["t"]) for x in cand.samples if "tcp_pos" in x]
+        pos = [[float(v) for v in x["tcp_pos"]] for x in cand.samples if "tcp_pos" in x]
+        rot = [[float(v) for v in x["tcp_rot"]] for x in cand.samples if "tcp_rot" in x]
+        out[real.manifest.run_id] = SubmissionRun(
+            run_id=real.manifest.run_id, t=t, tcp_pos=pos,
+            tcp_rot=rot if len(rot) == len(t) else [], mode="absolute")
+    return out
+
+
 def score_submission(pairs, submission: dict[str, SubmissionRun] | None,
                      name: str, budget=None,
-                     held_out_cells: set[str] | None = None) -> LeaderboardEntry:
+                     held_out_cells: set[str] | None = None,
+                     track: str = "B", kind: str = "submission",
+                     description: str = "") -> LeaderboardEntry:
     """
     Score a whole submission over a set of (real, sim) pairs.
 
@@ -281,7 +323,8 @@ def score_submission(pairs, submission: dict[str, SubmissionRun] | None,
         sub = submission.get(real.manifest.run_id) if submission else None
         scores.append(score_run(real, sim, sub, floor_position_mm=floor))
 
-    entry = LeaderboardEntry(name=name, n_runs=len(scores))
+    entry = LeaderboardEntry(name=name, track=track, kind=kind,
+                             description=description, n_runs=len(scores))
     if not scores:
         entry.notes = "no scorable runs — check run_id matching between submission and held-out set"
         return entry
@@ -375,7 +418,8 @@ def baseline_constant_offset(pairs, fit_pairs=None) -> dict[str, SubmissionRun]:
 
 
 def write_leaderboard(path: str | Path, entries: Sequence[LeaderboardEntry],
-                      budget=None, gate_c_result=None) -> dict:
+                      budget=None, gate_c_result=None, dataset: dict | None = None,
+                      reference: str = "S0: MuJoCo, menagerie UR5e, unchanged") -> dict:
     """
     Emit leaderboard.json — the file the benchmark page reads.
 
@@ -389,10 +433,18 @@ def write_leaderboard(path: str | Path, entries: Sequence[LeaderboardEntry],
         "title": "Sim2real Operational beNchmark for AI Robotics",
         "headline_metric": "gcr_p95",
         "headline_metric_name": "Gap Closure Ratio at the 95th percentile",
+        "reference_simulator": reference,
+        "tracks": TRACKS,
+        "dataset": dataset,
         "methodology": {
-            "task": "given an Isaac-generated simulated sequence and its commanded "
-                    "trajectory, predict the real UR5e sequence",
-            "score": "GCR = 1 - err(prediction, real) / err(simulation, real)",
+            "task": "a real UR5e and a simulator are given the same commanded "
+                    "joint trajectory (the controller's own target_q); Track A "
+                    "simulates it better, Track B corrects the reference "
+                    "simulation towards the real run",
+            "score": "GCR = 1 - err(entry, real) / err(reference simulation, real), "
+                     "on the tool position",
+            "reference": "the reference simulation is " + reference + "; its own "
+                         "GCR is 0 by construction",
             "why_p95": "a model matching the centre of the error distribution but "
                        "not its tails scores well at the median and badly at p95; "
                        "the tails are the long-tail cases the benchmark exists for",

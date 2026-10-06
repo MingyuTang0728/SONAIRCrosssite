@@ -5,7 +5,8 @@ A scored sim-to-real gap benchmark built on quantities that exist on BOTH
 sides of the gap: orientation, angular rate, acceleration, position and their
 temporal derivatives. Those are the modalities Sam named first in the review,
 for the reason that they are the only ones that are cheap to ground-truth on a
-real UR5e and cheap to generate faithfully in Isaac Sim.
+real UR5e and cheap to generate faithfully in simulation (MuJoCo as the
+reference, S0; Isaac Sim as a second engine).
 
 The package is deliberately split along the phases of the deployment plan:
 

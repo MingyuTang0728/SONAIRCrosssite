@@ -5,247 +5,411 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>SONAIR Benchmark</title>
 <style>
+/* The public face of the benchmark: what is measured, on what, how a team
+   takes part, and the scores. It reads site/leaderboard.json (and
+   results/gap.json) written by `python -m sonair_benchmark score|gap`, so the
+   numbers on it are the harness's own -- nothing is typed in by hand. */
 :root{
-  --bg:#f7f9fc; --panel:#ffffff; --line:#dde3ec; --line-soft:#eef2f7;
-  --ink:#131b26; --muted:#5b6878; --muted-2:#8a95a4;
-  --accent:#0a58ca; --accent-soft:#e8f0fd;
-  --good:#157347; --good-soft:#e6f4ec;
-  --warn:#9a6700; --warn-soft:#fdf5e2;
-  --bad:#b42318; --bad-soft:#fdeceb;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --bg:#f6f7f9; --panel:#ffffff; --line:#dde1e7; --line-soft:#eef0f3;
+  --ink:#141a21; --muted:#56606c; --muted-2:#87909b;
+  --accent:#1f5f9e; --accent-soft:#e7eff8;
+  --track-a:#1f6f8b; --track-a-soft:#e3f1f5;
+  --track-b:#8a4b14; --track-b-soft:#f7ece1;
+  --good:#1d7a45; --good-soft:#e5f3ea;
+  --warn:#94660b; --warn-soft:#fbf3e1;
+  --bad:#b0281d; --bad-soft:#fbe9e7;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --cond:"Bahnschrift","DIN Alternate","Roboto Condensed","Arial Narrow","Segoe UI",sans-serif;
 }
-:root:not([data-theme="light"]){ }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --bg:#0c1016; --panel:#141a22; --line:#263040; --line-soft:#1d2530;
-    --ink:#e8edf4; --muted:#9aa7b8; --muted-2:#6d7a8b;
-    --accent:#5a9bff; --accent-soft:#16233a;
-    --good:#4bb573; --good-soft:#12251a;
-    --warn:#d9a441; --warn-soft:#2a2213;
-    --bad:#f0766a; --bad-soft:#2c1614;
+    color-scheme:dark;
+    --bg:#101316; --panel:#171b1f; --line:#2a3037; --line-soft:#1e2328;
+    --ink:#e4e8ec; --muted:#a1aab3; --muted-2:#6f7882;
+    --accent:#6aa6e0; --accent-soft:#18283a;
+    --track-a:#5cb6d1; --track-a-soft:#122a32;
+    --track-b:#e0a066; --track-b-soft:#2e2216;
+    --good:#55c07f; --good-soft:#132619;
+    --warn:#ddae4c; --warn-soft:#2b2312;
+    --bad:#f0786c; --bad-soft:#2d1614;
   }
 }
 :root[data-theme="dark"]{
-  --bg:#0c1016; --panel:#141a22; --line:#263040; --line-soft:#1d2530;
-  --ink:#e8edf4; --muted:#9aa7b8; --muted-2:#6d7a8b;
-  --accent:#5a9bff; --accent-soft:#16233a;
-  --good:#4bb573; --good-soft:#12251a;
-  --warn:#d9a441; --warn-soft:#2a2213;
-  --bad:#f0766a; --bad-soft:#2c1614;
+  color-scheme:dark;
+  --bg:#101316; --panel:#171b1f; --line:#2a3037; --line-soft:#1e2328;
+  --ink:#e4e8ec; --muted:#a1aab3; --muted-2:#6f7882;
+  --accent:#6aa6e0; --accent-soft:#18283a;
+  --track-a:#5cb6d1; --track-a-soft:#122a32;
+  --track-b:#e0a066; --track-b-soft:#2e2216;
+  --good:#55c07f; --good-soft:#132619;
+  --warn:#ddae4c; --warn-soft:#2b2312;
+  --bad:#f0786c; --bad-soft:#2d1614;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-     line-height:1.55;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1080px;margin:0 auto;padding:0 16px 80px}
-header.top{border-bottom:1px solid var(--line);background:var(--panel);
-           padding:28px 0 22px;margin-bottom:28px}
-header.top .wrap{padding-bottom:0}
-.eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-         color:var(--muted-2);font-weight:600;margin:0 0 6px}
-h1{font-size:clamp(26px,4vw,38px);margin:0 0 6px;letter-spacing:-.02em;font-weight:700}
-.sub{color:var(--muted);margin:0;font-size:15px;max-width:62ch}
-.pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;
-      border-radius:999px;border:1px solid var(--line);color:var(--muted);
-      background:var(--bg);vertical-align:middle;margin-left:8px}
-nav.tabs{display:flex;gap:2px;flex-wrap:wrap;margin-top:20px;border-bottom:1px solid var(--line)}
-nav.tabs button{background:none;border:none;border-bottom:2px solid transparent;
-  color:var(--muted);font:inherit;font-size:14px;font-weight:500;
-  padding:9px 14px;cursor:pointer;margin-bottom:-1px}
+     line-height:1.55;-webkit-font-smoothing:antialiased;font-size:15px}
+.wrap{max-width:1100px;margin:0 auto;padding:0 18px 80px}
+
+header.top{border-bottom:1px solid var(--line);background:var(--panel);padding:28px 0 0}
+.eyebrow{font:600 11.5px var(--cond);letter-spacing:.16em;text-transform:uppercase;
+         color:var(--muted-2);margin:0 0 8px}
+h1{font:700 clamp(30px,4.4vw,42px)/1.05 var(--cond);margin:0 0 4px;letter-spacing:.06em}
+h1 small{font:500 15px var(--sans);letter-spacing:0;color:var(--muted);margin-left:10px;
+         vertical-align:middle}
+.sub{color:var(--muted);margin:10px 0 0;font-size:16px;max-width:66ch;text-wrap:balance}
+.pill{display:inline-block;font:600 11px var(--mono);padding:3px 9px;border-radius:3px;
+      border:1px solid var(--line);color:var(--muted);background:var(--bg);
+      vertical-align:middle;margin-left:10px;letter-spacing:0}
+.facts{display:flex;flex-wrap:wrap;gap:0;margin:22px 0 0;border-top:1px solid var(--line-soft)}
+.facts div{padding:12px 22px 12px 0;margin-right:22px;border-right:1px solid var(--line-soft)}
+.facts div:last-child{border-right:none}
+.facts b{display:block;font:600 21px var(--mono);font-variant-numeric:tabular-nums}
+.facts span{font:600 10.5px var(--cond);letter-spacing:.12em;text-transform:uppercase;color:var(--muted-2)}
+nav.tabs{display:flex;gap:0;flex-wrap:wrap;margin-top:6px}
+nav.tabs button{background:none;border:none;border-bottom:3px solid transparent;
+  color:var(--muted);font:600 13.5px var(--cond);letter-spacing:.06em;text-transform:uppercase;
+  padding:12px 15px 10px;cursor:pointer}
 nav.tabs button:hover{color:var(--ink)}
-nav.tabs button[aria-selected="true"]{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
 section[hidden]{display:none}
-h2{font-size:20px;margin:34px 0 4px;letter-spacing:-.01em;font-weight:650}
-h2:first-child{margin-top:4px}
-h3{font-size:14px;margin:24px 0 6px;font-weight:650;letter-spacing:.01em}
-p{margin:8px 0 14px;color:var(--ink)}
+main.wrap{padding-top:28px}
+
+h2{font:650 23px var(--cond);margin:34px 0 6px;letter-spacing:.02em;text-wrap:balance}
+section > h2:first-child{margin-top:4px}
+h3{font:650 15.5px var(--cond);margin:24px 0 6px;letter-spacing:.04em}
+p{margin:8px 0 14px;max-width:75ch}
 p.note{color:var(--muted);font-size:13.5px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-      padding:18px 20px;margin:14px 0}
-.grid{display:grid;gap:12px}
+.lead{font-size:16px;color:var(--muted);max-width:70ch}
+a{color:var(--accent)}
+
+.grid{display:grid;gap:14px}
+.grid.c4{grid-template-columns:repeat(4,1fr)}
 .grid.c3{grid-template-columns:repeat(3,1fr)}
 .grid.c2{grid-template-columns:repeat(2,1fr)}
-@media (max-width:760px){.grid.c3,.grid.c2{grid-template-columns:1fr}}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
-         color:var(--muted-2);font-weight:600;margin-bottom:5px}
-.stat .v{font-size:26px;font-weight:660;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
-.stat .u{font-size:13px;font-weight:500;color:var(--muted);margin-left:3px}
-.stat .d{font-size:12px;color:var(--muted);margin-top:3px}
-table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
-th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line-soft)}
-th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);
-   font-weight:600;border-bottom:1px solid var(--line)}
-td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:12.5px}
+@media (max-width:860px){.grid.c4{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:640px){.grid.c4,.grid.c3,.grid.c2{grid-template-columns:1fr}}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:13px 15px}
+.stat .k{font:600 10.5px var(--cond);text-transform:uppercase;letter-spacing:.12em;
+         color:var(--muted-2);margin-bottom:5px}
+.stat .v{font:650 25px var(--mono);font-variant-numeric:tabular-nums}
+.stat .u{font:500 13px var(--sans);color:var(--muted);margin-left:3px}
+.stat .d{font-size:12.5px;color:var(--muted);margin-top:3px}
+.stat.a{border-top:3px solid var(--track-a)} .stat.b{border-top:3px solid var(--track-b)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:18px 20px}
+.track{border-top:4px solid var(--track-a)}
+.track.b{border-top-color:var(--track-b)}
+.track h3{margin-top:2px;font-size:19px}
+.track .q{font-size:15.5px;margin:6px 0 12px}
+.track dl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0;font-size:14px}
+.track dt{font:600 11px var(--cond);text-transform:uppercase;letter-spacing:.1em;
+          color:var(--muted-2);padding-top:3px}
+.track dd{margin:0}
+
+table{width:100%;border-collapse:collapse;font-size:14px;margin:10px 0}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font:600 11px var(--cond);text-transform:uppercase;letter-spacing:.1em;color:var(--muted-2);
+   border-bottom:1px solid var(--line)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13px;white-space:nowrap}
 tbody tr:hover{background:var(--line-soft)}
-.badge{display:inline-block;font-size:11px;font-weight:650;padding:2px 8px;border-radius:5px}
+tr.base td{color:var(--muted)}
+tr.example td:first-child .nm{font-style:italic}
+td .desc{display:block;font-size:12.5px;color:var(--muted-2);margin-top:2px}
+.tablewrap{overflow-x:auto}
+.badge{display:inline-block;font:650 10.5px var(--cond);letter-spacing:.08em;text-transform:uppercase;
+       padding:2px 7px;border-radius:3px;vertical-align:1px;white-space:nowrap}
+.badge.A{background:var(--track-a-soft);color:var(--track-a)}
+.badge.B{background:var(--track-b-soft);color:var(--track-b)}
+.badge.base{background:var(--line-soft);color:var(--muted)}
+.badge.ex{border:1px solid var(--line);color:var(--muted-2)}
 .badge.pass{background:var(--good-soft);color:var(--good)}
+.badge.plan{background:var(--line-soft);color:var(--muted-2)}
 .badge.marginal{background:var(--warn-soft);color:var(--warn)}
 .badge.fail{background:var(--bad-soft);color:var(--bad)}
-.badge.base{background:var(--line-soft);color:var(--muted)}
-pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
-    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;
-    line-height:1.6;margin:10px 0}
-code{font-family:var(--mono);font-size:.92em;background:var(--line-soft);
-     padding:1px 5px;border-radius:4px}
+
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:4px;overflow:hidden;background:var(--panel)}
+.seg button{font:600 12.5px var(--cond);letter-spacing:.05em;padding:6px 13px;border:none;
+  border-right:1px solid var(--line);background:none;color:var(--muted);cursor:pointer}
+.seg button:last-child{border-right:none}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--ink)}
+
+pre{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:10px 0}
+code{font-family:var(--mono);font-size:.9em;background:var(--line-soft);padding:1px 5px;border-radius:3px}
 pre code{background:none;padding:0}
-ol,ul{padding-left:22px;margin:8px 0 14px}
+ol,ul{padding-left:22px;margin:8px 0 14px;max-width:75ch}
 li{margin:5px 0}
-.bar{display:inline-block;vertical-align:middle;width:56px;height:7px;border-radius:4px;
+.bar{display:inline-block;vertical-align:middle;width:58px;height:7px;border-radius:2px;
      background:var(--line-soft);overflow:hidden;margin-right:6px}
-.bar>i{display:block;height:100%;border-radius:4px;background:var(--accent)}
+.bar>i{display:block;height:100%;background:var(--accent)}
 .bar.neg>i{background:var(--bad)}
-.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:6px 0 12px}
-.legend span{display:flex;align-items:center;gap:5px}
-.swatch{width:11px;height:11px;border-radius:3px;display:inline-block}
-.gatebox{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:8px;
+.bar.A>i{background:var(--track-a)} .bar.B>i{background:var(--track-b)}
+.gatebox{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:4px;
          border:1px solid var(--line);margin:8px 0}
-.gatebox.pass{background:var(--good-soft);border-color:color-mix(in srgb,var(--good) 25%,transparent)}
-.gatebox.marginal{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
-.gatebox.fail{background:var(--bad-soft);border-color:color-mix(in srgb,var(--bad) 25%,transparent)}
-.gatebox b{display:block;font-size:13px;margin-bottom:2px}
+.gatebox.pass{background:var(--good-soft)} .gatebox.marginal{background:var(--warn-soft)}
+.gatebox.fail{background:var(--bad-soft)}
+.gatebox b{display:block;font-size:13.5px;margin-bottom:2px}
 .gatebox p{margin:0;font-size:13px;color:var(--muted)}
-.loadrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-         font-size:13px;color:var(--muted);margin:12px 0}
-button.act{font:inherit;font-size:13px;font-weight:550;padding:6px 13px;border-radius:7px;
+.loadrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:12px 0}
+button.act{font:600 13px var(--cond);letter-spacing:.04em;padding:7px 13px;border-radius:4px;
   border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
-button.act:hover{border-color:var(--accent);color:var(--accent)}
+button.act:hover{border-color:var(--accent)}
 button.act.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-button.act.primary:hover{filter:brightness(1.08);color:#fff}
 .hm{overflow-x:auto;margin:12px 0}
 .hm table{font-size:12px;min-width:520px}
-.hm td.cell{text-align:center;font-family:var(--mono);font-weight:600;
-            border-radius:4px;color:#fff;min-width:64px}
-footer{border-top:1px solid var(--line);margin-top:56px;padding-top:20px;
-       color:var(--muted-2);font-size:12.5px}
-footer a{color:var(--muted);text-decoration:none;border-bottom:1px solid var(--line)}
-a{color:var(--accent)}
-.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px;margin:8px 0}
-.kv dt{color:var(--muted);white-space:nowrap}
-.kv dd{margin:0;font-family:var(--mono);font-size:12.5px}
+.hm td.cell{text-align:center;font-family:var(--mono);font-weight:600;border-radius:2px;color:#fff;min-width:64px}
+.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;
+         border-radius:0 4px 4px 0;margin:14px 0;max-width:80ch}
+.callout b{display:block;margin-bottom:2px}
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:14px 0;counter-reset:f}
+.flow div{border:1px solid var(--line);border-right:none;padding:12px 14px;background:var(--panel);position:relative}
+.flow div:last-child{border-right:1px solid var(--line)}
+.flow div::before{counter-increment:f;content:counter(f);font:700 12px var(--mono);color:var(--muted-2);display:block}
+.flow b{display:block;font:650 14px var(--cond);letter-spacing:.03em}
+.flow span{font-size:13px;color:var(--muted)}
+@media (max-width:760px){.flow{grid-template-columns:1fr 1fr}
+  .flow div{border-right:1px solid var(--line);border-bottom:none}
+  .flow div:nth-last-child(-n+2){border-bottom:1px solid var(--line)}}
+footer{border-top:1px solid var(--line);margin-top:56px;padding-top:20px;color:var(--muted-2);font-size:12.5px}
+footer a{color:var(--muted)}
 </style>
 </head>
 <body>
-
 <header class="top">
-  <div class="wrap">
-    <p class="eyebrow">UK Open Multimodal AI Benchmark &middot; UoN &times; UCL</p>
-    <h1>SONAIR<span class="pill" id="statusPill">awaiting results</span></h1>
-    <p class="sub">Sim2real Operational be<b>N</b>chmark for <b>AI</b> <b>R</b>obotics.
-       Submit a model that turns a simulated robot sequence into the real one.
-       We score how much of the gap it actually closes &mdash; including in the tails,
-       where it matters.</p>
+  <div class="wrap" style="padding-bottom:0">
+    <p class="eyebrow">UK Open Multimodal AI Benchmark &middot; University of Nottingham &times; UCL</p>
+    <h1>SONAIR<small>Sim2real Operational beNchmark for AI Robotics</small><span class="pill" id="statusPill">awaiting results</span></h1>
+    <p class="sub">One commanded motion, run twice: on a real UR5e carrying an instrumented
+      mount, and in simulation. The two do not agree. Make the simulation right, or correct
+      it &mdash; and be scored on how much of the gap you close, in the tails as well as on
+      average.</p>
+    <div class="facts" id="facts">
+      <div><b id="fRuns">&mdash;</b><span>evaluation runs</span></div>
+      <div><b id="fCells">&mdash;</b><span>condition cells</span></div>
+      <div><b id="fHeld">&mdash;</b><span>held out</span></div>
+      <div><b id="fE1">&mdash;</b><span>training runs (E1)</span></div>
+      <div><b id="fRef">S0</b><span>reference simulator</span></div>
+    </div>
     <nav class="tabs" role="tablist">
       <button role="tab" aria-selected="true" data-tab="leaderboard">Leaderboard</button>
-      <button role="tab" aria-selected="false" data-tab="task">The task</button>
+      <button role="tab" aria-selected="false" data-tab="tracks">Tracks</button>
+      <button role="tab" aria-selected="false" data-tab="data">Data</button>
       <button role="tab" aria-selected="false" data-tab="gap">Gap map</button>
       <button role="tab" aria-selected="false" data-tab="floor">Measurement floor</button>
-      <button role="tab" aria-selected="false" data-tab="submit">Submit</button>
+      <button role="tab" aria-selected="false" data-tab="submit">Take part</button>
     </nav>
   </div>
 </header>
 
-<div class="wrap">
+<main class="wrap">
 
 <!-- ================= LEADERBOARD ================= -->
 <section id="tab-leaderboard">
-  <div class="loadrow">
-    <button class="act primary" id="btnLoadDefault">Load leaderboard.json</button>
-    <button class="act" id="btnPickFile">Open a local results file…</button>
-    <input type="file" id="fileInput" accept=".json" hidden/>
-    <span id="loadStatus">No results loaded yet.</span>
-  </div>
-
-  <div class="grid c3" id="headlineStats"></div>
+  <div class="grid c4" id="headlineStats"></div>
 
   <h2>Scores</h2>
-  <p class="note">Ranked by <b>GCR&nbsp;p95</b> &mdash; Gap Closure Ratio at the 95th percentile of
-     per-sample error. <code>1.0</code> reproduces the real side exactly; <code>0.0</code> is no better
-     than handing back the simulation unchanged; negative is worse than doing nothing.
-     A model that matches the middle of the distribution but not its tails shows up here as
-     a high median and a low p95 &mdash; that split is the point of the benchmark.</p>
-  <div class="legend">
-    <span><i class="swatch" style="background:var(--accent)"></i> closes the gap</span>
-    <span><i class="swatch" style="background:var(--bad)"></i> worse than the simulation</span>
-    <span><span class="badge base">baseline</span> the floor the board starts from</span>
+  <p>Ranked by <b>GCR&nbsp;p95</b>, the Gap Closure Ratio at the 95th percentile of
+     per-sample tool-position error, on condition cells nobody was shown.
+     1.0 reproduces the real arm exactly; 0.0 is no better than the reference simulation
+     unchanged; negative is worse than doing nothing. A method that fixes the middle of
+     the error distribution but not its tails has a high median and a low p95 &mdash; that
+     difference is what the benchmark is for.</p>
+  <div class="loadrow">
+    <div class="seg" id="trackFilter" role="group" aria-label="Show entries from">
+      <button aria-pressed="true" data-t="all">All</button>
+      <button aria-pressed="false" data-t="A">Track A &middot; simulator</button>
+      <button aria-pressed="false" data-t="B">Track B &middot; correction</button>
+    </div>
+    <span style="flex:1"></span>
+    <button class="act" id="btnLoadDefault">Reload results</button>
+    <button class="act" id="btnPickFile">Open a results file&hellip;</button>
+    <input type="file" id="fileInput" accept=".json" hidden/>
   </div>
+  <div class="tablewrap">
   <table id="lbTable">
     <thead><tr>
-      <th>Model</th>
-      <th class="num">GCR p95</th>
-      <th class="num">GCR median</th>
-      <th class="num">Orientation</th>
-      <th class="num">Worst cell</th>
-      <th class="num">Runs</th>
+      <th class="num">#</th><th>Entry</th><th>Track</th>
+      <th class="num">GCR p95</th><th class="num">GCR median</th>
+      <th class="num">Orientation</th><th class="num">Worst cell</th><th class="num">Runs</th>
     </tr></thead>
-    <tbody><tr><td colspan="6" style="color:var(--muted)">Load a results file to populate.</td></tr></tbody>
+    <tbody><tr><td colspan="8" style="color:var(--muted)">Loading&hellip;</td></tr></tbody>
   </table>
+  </div>
+  <p class="note" id="loadStatus">&mdash;</p>
   <p class="note" id="lbNotes"></p>
 </section>
 
-<!-- ================= TASK ================= -->
-<section id="tab-task" hidden>
-  <h2>What you are asked to do</h2>
-  <p>A UR5e traces the same commanded trajectory twice: once in Isaac Sim, once on real hardware
-     carrying an instrumented sensor mount. The two do not agree. Your model is given the
-     <b>simulated</b> sequence and must predict the <b>real</b> one.</p>
+<!-- ================= TRACKS ================= -->
+<section id="tab-tracks" hidden>
+  <h2>Two ways to close the gap</h2>
+  <p class="lead">Both tracks start from the same thing: the joint trajectory the robot's own
+     controller commanded, <code>target_q</code>, at 125&nbsp;Hz. The real arm executed it; the
+     reference simulator (S0) executed it. Everything that separates the two is the
+     sim-to-real gap.</p>
 
-  <h3>Input, per run</h3>
-  <pre><code>{
-  "run_id":      "v0p70_extended_stop_start_r02",
-  "cell":        { "joint_vel": 0.70, "arm_config": "extended",
-                   "traj_type": "stop_start" },
-  "commanded":   [ {"type":"SCAN_L0_START","coords":[x,y,z,rx,ry,rz]}, ... ],
-  "sim_sequence": {
-     "t":       [0.000, 0.008, 0.016, ...],          // seconds, master clock
-     "tcp_pos": [[x,y,z], ...],                      // metres, robot base frame
-     "tcp_rot": [[rx,ry,rz], ...],                   // rotation vector, radians
-     "imu":     { "ind0": { "quat": [[w,x,y,z],...],
-                            "gyro": [[x,y,z],...],   // rad/s
-                            "accel":[[x,y,z],...] }} // m/s^2
-  }
-}</code></pre>
+  <div class="grid c2">
+    <div class="card track">
+      <span class="badge A">Track A</span>
+      <h3>Make the simulator right</h3>
+      <p class="q">Given the commanded joints, simulate the arm so that it moves the way the real one did.</p>
+      <dl>
+        <dt>Submit</dt><dd>a MuJoCo model of the UR5e (MJCF), or simulated runs from any engine &mdash; Isaac, PyBullet, your own</dd>
+        <dt>We run</dt><dd>every evaluation run's <code>target_q</code> through your model with the same harness as S0, sensors and all</dd>
+        <dt>Train on</dt><dd>the identification set E1: every joint excited, two payloads</dd>
+        <dt>Scored</dt><dd>your simulation against the real run, relative to S0</dd>
+      </dl>
+    </div>
+    <div class="card track b">
+      <span class="badge B">Track B</span>
+      <h3>Correct the simulation</h3>
+      <p class="q">Given the reference simulation of a run, predict the real run &mdash; or the correction to add.</p>
+      <dl>
+        <dt>Submit</dt><dd>one prediction per run, JSON Lines: tool position and orientation on the simulation's timestamps</dd>
+        <dt>We run</dt><dd>nothing of yours: the file is scored as it is</dd>
+        <dt>Train on</dt><dd>the published cells of E2, with their real runs, and E1</dd>
+        <dt>Scored</dt><dd>your prediction against the real run, relative to S0</dd>
+      </dl>
+    </div>
+  </div>
 
-  <h3>Output, per run</h3>
-  <pre><code>{"run_id": "...", "mode": "absolute",
- "t": [...], "tcp_pos": [[x,y,z], ...], "tcp_rot": [[rx,ry,rz], ...]}</code></pre>
-  <p class="note">One JSON object per line. <code>mode</code> is <code>"absolute"</code> (you predict the real
-     sequence) or <code>"correction"</code> (you predict the delta and we add it to the simulation).
-     Either is fine; the harness states which you used. Timestamps must match the simulated
-     sequence you were given.</p>
+  <div class="callout"><b>Your model, beside the real arm.</b>
+    A Track A model can be loaded as the cell's live digital twin: it runs on the robot's
+    commanded joints while the real arm moves, drawn over it in the operator console, with
+    the difference shown as it happens &mdash; a submission measured against the hardware
+    itself, live, not only against a recording of it.</div>
+
+  <h3>The baseline ladder</h3>
+  <p>Every entry is read against these. A method that does not beat the simple ones has not
+     shown anything, and the board says so.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Baseline</th><th>Track</th><th>What it is</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td><b>S0</b> &middot; default MuJoCo</td><td><span class="badge A">A</span></td>
+        <td>The MuJoCo Menagerie UR5e, unchanged. Its position servo trails the command by about
+            0.2&nbsp;s, which is most of its gap. The reference: GCR&nbsp;0 by definition.</td>
+        <td><span class="badge pass">live</span></td></tr>
+      <tr><td><b>S1</b> &middot; velocity feed-forward</td><td><span class="badge A">A</span></td>
+        <td>S0 with the controller's commanded velocity fed forward, as the real controller tracks.</td>
+        <td><span class="badge plan">next</span></td></tr>
+      <tr><td><b>S2</b> &middot; identified</td><td><span class="badge A">A</span></td>
+        <td>Friction, armature, delay and gains identified on E1 (CMA-ES).</td>
+        <td><span class="badge plan">planned</span></td></tr>
+      <tr><td><b>S3</b> &middot; Isaac Sim</td><td><span class="badge A">A</span></td>
+        <td>The same commands in a second engine.</td>
+        <td><span class="badge plan">planned</span></td></tr>
+      <tr><td><b>B1</b> &middot; one constant offset</td><td><span class="badge B">B</span></td>
+        <td>One XYZ offset fitted on the published cells and added everywhere.</td>
+        <td><span class="badge pass">live</span></td></tr>
+      <tr><td><b>B2</b> &middot; per-cell offset</td><td><span class="badge B">B</span></td>
+        <td>An offset per operating condition, interpolated to cells never seen.</td>
+        <td><span class="badge plan">planned</span></td></tr>
+      <tr><td><b>B3</b> &middot; residual network</td><td><span class="badge B">B</span></td>
+        <td>A small recurrent model of the residual, trained on E1 and the published cells.</td>
+        <td><span class="badge plan">planned</span></td></tr>
+    </tbody>
+  </table>
+  </div>
 
   <h3>How it is scored</h3>
-  <pre><code>GCR = 1 - err(your prediction, real) / err(simulation, real)</code></pre>
-  <p>Reported at the median and at the 95th percentile, per condition cell and overall.
-     The <b>p95</b> figure is the headline. Also reported: geodesic orientation error on SO(3),
-     and a Wasserstein distance between the predicted and real error <i>distributions</i>, which
-     is what separates matching the mean from matching the behaviour.</p>
+  <pre><code>GCR = 1 - err(entry, real) / err(S0, real)</code></pre>
+  <p>Per-sample tool-position error, reported at the median and at the 95th percentile, per
+     condition cell and overall; the <b>p95</b> figure is the headline. Also reported:
+     geodesic orientation error on SO(3), and how far the entry moves the whole error
+     <i>distribution</i> towards zero (a Wasserstein distance), which separates matching the
+     average from matching the behaviour. Both tracks are scored by the same code against the
+     same reference, so their numbers are directly comparable.</p>
+  <p class="note">Track C &mdash; <i>bring your own robot</i>: the acquisition platform, protocol and
+     harness are open, so a second lab can record the same campaign on its own arm and be
+     scored on the same scale. Planned for a later round.</p>
+</section>
 
-  <h3>The held-out set</h3>
-  <p>Whole condition cells are held back, not random samples. Interpolating inside a condition
-     you have seen is easy; the unsolved problem is generalising <b>across</b> conditions &mdash;
-     to an elbow velocity or an arm configuration you were never shown. The published example
-     set spans the range; the scoring set contains cells you have not seen.</p>
+<!-- ================= DATA ================= -->
+<section id="tab-data" hidden>
+  <h2>What is recorded, and what is released</h2>
+  <p class="lead">A UR5e with an instrumented carrier (an LPMS-B2 inertial unit on the flange,
+     its mass and centre of mass measured), recorded by the SONAIR acquisition platform: every
+     RTDE packet from the controller, one row per packet, on the controller's own clock.</p>
 
-  <h3>Why these modalities</h3>
-  <p>Orientation, angular rate, acceleration and position. Nothing exotic. They are the
-     quantities that are cheap to ground-truth on real hardware <i>and</i> faithful to
-     generate in simulation, which is the only combination that produces a gap you can
-     trust rather than a gap that is really a modelling artefact. An eddy-current or
-     ultrasonic response would be a richer signal and an unfalsifiable one: nobody can
-     simulate it accurately enough for the difference to mean anything.</p>
+  <div class="flow">
+    <div><b>Command</b><span>the controller's own target_q, 125 Hz &mdash; never reconstructed</span></div>
+    <div><b>Real</b><span>joints, currents, torques, tool pose, IMU, as measured</span></div>
+    <div><b>Simulate</b><span>the same target_q through S0, or through your model</span></div>
+    <div><b>Score</b><span>tool-position error against the real run, relative to S0</span></div>
+  </div>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Set</th><th>What moves</th><th class="num">Runs</th><th>Released</th></tr></thead>
+    <tbody>
+      <tr><td><b>E1</b> &middot; identification</td>
+        <td>Every joint in turn swept 0.05&ndash;2&nbsp;Hz; all six together in Fourier
+            patterns, at three arm configurations; with the carrier alone and with a known
+            added mass.</td>
+        <td class="num" id="dE1">&mdash;</td>
+        <td><span class="badge pass">in full</span> training data, never scored</td></tr>
+      <tr><td><b>E2</b> &middot; evaluation</td>
+        <td>The elbow at 6 speeds (0.2&ndash;0.9&nbsp;rad/s) &times; 3 arm configurations
+            &times; 3 trajectory types = 54 condition cells, 5 repeats each, over 3 sessions with
+            one deliberate carrier refit.</td>
+        <td class="num" id="dE2">&mdash;</td>
+        <td><span class="badge pass">published cells</span> real runs released<br/>
+            <span class="badge marginal">held-out cells</span> commands and S0 only</td></tr>
+      <tr><td><b>E3</b> &middot; out of distribution</td>
+        <td>A multi-joint inspection path, and E2 cells under a payload E1 never had.</td>
+        <td class="num" id="dE3">&mdash;</td>
+        <td><span class="badge fail">hidden</span> scoring only</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Why whole cells are held back</h3>
+  <p>Interpolating within an operating condition you have seen is easy. The open problem is
+     generalising <b>across</b> conditions &mdash; to an elbow speed or an arm configuration
+     you were never shown. So whole condition cells are held back, chosen once with a fixed
+     seed before any data existed, spread across the speeds. For them we release what a
+     submission needs as input &mdash; the commanded trajectory and the S0 simulation &mdash;
+     and keep the real runs.</p>
+
+  <h3>One run, one file</h3>
+  <p>JSON Lines: a manifest on the first line, one sample per line after it. A run that was
+     interrupted is still a valid run up to the point it stopped.</p>
+  <pre><code>{"_manifest": {"run_id": "v0p60_extended_stop_start_r03", "side": "real",
+               "experiment": "E2", "joint_vel": 0.6, "arm_config": "extended",
+               "traj_type": "stop_start", "repeat_idx": 3,
+               "carrier_mass_kg": 0.19, "carrier_com_m": [-0.012, -0.037, 0.008],
+               "sample_rate_hz": 125.0, "calib_version": "...", "notes": "..."}}
+{"t": 12.336, "target_q": [...6], "target_qd": [...6], "target_moment": [...6],
+ "q": [...6], "qd": [...6], "tcp_pos": [x,y,z], "tcp_rot": [rx,ry,rz],
+ "speed_scaling": 1.0, "aux": {"controller_t": 20040.929},
+ "imu": {"ind0": {"quat": [w,x,y,z], "gyro": [...3], "accel": [...3]}}}</code></pre>
+  <p class="note"><code>target_q</code> is what a simulator must be given; feeding it the
+     measured <code>q</code> would reproduce the answer and measure nothing.
+     <code>aux.controller_t</code> is the controller's own clock, unaffected by the recording
+     PC. Units: metres, radians, seconds, newton-metres, m/s&sup2;.</p>
+
+  <h3>How the recording is kept honest</h3>
+  <ul>
+    <li>Every run is read back as it closes; one that does not reach its labelled speed, holds
+        stale robot data, or loses the inertial sensor is re-recorded, not kept.</li>
+    <li>Rehearsals on the simulated cell (URSim controller, MuJoCo arm) are labelled as such in
+        their own manifests and never enter the dataset.</li>
+    <li>The motion protocol is versioned: a run recorded under a superseded protocol is kept
+        as history and recorded again.</li>
+  </ul>
 </section>
 
 <!-- ================= GAP MAP ================= -->
 <section id="tab-gap" hidden>
   <h2>The gap is not a number</h2>
-  <p>It is a function of the operating condition. Below is how the measured sim-to-real
-     position error varies across the sweep &mdash; commanded elbow velocity against arm
-     configuration and trajectory type. The structure in this map is what a submitted
-     model has to reproduce.</p>
+  <p>It depends on the operating condition. Below is the measured median gap between S0 and
+     the real arm across the sweep &mdash; commanded elbow speed against arm configuration and
+     trajectory type. The structure in this map is what an entry has to reproduce.</p>
   <div id="gateC"></div>
   <div class="hm" id="gapHeatmap"><p class="note">Load a results file to render the map.</p></div>
   <h3>Per-cell detail</h3>
+  <div class="tablewrap">
   <table id="cellTable">
     <thead><tr>
       <th>Condition cell</th>
@@ -254,18 +418,21 @@ a{color:var(--accent)}
     </tr></thead>
     <tbody><tr><td colspan="6" style="color:var(--muted)">&mdash;</td></tr></tbody>
   </table>
-  <p class="note">Tail ratio is p95 divided by median. A cell with a high tail ratio contains
-     the rare, badly behaved samples &mdash; the long-tail cases that a model trained on
-     means will miss and that a safety-critical application cannot afford to.</p>
+  </div>
+  <p class="note">Tail ratio is p95 divided by median. A cell with a high tail ratio holds the
+     rare, badly behaved samples &mdash; the cases a model trained on averages will miss and a
+     safety-critical application cannot afford to.</p>
 </section>
 
 <!-- ================= FLOOR ================= -->
 <section id="tab-floor" hidden>
   <h2>What this rig can and cannot resolve</h2>
   <p>Every number on this site is reported against the measurement floor of the apparatus
-     that produced it. A benchmark that does not publish its own floor will be challenged
-     on exactly that point, so the answer is here rather than in a reviewer's email.</p>
+     that produced it. Two repeats of the same cell on the real arm differ by
+     <b>0.04&nbsp;mrad</b> at the elbow (RMS, Session&nbsp;1) &mdash; the real-against-real
+     spread no simulator can be asked to beat.</p>
   <div id="gateB"></div>
+  <div class="tablewrap">
   <table id="budgetTable">
     <thead><tr>
       <th>Contribution</th><th class="num">Position</th><th class="num">Orientation</th>
@@ -273,176 +440,206 @@ a{color:var(--accent)}
     </tr></thead>
     <tbody><tr><td colspan="5" style="color:var(--muted)">Load a results file.</td></tr></tbody>
   </table>
-  <p class="note">Rows combine in root-sum-square, not arithmetic sum: they are independent
-     measurements, and summing them would overstate the floor and let a real gap be
-     dismissed as noise.</p>
-
+  </div>
+  <p class="note">Rows combine in root-sum-square, not as an arithmetic sum: they are
+     independent measurements, and summing them would overstate the floor and let a real gap
+     be dismissed as noise.</p>
   <h3>If the gap falls below the floor</h3>
   <p>Then the honest result is that the gap is below what this rig can resolve, and that is
-     itself a publishable finding &mdash; provided it is stated rather than disguised. Cells
-     in that position are flagged in the leaderboard rather than silently scored.</p>
+     itself a finding &mdash; provided it is stated rather than disguised. Cells in that
+     position are flagged on the board rather than silently scored.</p>
 </section>
 
-<!-- ================= SUBMIT ================= -->
+<!-- ================= TAKE PART ================= -->
 <section id="tab-submit" hidden>
-  <h2>Running the harness</h2>
-  <p>The scoring code is the same code that produced this page. You can run it against the
-     published example set before you submit, so there are no surprises in the interface.</p>
-  <pre><code># see the whole pipeline on synthetic data with a known injected gap
-python -m sonair_benchmark demo --out demo/
+  <h2>Taking part</h2>
+  <p class="lead">The scoring code is the code that produced this page. Run it on the published
+     cells before you submit and there are no surprises in the interface.</p>
 
-# score your own predictions against the example set
-python -m sonair_benchmark score \
-    --real data/real --sim data/sim \
+  <h3><span class="badge A">Track A</span> &nbsp;A MuJoCo model</h3>
+  <p>The contract is small, and checked when the model loads:</p>
+  <ul>
+    <li>the six UR joints by their UR names, in UR order (<code>shoulder_pan_joint</code> &hellip;
+        <code>wrist_3_joint</code>);</li>
+    <li>six actuators whose <code>ctrl</code> is the commanded joint position;</li>
+    <li>a site named <code>attachment_site</code> at the tool flange.</li>
+  </ul>
+  <p>Everything else &mdash; masses, friction, armature, gains, solver settings &mdash; is yours.
+     The sensors are ours, wrapped around your model, so every model is measured the same way
+     at the same point.</p>
+  <pre><code># simulate every run through your model, exactly as S0 is
+python -m sonair_benchmark simulate --model my_ur5e/ur5e.xml \
+    --real data/real --out results/my_model
+
+# score it
+python -m sonair_benchmark score --real data/real --sim data/sim_s0 \
     --budget calib/budget.json --plan campaign/plan.json \
-    --submission my_model.jsonl --name "My model" \
-    --out site/leaderboard.json</code></pre>
+    --track-a "My model=results/my_model" --out site/leaderboard.json</code></pre>
+  <p class="note">Another engine? Generate a simulated run per real run from its
+     <code>target_q</code>, in the run-file format above with <code>"side": "sim"</code>, and
+     pass the folder to <code>--track-a</code>.</p>
 
-  <h3>The two baselines your model has to beat</h3>
-  <ol>
-    <li><b>Identity</b> &mdash; hand back the simulation unchanged. Scores 0 by construction.
-        This is the denominator of every GCR.</li>
-    <li><b>Constant offset</b> &mdash; fit one global XYZ offset on the example set and apply it
-        everywhere. It is the dumbest thing that could possibly work. A model that does not
-        beat it has not demonstrated anything, and the board will say so.</li>
-  </ol>
-  <p class="note">Both are computed through the same code path as every submission. A benchmark
-     whose baseline is computed separately will eventually disagree with itself.</p>
+  <h3><span class="badge B">Track B</span> &nbsp;A prediction file</h3>
+  <pre><code>{"run_id": "v0p60_extended_stop_start_r03", "mode": "absolute",
+ "t": [...], "tcp_pos": [[x,y,z], ...], "tcp_rot": [[rx,ry,rz], ...]}</code></pre>
+  <p>One object per line. <code>mode</code> is <code>"absolute"</code> (you predict the real run)
+     or <code>"correction"</code> (you predict the difference and we add it to S0); timestamps are
+     those of the S0 simulation you were given.</p>
+  <pre><code>python -m sonair_benchmark score --real data/real --sim data/sim_s0 \
+    --budget calib/budget.json --plan campaign/plan.json \
+    --track-b "My model=my_predictions.jsonl" --out site/leaderboard.json</code></pre>
+
+  <h3>Try the whole chain first</h3>
+  <pre><code>python -m sonair_benchmark demo --out demo/    # synthetic data with a known, injected gap</code></pre>
 
   <h3>Submitting</h3>
-  <p>Send the JSONL prediction file and a one-paragraph description of the method. Scoring is
-     run against held-out cells that are not published. We report your per-cell scores back to
-     you in full, including the cells you did worst on &mdash; a score without its failure modes
-     is not useful to anyone.</p>
+  <p>Send the model folder (Track A) or the prediction file (Track B), with a paragraph on the
+     method. It is scored on the held-out cells, which are not published. You get your
+     per-cell scores back in full, including the cells you did worst on &mdash; a score
+     without its failure modes is no use to anyone.</p>
 </section>
 
 <footer>
-  <div class="wrap" style="padding:0">
-    SONAIR &middot; University of Nottingham &amp; University College London &middot;
-    UK Open Multimodal AI Benchmark programme.
-    <a href="index.html">Operations portal</a> &middot;
-    <a href="Remote_control.html">Robot console</a>
-  </div>
+  SONAIR &middot; University of Nottingham &amp; University College London &middot;
+  UK Open Multimodal AI Benchmark programme &middot;
+  <a href="index.html">Operations portal</a> &middot;
+  <a href="SONAIR_Console.html">Operator console</a>
 </footer>
-</div>
+</main>
 
 <script>
 (function(){
   "use strict";
   var $ = function(id){ return document.getElementById(id); };
   var DOC = null;
+  var FILTER = "all";
+  var TABS = ['leaderboard','tracks','data','gap','floor','submit'];
 
   /* ---------------- tabs ---------------- */
   var tabs = document.querySelectorAll('nav.tabs button');
-  tabs.forEach(function(btn){
-    btn.addEventListener('click', function(){
-      tabs.forEach(function(b){ b.setAttribute('aria-selected','false'); });
-      btn.setAttribute('aria-selected','true');
-      ['leaderboard','task','gap','floor','submit'].forEach(function(name){
-        var s = $('tab-'+name);
-        if (s) s.hidden = (name !== btn.dataset.tab);
-      });
-      try { localStorage.setItem('sonair.tab', btn.dataset.tab); } catch(e){}
-    });
-  });
-  try {
-    var saved = localStorage.getItem('sonair.tab');
-    if (saved) {
-      var b = document.querySelector('nav.tabs button[data-tab="'+saved+'"]');
-      if (b) b.click();
-    }
-  } catch(e){}
+  function show(name){
+    tabs.forEach(function(b){ b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false'); });
+    TABS.forEach(function(t){ var s = $('tab-'+t); if (s) s.hidden = (t !== name); });
+    try { localStorage.setItem('sonair.tab', name); } catch(e){}
+  }
+  tabs.forEach(function(btn){ btn.addEventListener('click', function(){ show(btn.dataset.tab); }); });
+  var start = (location.hash || '').replace('#','');
+  if (TABS.indexOf(start) < 0) { try { start = localStorage.getItem('sonair.tab') || ''; } catch(e){ start = ''; } }
+  if (TABS.indexOf(start) >= 0) show(start);
 
   /* ---------------- formatting ---------------- */
-  function fmt(v, dp){ 
+  function fmt(v, dp){
     if (v === null || v === undefined || isNaN(v)) return '—';
     return Number(v).toFixed(dp === undefined ? 3 : dp);
   }
   function verdictClass(v){
     v = String(v||'').toLowerCase();
-    if (v === 'pass') return 'pass';
-    if (v === 'marginal') return 'marginal';
-    return 'fail';
+    return v === 'pass' ? 'pass' : v === 'marginal' ? 'marginal' : 'fail';
   }
-  function bar(value){
-    // GCR in [-1, 1] -> a bar that reads at a glance
+  function bar(value, track){
     var v = Math.max(-1, Math.min(1, Number(value)||0));
-    var pct = Math.abs(v) * 100;
-    return '<span class="bar'+(v<0?' neg':'')+'"><i style="width:'+pct.toFixed(0)+'%"></i></span>';
+    return '<span class="bar'+(v<0?' neg':' '+(track||''))+'"><i style="width:'+
+           (Math.abs(v)*100).toFixed(0)+'%"></i></span>';
+  }
+  function escapeHtml(s){
+    return String(s === undefined || s === null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  // Files written before tracks existed: a "baseline:" name is a baseline,
+  // anything else Track B (the only track there was).
+  function norm(e){
+    var name = String(e.name||'');
+    var kind = e.kind || (name.indexOf('baseline') === 0 ? 'baseline'
+               : name.indexOf('example') === 0 ? 'example' : 'submission');
+    var track = e.track || (/identity/.test(name) ? 'A' : 'B');
+    return Object.assign({}, e, { kind: kind, track: track });
   }
 
   /* ---------------- render ---------------- */
+  function best(entries, track){
+    return entries.filter(function(e){ return e.track === track && e.kind !== 'baseline'; })
+      .sort(function(a,b){ return b.gcr_p95 - a.gcr_p95; })[0];
+  }
   function renderHeadline(doc){
-    var box = $('headlineStats');
-    var top = (doc.entries||[]).filter(function(e){
-      return String(e.name||'').indexOf('baseline') !== 0;
-    })[0];
+    var es = (doc.entries||[]).map(norm);
+    var a = best(es, 'A'), b = best(es, 'B');
     var floor = doc.measurement_floor && doc.measurement_floor.floor;
     var gc = doc.gate_c || {};
     var cards = [
-      {k:'Best GCR p95', v: top ? fmt(top.gcr_p95) : '—',
-       d: top ? top.name : 'no non-baseline submission yet'},
+      {cls:'a', k:'Best Track A', v: a ? fmt(a.gcr_p95) : '—', d: a ? a.name : 'no entry yet'},
+      {cls:'b', k:'Best Track B', v: b ? fmt(b.gcr_p95) : '—', d: b ? b.name : 'no entry yet'},
       {k:'Measurement floor', v: floor ? fmt(floor.position_mm,2) : '—', u:'mm',
-       d:'position, root-sum-square of five measured rows'},
+       d:'position, root-sum-square of the measured rows'},
       {k:'Gap structure', v: gc.verdict || '—',
-       d: gc.structure_ratio !== undefined
-          ? 'across/within cell ratio ' + fmt(gc.structure_ratio,1)
+       d: gc.structure_ratio !== undefined ? 'across / within cell ' + fmt(gc.structure_ratio,1)
           : 'Gate C not evaluated'}
     ];
-    box.innerHTML = cards.map(function(c){
-      return '<div class="stat"><div class="k">'+c.k+'</div><div class="v">'+
+    $('headlineStats').innerHTML = cards.map(function(c){
+      return '<div class="stat '+(c.cls||'')+'"><div class="k">'+c.k+'</div><div class="v">'+
              c.v + (c.u ? '<span class="u">'+c.u+'</span>' : '') +
-             '</div><div class="d">'+c.d+'</div></div>';
+             '</div><div class="d">'+escapeHtml(c.d)+'</div></div>';
     }).join('');
   }
 
   function renderLeaderboard(doc){
     var tb = $('lbTable').querySelector('tbody');
-    var rows = doc.entries || [];
+    var rows = (doc.entries || []).map(norm).filter(function(e){
+      return FILTER === 'all' || e.track === FILTER;
+    }).sort(function(a,b){ return b.gcr_p95 - a.gcr_p95; });
     if (!rows.length){
-      tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">No entries.</td></tr>';
+      tb.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No entries'+
+        (FILTER === 'all' ? '' : ' in this track')+' yet.</td></tr>';
       return;
     }
+    var rank = 0;
     tb.innerHTML = rows.map(function(e){
-      var isBase = String(e.name||'').indexOf('baseline') === 0;
-      return '<tr>'+
-        '<td>'+escapeHtml(e.name)+(isBase?' <span class="badge base">baseline</span>':'')+'</td>'+
-        '<td class="num">'+bar(e.gcr_p95)+' '+fmt(e.gcr_p95)+'</td>'+
+      var isBase = e.kind === 'baseline', isEx = e.kind === 'example';
+      if (!isBase && !isEx) rank += 1;
+      return '<tr class="'+(isBase ? 'base' : isEx ? 'example' : '')+'">'+
+        '<td class="num">'+(isBase || isEx ? '' : rank)+'</td>'+
+        '<td><span class="nm">'+escapeHtml(e.name)+'</span>'+
+          (isBase ? ' <span class="badge base">baseline</span>' : '')+
+          (isEx ? ' <span class="badge ex">example</span>' : '')+
+          (e.description ? '<span class="desc">'+escapeHtml(e.description)+'</span>' : '')+'</td>'+
+        '<td><span class="badge '+e.track+'">'+e.track+'</span></td>'+
+        '<td class="num">'+bar(e.gcr_p95, e.track)+' '+fmt(e.gcr_p95)+'</td>'+
         '<td class="num">'+fmt(e.gcr_median)+'</td>'+
         '<td class="num">'+fmt(e.gcr_orientation)+'</td>'+
-        '<td class="num">'+fmt(e.worst_cell_gcr)+'</td>'+
+        '<td class="num" title="'+escapeHtml(e.worst_cell||'')+'">'+fmt(e.worst_cell_gcr)+'</td>'+
         '<td class="num">'+(e.n_runs||0)+'</td></tr>';
     }).join('');
     var notes = [];
-    rows.forEach(function(e){
-      if (e.notes && notes.indexOf(e.notes) < 0) notes.push(e.notes);
-    });
+    rows.forEach(function(e){ if (e.notes && notes.indexOf(e.notes) < 0) notes.push(e.notes); });
     $('lbNotes').textContent = notes.join('  ·  ');
   }
 
-  function renderGates(doc){
-    var gb = doc.measurement_floor && doc.gate_b ? doc.gate_b : doc.gate_b;
-    var gbBox = $('gateB');
-    if (gb){
-      gbBox.innerHTML = '<div class="gatebox '+verdictClass(gb.verdict)+'">'+
-        '<div><b>Gate B — '+gb.verdict+'</b><p>Measured gap is '+
-        fmt(gb.worst_ratio,2)+'× the floor ('+fmt(gb.floor_position_mm,2)+
-        ' mm). '+(gb.verdict==='PASS'
-          ? 'The benchmark is measuring the gap, not its own calibration.'
-          : gb.verdict==='MARGINAL'
-            ? 'Publishable only as an upper bound on the gap, and stated as such.'
-            : 'The gap is at or below the measurement floor of this rig.')+
-        '</p></div></div>';
-    } else { gbBox.innerHTML = ''; }
+  function renderFacts(doc){
+    var ds = doc.dataset || {};
+    var r = ds.runs || {};
+    var scored = (r.E2 || 0) + (r.E3 || 0);
+    $('fRuns').textContent = scored || (doc.entries && doc.entries[0] ? doc.entries[0].n_runs : '—');
+    $('fCells').textContent = ds.cells || '—';
+    $('fHeld').textContent = ds.held_out_cells || '—';
+    $('fE1').textContent = r.E1 || '—';
+    $('fRef').textContent = doc.reference_simulator ? doc.reference_simulator.split(':')[0].split(' ')[0] : 'S0';
+    $('dE1').textContent = r.E1 || '—';
+    $('dE2').textContent = r.E2 || '—';
+    $('dE3').textContent = r.E3 || '—';
+    if (ds.synthetic) $('statusPill').textContent = 'demo data';
+  }
 
-    var gc = doc.gate_c;
-    var gcBox = $('gateC');
-    if (gc){
-      gcBox.innerHTML = '<div class="gatebox '+verdictClass(gc.verdict)+'">'+
-        '<div><b>Gate C — '+gc.verdict+'</b><p>'+escapeHtml(gc.note||'')+
-        ' (across-cell '+fmt(gc.across_cell_sd_mm,3)+' mm vs within-cell '+
-        fmt(gc.within_cell_sd_mm,3)+' mm)</p></div></div>';
-    } else { gcBox.innerHTML = ''; }
+  function renderGates(doc){
+    var gb = doc.gate_b, gbBox = $('gateB');
+    gbBox.innerHTML = gb ? '<div class="gatebox '+verdictClass(gb.verdict)+'"><div><b>Gate B — '+
+      escapeHtml(gb.verdict)+'</b><p>The measured gap is '+fmt(gb.worst_ratio,2)+'× the floor ('+
+      fmt(gb.floor_position_mm,2)+' mm). '+(gb.verdict==='PASS'
+        ? 'The benchmark is measuring the gap, not its own calibration.'
+        : gb.verdict==='MARGINAL' ? 'Publishable only as an upper bound on the gap, and stated as such.'
+        : 'The gap is at or below the measurement floor of this rig.')+'</p></div></div>' : '';
+    var gc = doc.gate_c, gcBox = $('gateC');
+    gcBox.innerHTML = gc ? '<div class="gatebox '+verdictClass(gc.verdict)+'"><div><b>Gate C — '+
+      escapeHtml(gc.verdict)+'</b><p>'+escapeHtml(gc.note||'')+' (across-cell '+
+      fmt(gc.across_cell_sd_mm,3)+' mm vs within-cell '+fmt(gc.within_cell_sd_mm,3)+' mm)</p></div></div>' : '';
   }
 
   function renderBudget(doc){
@@ -461,10 +658,9 @@ python -m sonair_benchmark score \
         '<td style="color:var(--muted);font-size:12.5px">'+escapeHtml(r.source||'')+'</td></tr>';
     }).join('');
     var f = mf.floor || {};
-    body += '<tr style="font-weight:650;border-top:2px solid var(--line)">'+
-      '<td>Floor (RSS)</td><td class="num">'+fmt(f.position_mm,3)+' mm</td>'+
-      '<td class="num">'+fmt(f.orientation_deg,3)+'°</td>'+
-      '<td class="num">'+fmt(f.temporal_ms,3)+' ms</td><td></td></tr>';
+    body += '<tr style="font-weight:650"><td>Floor (RSS)</td><td class="num">'+fmt(f.position_mm,3)+
+      ' mm</td><td class="num">'+fmt(f.orientation_deg,3)+'°</td><td class="num">'+
+      fmt(f.temporal_ms,3)+' ms</td><td></td></tr>';
     tb.innerHTML = body;
   }
 
@@ -474,149 +670,115 @@ python -m sonair_benchmark score \
   }
 
   function renderGapMap(doc){
-    var cm = doc.cell_map;
-    var host = $('gapHeatmap');
-    var tb = $('cellTable').querySelector('tbody');
+    var cm = doc.cell_map, host = $('gapHeatmap'), tb = $('cellTable').querySelector('tbody');
     if (!cm || !Object.keys(cm).length){
-      host.innerHTML = '<p class="note">This file carries no gap map. '+
-        'Run <code>python -m sonair_benchmark gap</code> and load its output here.</p>';
+      host.innerHTML = '<p class="note">These results carry no gap map. Run '+
+        '<code>python -m sonair_benchmark gap</code> and reload.</p>';
       tb.innerHTML = '<tr><td colspan="6" style="color:var(--muted)">—</td></tr>';
       return;
     }
-    var keys = Object.keys(cm);
-    var vels = [], cols = [];
+    var keys = Object.keys(cm), vels = [], cols = [];
     keys.forEach(function(k){
       var c = parseCell(k);
       if (vels.indexOf(c.vel) < 0) vels.push(c.vel);
       var col = c.config + ' / ' + c.traj;
       if (cols.indexOf(col) < 0) cols.push(col);
     });
-    vels.sort(function(a,b){ return a-b; });
-    cols.sort();
+    vels.sort(function(a,b){ return a-b; }); cols.sort();
     var vals = keys.map(function(k){ return cm[k].pos_median_mm; });
-    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
-    var span = (hi - lo) || 1;
-
+    var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals), span = (hi - lo) || 1;
     function colour(v){
-      // Sequential low -> high, blue through purple to crimson. It deliberately
-      // skips green: a blue-green-red ramp peaks in lightness in the middle, so
-      // mid-range cells read as the brightest and the scale stops being ordered.
-      // Here lightness falls monotonically, so the map survives greyscale
-      // printing and colour-vision deficiency, and white text stays legible.
-      var t = span > 0 ? (v - lo) / span : 0;
-      var h = 215 + 135 * t;          // 215 blue -> 350 crimson
-      var l = 56 - 22 * t;            // monotonically darker
-      return 'hsl(' + h.toFixed(0) + ' 58% ' + l.toFixed(0) + '%)';
+      // one hue family, lightness falling monotonically: ordered in greyscale
+      // and under colour-vision deficiency, and white text stays legible
+      var t = (v - lo) / span;
+      return 'hsl(' + (215 + 135 * t).toFixed(0) + ' 58% ' + (56 - 22 * t).toFixed(0) + '%)';
     }
-
-    var html = '<table><thead><tr><th>Elbow vel</th>' +
-      cols.map(function(c){ return '<th class="num">'+escapeHtml(c)+'</th>'; }).join('') +
+    var html = '<table><thead><tr><th>Elbow speed</th>' +
+      cols.map(function(c){ return '<th class="num">'+escapeHtml(c.replace(/_/g,' '))+'</th>'; }).join('') +
       '</tr></thead><tbody>';
     vels.forEach(function(v){
       html += '<tr><td class="num">'+v.toFixed(2)+' rad/s</td>';
       cols.forEach(function(col){
         var parts = col.split(' / ');
-        var key = v.toFixed(3) + '|' + parts[0] + '|' + parts[1];
-        var cell = cm[key];
-        if (!cell){ html += '<td class="num" style="color:var(--muted-2)">—</td>'; return; }
-        html += '<td class="cell" style="background:'+colour(cell.pos_median_mm)+
-                '" title="'+escapeHtml(key)+'">'+fmt(cell.pos_median_mm,2)+'</td>';
+        var key = v.toFixed(3) + '|' + parts[0] + '|' + parts[1], cell = cm[key];
+        html += cell ? '<td class="cell" style="background:'+colour(cell.pos_median_mm)+
+          '" title="'+escapeHtml(key)+'">'+fmt(cell.pos_median_mm,2)+'</td>'
+          : '<td class="num" style="color:var(--muted-2)">—</td>';
       });
       html += '</tr>';
     });
-    html += '</tbody></table>';
-    host.innerHTML = html +
-      '<p class="note" style="margin-top:8px">Median position gap in mm. '+
-      'Blue is a small gap, red a large one. '+
-      'The divergence above roughly 0.6&nbsp;rad/s at the elbow is the structure '+
-      'the benchmark is built around.</p>';
-
+    host.innerHTML = html + '</tbody></table><p class="note" style="margin-top:8px">Median '+
+      'position gap between S0 and the real arm, in mm. Blue is small, crimson large.</p>';
     tb.innerHTML = keys.sort().map(function(k){
       var c = cm[k];
       return '<tr><td style="font-family:var(--mono);font-size:12px">'+escapeHtml(k)+'</td>'+
-        '<td class="num">'+fmt(c.pos_median_mm,3)+'</td>'+
-        '<td class="num">'+fmt(c.pos_p95_mm,3)+'</td>'+
-        '<td class="num">'+fmt(c.tail_ratio,2)+'</td>'+
-        '<td class="num">±'+fmt(c.pos_median_spread_mm,3)+'</td>'+
+        '<td class="num">'+fmt(c.pos_median_mm,3)+'</td><td class="num">'+fmt(c.pos_p95_mm,3)+'</td>'+
+        '<td class="num">'+fmt(c.tail_ratio,2)+'</td><td class="num">±'+fmt(c.pos_median_spread_mm,3)+'</td>'+
         '<td class="num">'+(c.n_runs||0)+'</td></tr>';
     }).join('');
   }
 
-  function escapeHtml(s){
-    return String(s === undefined || s === null ? '' : s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;');
-  }
-
   function render(doc){
     DOC = doc;
-    renderHeadline(doc);
-    renderLeaderboard(doc);
-    renderGates(doc);
-    renderBudget(doc);
-    renderGapMap(doc);
+    renderHeadline(doc); renderLeaderboard(doc); renderFacts(doc);
+    renderGates(doc); renderBudget(doc); renderGapMap(doc);
     var n = (doc.entries||[]).length;
-    $('statusPill').textContent = n ? n + ' entries' : 'awaiting results';
+    if (!(doc.dataset && doc.dataset.synthetic))
+      $('statusPill').textContent = n ? n + ' entries' : 'awaiting results';
   }
+
+  $('trackFilter').querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click', function(){
+      FILTER = b.dataset.t;
+      $('trackFilter').querySelectorAll('button').forEach(function(o){
+        o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+      if (DOC) renderLeaderboard(DOC);
+    });
+  });
 
   /* ---------------- loading ---------------- */
   function setStatus(msg){ $('loadStatus').textContent = msg; }
-
   function mergeDocs(a, b){
     // leaderboard.json and gap.json carry different halves of the picture;
-    // loading either enriches what is already on screen rather than replacing it.
+    // loading either enriches what is on screen rather than replacing it.
     var out = {};
     [a||{}, b||{}].forEach(function(src){
-      Object.keys(src).forEach(function(k){
-        if (src[k] !== null && src[k] !== undefined) out[k] = src[k];
-      });
+      Object.keys(src).forEach(function(k){ if (src[k] !== null && src[k] !== undefined) out[k] = src[k]; });
     });
     return out;
   }
-
   function tryFetch(path){
-    // A missing file is the normal case before the first campaign, so a failed
-    // fetch resolves to null rather than rejecting and taking the batch with it.
-    return fetch(path)
-      .then(function(r){ return r.ok ? r.json() : null; })
+    return fetch(path).then(function(r){ return r.ok ? r.json() : null; })
       .catch(function(){ return null; });
   }
-
   $('btnLoadDefault').addEventListener('click', function(){
     setStatus('Loading…');
-    var paths = ['site/leaderboard.json','leaderboard.json',
-                 'results/gap.json','gap.json'];
+    var paths = ['site/leaderboard.json','leaderboard.json','results/gap.json','gap.json'];
     Promise.all(paths.map(tryFetch)).then(function(docs){
       var got = null;
       docs.forEach(function(d){ if (d) got = mergeDocs(got, d); });
       if (!got){
-        setStatus('No results files found next to this page — '+
-                  'run the harness, or open a local file.');
+        $('lbTable').querySelector('tbody').innerHTML = '<tr><td colspan="8" style="color:var(--muted)">'+
+          'No results next to this page yet.</td></tr>';
+        setStatus('No results files next to this page. Run the harness (Take part), '+
+                  'or open a results file.');
         return;
       }
       render(got);
-      setStatus('Loaded ' + docs.filter(Boolean).length + ' file(s).');
+      setStatus('Results loaded from ' + docs.filter(Boolean).length + ' file(s) next to this page.');
     });
   });
-
   $('btnPickFile').addEventListener('click', function(){ $('fileInput').click(); });
   $('fileInput').addEventListener('change', function(ev){
     var f = ev.target.files && ev.target.files[0];
     if (!f) return;
     var rd = new FileReader();
     rd.onload = function(){
-      try {
-        var j = JSON.parse(rd.result);
-        render(mergeDocs(DOC, j));
-        setStatus('Loaded ' + f.name + '.');
-      } catch(e){
-        setStatus('Could not parse ' + f.name + ': ' + e.message);
-      }
+      try { render(mergeDocs(DOC, JSON.parse(rd.result))); setStatus('Loaded ' + f.name + '.'); }
+      catch(e){ setStatus('Could not read ' + f.name + ': ' + e.message); }
     };
     rd.readAsText(f);
   });
-
-  // Try the default location once on load, quietly.
   $('btnLoadDefault').click();
 })();
 </script>
