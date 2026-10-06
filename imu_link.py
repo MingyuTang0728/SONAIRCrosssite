@@ -1933,6 +1933,7 @@ class OpenZenLink(_Base):
         self.frames_lost = 0
         self._fc = None
         self._fc_steps = deque(maxlen=101)
+        self._ts_window = deque()       # sensor timestamps, last 60 s
         self._offs = deque()            # (rx, rx - ts)
         self._ts_last = None
         self.timebase = "sensor"
@@ -2074,6 +2075,19 @@ class OpenZenLink(_Base):
                     self.frames_lost += int(round(d / step)) - 1
             self._fc = fc
             self.frames_seen += 1
+        # Readings lost on the radio, by the sensor's own clock: over the last
+        # minute, how many samples did the configured rate promise, and how
+        # many arrived? The frame counter alone over-counted (6% on a link
+        # delivering its full rate): the LPMS-B2 counts frames at 400 Hz
+        # inside and sends at 100, and the step between sent frames is not
+        # always exactly four.
+        if isinstance(ts, (int, float)):
+            w = self._ts_window
+            if w and not (0.0 <= ts - w[-1] < 2.0):
+                w.clear()
+            w.append(float(ts))
+            while w and ts - w[0] > 60.0:
+                w.popleft()
         t_host = rx
         if isinstance(ts, (int, float)):
             if self._ts_last is not None and not (0.0 < ts - self._ts_last < 2.0):
@@ -2113,6 +2127,11 @@ class OpenZenLink(_Base):
         recent = [d for t0, d in self.outages if now - t0 < 600]
         cur = (now - self._down_since) if self._down_since is not None else 0.0
         total = self.frames_seen + self.frames_lost
+        lost_pct = (round(100.0 * self.frames_lost / total, 2) if total else 0.0)
+        w = self._ts_window
+        if self.rate and len(w) > 100 and w[-1] - w[0] > 5.0:
+            promised = (w[-1] - w[0]) * self.rate
+            lost_pct = round(max(0.0, 100.0 * (1.0 - (len(w) - 1) / promised)), 2)
         h.update({
             "state": self.state, "sensor": self.sensor_name,
             "connects": self.connects,
@@ -2121,7 +2140,7 @@ class OpenZenLink(_Base):
             "outages_10min": len(recent),
             "longest_outage_s": round(max(recent + [cur]), 2) if recent or cur else 0.0,
             "down_for_s": round(cur, 2),
-            "frames_lost_pct": round(100.0 * self.frames_lost / total, 2) if total else 0.0,
+            "frames_lost_pct": lost_pct,
             "timebase": self.timebase, "python": self.python,
             "notes": self.notes,
         })

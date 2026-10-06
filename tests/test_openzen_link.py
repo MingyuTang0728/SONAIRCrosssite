@@ -135,12 +135,25 @@ def test_counts_frames_lost_on_the_radio():
     env(FAKE_OZ_LOSE_EVERY=25, FAKE_OZ_FC_STEP=4)
     link, got = make()
     link.start()
-    assert wait_for(lambda: len(got) > 400, 10)
+    assert wait_for(lambda: len(got) > 700, 12)
     link.stop()
     pct = link.health()["frames_lost_pct"]
     assert 3.0 < pct < 5.0, pct                      # 1 in 25 = 4%
     print(f"  pass  {pct:.1f}% of frames lost on the radio, counted from the "
           f"sensor's frame counter (which steps by 4)")
+
+
+def test_uneven_frame_steps_are_not_losses():
+    """The real LPMS-B2 case: full rate arriving, frame steps not all 4."""
+    env(FAKE_OZ_FC_JITTER=1, FAKE_OZ_FC_STEP=4)
+    link, got = make()
+    link.start()
+    assert wait_for(lambda: len(got) > 700, 12)
+    link.stop()
+    pct = link.health()["frames_lost_pct"]
+    assert pct < 0.5, pct
+    print(f"  pass  uneven frame-counter steps with nothing lost read {pct:.1f}% "
+          f"lost (by the sensor clock), not a false loss")
 
 
 def test_not_installed_is_said_plainly():
@@ -228,6 +241,7 @@ def main():
     test_reconnects_after_a_silent_stall()
     test_respawns_a_dead_reader()
     test_counts_frames_lost_on_the_radio()
+    test_uneven_frame_steps_are_not_losses()
     test_not_installed_is_said_plainly()
     test_find_lists_the_sensor()
     test_dropout_rejects_the_run()

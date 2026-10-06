@@ -223,7 +223,10 @@ class _Client:
             t = k / rate
             ang = 0.5235987755982988 * t          # 30 deg/s about z
             import math
-            d = _Obj(timestamp=self._ts0 + t, frame_count=self._fc0 + step * k,
+            fc = self._fc0 + step * k
+            if os.environ.get("FAKE_OZ_FC_JITTER") == "1" and k % 2:
+                fc += 1                 # steps of 5, 3, 5, 3 ... nothing lost
+            d = _Obj(timestamp=self._ts0 + t, frame_count=fc,
                      a=[0.0, 0.0, 1.0], g1=[0.0, 0.0, 30.0], g2=[0.0, 0.0, 0.0],
                      w=[0.0, 0.0, 30.0],
                      q=[math.cos(ang / 2), 0.0, 0.0, math.sin(ang / 2)])
