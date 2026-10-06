@@ -57,15 +57,34 @@ ELBOW = 2
 
 # Motion parameters, in one place so the audit, the preview and the runner
 # all describe the same motion.
-PTP_ACCEL = 1.2          # rad/s^2, as every joint_move is commanded
-PTP_PLATEAU_S = 0.5      # cruise held at the cell's speed, per leg
-CONTOUR_AMP_DEG = 20.0   # half the excursion of the sinusoid
+#
+# PROTOCOL 2: THE SAME EXCURSION AT EVERY SPEED.
+#
+# Protocol 1 sized point-to-point and stop-start moves from the speed (ramp
+# up, cruise a fixed time, ramp down), so a 0.9 rad/s run swept 64 deg of
+# elbow and a 0.2 rad/s run 6 deg. Speed and amplitude then moved together
+# across the sweep -- and the elbow's load moment changes with its angle, so
+# a gap that grew with "speed" could equally have been growing with
+# amplitude, and nothing could separate them (pilot sessions 1 and 2). Every
+# speed now travels the same 45 deg, and the acceleration is raised to
+# 3 rad/s^2 so that even 0.9 rad/s still cruises for over half a second.
+PROTOCOL = 2
+PTP_AMP_DEG = 45.0       # elbow travel out (and back), every speed
+PTP_ACCEL = 3.0          # rad/s^2
+PTP_TURN_S = 0.5         # pause at the turn, timed by the controller
+CONTOUR_AMP_DEG = 20.0   # half the excursion of the sinusoid (already fixed)
 CONTOUR_CYCLES = 2
-SS_ACCEL = 3.0           # stop-start: sharper, because transients are the point
-SS_CRUISE_S = 0.2
+SS_ACCEL = 3.0           # stop-start: sharp, because transients are the point
 SS_STEPS = 2
+SS_STEP_DEG = 22.5       # two steps of 22.5 deg: the same 45 deg in total
 SS_DWELL_S = 0.4
-SS_MIN_STEP_DEG = 8.0
+
+# NEAR SINGULAR MEANS NEAR SINGULAR. The pilot's near_singular configuration
+# was taught with the elbow bent 53 deg -- further from straight than it is
+# from the extended one -- so the cell named after the singularity never went
+# near it. A configuration taught as near_singular with the elbow bent more
+# than this is refused.
+NEAR_SINGULAR_MAX_BEND_DEG = 35.0
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +119,9 @@ def teach(config: str, q, direction: int = 1, path=STATE_PATH) -> dict:
         return {"ok": False, "error": f"{config!r} is not one of {list(ARM_CONFIGS)}"}
     if not q or len(q) < 6:
         return {"ok": False, "error": "the robot is not reporting joint angles"}
+    why = bend_problem(config, q)
+    if why:
+        return {"ok": False, "error": why}
     st = load_state(path)
     st["configs"][config] = {
         "q": [round(float(v), 6) for v in q[:6]],
@@ -121,11 +143,13 @@ def motion(traj_type: str, v: float, direction: int = 1) -> dict:
     """
     d = 1 if direction >= 0 else -1
     if traj_type == "point_to_point":
-        amp = v * v / PTP_ACCEL + v * PTP_PLATEAU_S
+        amp = math.radians(PTP_AMP_DEG)
         leg = 2 * v / PTP_ACCEL + (amp - v * v / PTP_ACCEL) / v
         return {"steps": [{"kind": "joint_move", "joint": ELBOW, "joint_vel": v,
-                           "plateau_s": PTP_PLATEAU_S, "direction": d}],
-                "excursion": [0.0, d * amp], "seconds": 2 * leg}
+                           "amplitude_deg": d * PTP_AMP_DEG,
+                           "joint_accel": PTP_ACCEL, "dwell_s": PTP_TURN_S,
+                           "direction": d}],
+                "excursion": [0.0, d * amp], "seconds": 2 * leg + PTP_TURN_S}
     if traj_type == "contour":
         # A continuous sinusoid: q = q0 + A(1 - cos wt), so the velocity peaks
         # at A*w = v and never stops until the end. Steady motion, the
@@ -138,8 +162,7 @@ def motion(traj_type: str, v: float, direction: int = 1) -> dict:
                            "cycles": CONTOUR_CYCLES, "direction": d}],
                 "excursion": [0.0, d * 2 * A], "seconds": secs}
     if traj_type == "stop_start":
-        step = max(math.radians(SS_MIN_STEP_DEG),
-                   v * v / SS_ACCEL + v * SS_CRUISE_S)
+        step = math.radians(SS_STEP_DEG)
         leg = 2 * v / SS_ACCEL + (step - v * v / SS_ACCEL) / v
         return {"steps": [{"kind": "joint_stop_start", "joint": ELBOW,
                            "joint_vel": v, "step_deg": math.degrees(step),
@@ -162,6 +185,30 @@ def the_plan():
     return runs, held
 
 
+def done_ids(state: dict | None) -> set:
+    """
+    The runs done UNDER THE CURRENT PROTOCOL. A run recorded under an earlier
+    one (the pilot sessions) is kept in the state as history, but it is not
+    a run of this campaign: its motion was different, so the session records
+    it again.
+    """
+    return {k for k, v in (state or {}).get("done", {}).items()
+            if int((v or {}).get("protocol", 1)) == PROTOCOL}
+
+
+def bend_problem(config: str, q) -> str:
+    """Why a taught configuration does not deserve its name, or ""."""
+    if config != "near_singular" or not q or len(q) < 6:
+        return ""
+    bend = abs(math.degrees(float(q[ELBOW])))
+    if bend > NEAR_SINGULAR_MAX_BEND_DEG:
+        return (f"Near singular is taught with the elbow bent {bend:.0f} deg; "
+                f"near singular needs it at {NEAR_SINGULAR_MAX_BEND_DEG:.0f} deg "
+                f"or straighter (about 28 deg). Press Suggest from here, drive "
+                f"to the suggested Near singular position and Teach it again")
+    return ""
+
+
 def session_runs(session: int, state: dict | None = None, seed: int = 0):
     """
     The planned runs of one session, in execution order, done runs removed.
@@ -173,6 +220,7 @@ def session_runs(session: int, state: dict | None = None, seed: int = 0):
     """
     runs, held = the_plan()
     done = set((state or {}).get("done", {}))
+    done = done_ids(state)
     mine = [r for r in runs if r.session == session and r.run_id not in done]
     rng = random.Random(seed * 1000 + session)
     out = []
@@ -248,6 +296,24 @@ def preview(session: int, state: dict, envelope_ok=None, tcp_now=None,
         if c not in configs:
             problems.append(f"{CONFIG_WORDS.get(c, c)} has not been taught: jog "
                             f"the arm there and press Teach here")
+        else:
+            why = bend_problem(c, configs[c].get("q"))
+            if why:
+                problems.append(why)
+            q = configs[c].get("q") or []
+            if len(q) >= 6:
+                # the elbow must not straighten through the singularity, or
+                # come within MIN_BEND_DEG of it, at the far end of any run
+                end = q[ELBOW] + max_travel(configs[c].get("direction", 1),
+                                            session)
+                left = math.degrees(end) * (1 if q[ELBOW] >= 0 else -1)
+                if left < MIN_BEND_DEG:
+                    problems.append(
+                        f"{CONFIG_WORDS.get(c, c)}: its runs would "
+                        + (f"bring the elbow within {left:.0f} deg of straight"
+                           if left > 0 else "straighten the elbow right through")
+                        + f" (it must stay at least {MIN_BEND_DEG:.0f} deg bent)."
+                        f" Choose the other elbow direction for it")
     off = _tool_offset(q_now, tcp_now)
     bad = {}         # config -> [conditions failing, worst travel, why]
     total = {}
@@ -642,7 +708,8 @@ def build_job(session: int, state: dict, state_path=STATE_PATH):
                notes=f"Campaign session {session}: {len(runs)} planned runs.")
 
 
-def mark(state_path, run_id: str, session: int, path: str, audit: dict) -> dict:
+def mark(state_path, run_id: str, session: int, path: str, audit: dict,
+         bucket: str = "") -> dict:
     """
     Record a finished run -- as done if its file is sound, as rejected if not.
 
@@ -656,29 +723,40 @@ def mark(state_path, run_id: str, session: int, path: str, audit: dict) -> dict:
     notes = [n for n in (audit or {}).get("notes", [])
              if "declares" not in n]     # a slow rate is noted, not fatal
     entry = {"utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-             "session": session, "path": path,
+             "session": session, "path": path, "protocol": PROTOCOL,
              "samples": (audit or {}).get("samples"),
              "achieved_rate_hz": (audit or {}).get("achieved_rate_hz")}
+    # The identification set (E1) keeps its own book, so its runs never count
+    # towards -- or get mistaken for -- the evaluation sweep's.
+    book = st
+    if bucket == "e1":
+        book = st.setdefault("e1", {})
+        book.setdefault("done", {})
+        book.setdefault("rejected", {})
     if notes:
-        st["rejected"][run_id] = {**entry, "why": notes}
-        st["done"].pop(run_id, None)
+        book["rejected"][run_id] = {**entry, "why": notes}
+        book["done"].pop(run_id, None)
     else:
-        st["done"][run_id] = entry
-        st["rejected"].pop(run_id, None)
+        book["done"][run_id] = entry
+        book["rejected"].pop(run_id, None)
     save_state(st, state_path)
     return {"ok": not notes, "notes": notes}
 
 
 def progress(state: dict) -> dict:
     runs, held = the_plan()
+    done = done_ids(state)
     by_session = {}
     for r in runs:
         s = by_session.setdefault(r.session, {"planned": 0, "done": 0})
         s["planned"] += 1
-        if r.run_id in state.get("done", {}):
+        if r.run_id in done:
             s["done"] += 1
-    return {"planned": len(runs), "done": len(state.get("done", {})),
-            "rejected": len(state.get("rejected", {})),
+    pilot = len(state.get("done", {})) - len(done)
+    return {"planned": len(runs), "done": len({r.run_id for r in runs} & done),
+            "protocol": PROTOCOL, "earlier_protocol_runs": pilot,
+            "rejected": sum(1 for v in state.get("rejected", {}).values()
+                            if int((v or {}).get("protocol", 1)) == PROTOCOL),
             "cells": len({r.cell_key() for r in runs}),
             "held_out_cells": len(held),
             "sessions": {str(k): v for k, v in sorted(by_session.items())},

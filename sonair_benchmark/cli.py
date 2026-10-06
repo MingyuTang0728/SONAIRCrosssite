@@ -83,6 +83,14 @@ def cmd_budget(args) -> int:
 def _load_pairs(real_dir, sim_dir):
     real = read_dataset(real_dir, side="real")
     sim = read_dataset(sim_dir, side="sim")
+    # The identification set (E1) is training data: published so submissions
+    # can be fitted on it, and for that reason never part of what they are
+    # scored on.
+    n_id = sum(1 for r in real if r.manifest.experiment == "E1")
+    if n_id:
+        print(f"{n_id} identification runs (E1) left out of scoring")
+    real = [r for r in real if r.manifest.experiment != "E1"]
+    sim = [r for r in sim if r.manifest.experiment != "E1"]
     pairs = pair_runs(real, sim)
     lonely_real, lonely_sim = unpaired(real, sim)
     if lonely_real or lonely_sim:

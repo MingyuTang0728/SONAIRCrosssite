@@ -423,6 +423,7 @@ def replay(run, out_dir: Path, menagerie: Path, degrader=None,
         carrier_id=man.carrier_id, carrier_mass_kg=carrier_mass_kg,
         sample_rate_hz=man.sample_rate_hz, started_utc=man.started_utc,
         operator="sim_mujoco",
+        experiment=getattr(man, "experiment", "E2"),
         notes=(f"mujoco {mujoco.__version__}; replayed from {man.run_id}; "
                f"flange payload {carrier_mass_kg:.3f} kg {carrier_src}; "
                f"{mount.words()}"))

@@ -1757,6 +1757,15 @@ class _CellContext:
             [list(q) for q in targets], float(speed),
             a=float(accel) if accel else 1.2, dwells=dwells)
 
+    def run_script(self, program):
+        """
+        One URScript program, sent as it is. Only for programs that have been
+        checked against the safe envelope by whoever built them (ident_set).
+        """
+        if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
+            return False, "the robot link has not been started"
+        return ur_bridge_ext.UR.controller.script.send(str(program))
+
     def zero_ft(self):
         """Re-zero the wrist force/torque sensor."""
         if not _HAS_EXT or ur_bridge_ext.UR.controller is None:
@@ -1940,8 +1949,33 @@ def _handle_campaign(mtype: str, data: dict) -> dict:
     st = cr.load_state()
     session = int(data.get("session", 0) or 0)
     if mtype == "camp_status":
+        import ident_set
         return {"type": "camp_res", "cmd": "status", "ok": True,
-                **cr.progress(st)}
+                **cr.progress(st), "e1": ident_set.progress(st)}
+    if mtype in ("camp_e1_preview", "camp_e1_run"):
+        import ident_set
+        cmd = "e1_preview" if mtype == "camp_e1_preview" else "e1_run"
+        load = data.get("load", "bare")
+        if load not in ident_set.LOADS:
+            return {"type": "camp_res", "cmd": cmd, "ok": False,
+                    "error": f"unknown set {load!r}"}
+        vmax = min(ident_set.V_MAX,
+                   float(CELL.max_joint_speed() or ident_set.V_MAX))
+        pv = ident_set.preview(load, st, envelope_ok=CELL.pose_allowed,
+                               tcp_now=CELL.tcp_pose(), q_now=CELL.joints(),
+                               vmax=vmax, carrier=CELL.carrier() or {})
+        fitted = pv.pop("fitted", {})
+        out = {"type": "camp_res", "cmd": cmd, **pv,
+               "e1": ident_set.progress(st)}
+        if cmd == "e1_preview":
+            return out
+        if not pv["ok"]:
+            return {**out, "ok": False, "error": "; ".join(pv["problems"])}
+        if pv["runs"] == 0:
+            return {**out, "ok": False,
+                    "error": "every run of this set is already done"}
+        job = ident_set.build_job(load, st, fitted)
+        return {**out, **RUNNER.start(job)}
     if mtype == "camp_teach":
         res = cr.teach(data.get("config", ""), CELL.joints(),
                        int(data.get("direction", 1) or 1))

@@ -1257,7 +1257,7 @@ class BenchRecorder:
               rate_hz: float = 125.0, carrier_mass_kg: float = 0.0,
               carrier_id: str = "carrier-v1", carrier_com_m=None,
               operator: str = "", notes: str = "",
-              allow_no_target: bool = False) -> dict:
+              allow_no_target: bool = False, experiment: str = "E2") -> dict:
         if not _HAS_BENCH:
             return {"ok": False, "error": "sonair_benchmark package not importable"}
         if self.is_recording():
@@ -1275,7 +1275,7 @@ class BenchRecorder:
             carrier_com_m=tuple(float(v) for v in (carrier_com_m or (0.0, 0.0, 0.0))),
             sample_rate_hz=float(rate_hz),
             started_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            operator=operator, notes=notes,
+            operator=operator, notes=notes, experiment=experiment,
         )
         problems = manifest.validate()
         if problems:
@@ -1311,6 +1311,18 @@ class BenchRecorder:
                 pass
 
         path = self.out_dir / f"{run_id}.jsonl"
+        if path.exists():
+            # A run recorded again -- rejected, or re-recorded under a revised
+            # protocol -- never overwrites the earlier file. It is kept beside
+            # it under a name the dataset reader does not pick up.
+            old = path.with_name(
+                f"{path.name}.{time.strftime('%Y%m%dT%H%M%S')}.superseded")
+            try:
+                path.replace(old)
+                log.info("kept the earlier %s as %s", path.name, old.name)
+            except OSError as e:
+                return {"ok": False, "error": f"could not set aside the earlier "
+                        f"{path.name}: {e}"}
         try:
             self._writer = RunWriter(path, manifest)
         except Exception as e:

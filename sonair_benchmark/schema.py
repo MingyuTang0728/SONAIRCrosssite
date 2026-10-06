@@ -27,6 +27,14 @@ FACTORS = ("joint_vel", "arm_config", "traj_type", "repeat_idx")
 ARM_CONFIGS = ("near_singular", "mid_workspace", "extended")
 TRAJ_TYPES = ("point_to_point", "contour", "stop_start")
 
+# Which experiment of the benchmark a run belongs to. E2 is the evaluation
+# sweep the scores are computed on; E1 is the identification set, published
+# as TRAINING data -- every joint excited, not bound to the sweep's cells --
+# so a submission can be fitted without ever touching the runs it is scored
+# on. Runs from before this field existed are E2.
+EXPERIMENTS = ("E1", "E2", "E3")
+ID_TRAJ_TYPES = ("chirp", "fourier")
+
 # Which side of the gap a run was recorded on.
 SIDES = ("real", "sim")
 
@@ -50,6 +58,7 @@ class RunManifest:
     operator: str = ""
     notes: str = ""
     schema: str = SCHEMA_VERSION
+    experiment: str = "E2"          # one of EXPERIMENTS
 
     def cell(self) -> tuple:
         """The condition cell, ignoring repeat index. Used for held-out splits."""
@@ -65,8 +74,11 @@ class RunManifest:
             problems.append(f"side must be one of {SIDES}, got {self.side!r}")
         if self.arm_config not in ARM_CONFIGS:
             problems.append(f"arm_config must be one of {ARM_CONFIGS}, got {self.arm_config!r}")
-        if self.traj_type not in TRAJ_TYPES:
-            problems.append(f"traj_type must be one of {TRAJ_TYPES}, got {self.traj_type!r}")
+        if self.experiment not in EXPERIMENTS:
+            problems.append(f"experiment must be one of {EXPERIMENTS}, got {self.experiment!r}")
+        allowed = TRAJ_TYPES + (ID_TRAJ_TYPES if self.experiment == "E1" else ())
+        if self.traj_type not in allowed:
+            problems.append(f"traj_type must be one of {allowed}, got {self.traj_type!r}")
         if not self.calib_version:
             problems.append("calib_version is mandatory — a run without it cannot be pooled later")
         if self.sample_rate_hz <= 0:

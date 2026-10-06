@@ -123,7 +123,7 @@
 
 产出合成 `calib/budget.json`，Gate B 用它判断差距是否显著。
 
-#### E1 辨识集（训练数据，新增，约 20 分钟）
+#### E1 辨识集（训练数据，已实现：`ident_set.py`，Automate 页 *Identification set (E1)*，每档负载约 20 分钟）
 
 参照 Weigand 和 PACE：**六个关节都要激励**，覆盖不同速度和加速度，不受评测工况限制。
 - 每个关节的 chirp（0.05–2 Hz 扫频）+ 多关节同时运动的 Fourier 激励轨迹，各 2–3 分钟；

@@ -2499,6 +2499,7 @@
       guideStatus(d);
       return;
     }
+    if (d.cmd === "e1_preview" || d.cmd === "e1_run") return;
     renderCampProgress(d);
     if (d.cmd === "teach") {
       say("campMsg", d.ok ? "Saved the " + d.config.replace("_", " ")
@@ -2518,6 +2519,58 @@
     } else if (d.cmd === "run") {
       renderCampCells(d);
       say("campMsg", d.ok ? "Running " + d.runs + " runs, about " + d.minutes
+        + " minutes. Progress shows in the bar at the top of every page."
+        : (d.error || "Could not start."), d.ok ? "ok" : "bad");
+    }
+  });
+
+  /* ---- the identification set (E1) ----------------------------------- */
+  var E1_LOAD_WORDS = { bare: "Set 1 (carrier alone)", added: "Set 2 (added mass)" };
+  function e1Load() { return (($("e1Load") || {}).value) || "bare"; }
+  on("btnE1Preview", "click", function () {
+    if (!S.require("e1Msg")) return;
+    say("e1Msg", "Working out and checking every motion of this set…", "info");
+    send({ type: "camp_e1_preview", load: e1Load() });
+  });
+  on("btnE1Run", "click", function () {
+    if (!S.require("e1Msg")) return;
+    say("e1Msg", "Checking, then starting…", "info");
+    send({ type: "camp_e1_run", load: e1Load() });
+  });
+  function renderE1Progress(e1) {
+    if (!e1) return;
+    if ($("e1Tag")) $("e1Tag").textContent = ["bare", "added"].map(function (k) {
+      var p = e1[k] || {};
+      return E1_LOAD_WORDS[k] + " " + (p.done || 0) + "/" + (p.planned || 0);
+    }).join(" · ");
+  }
+  function renderE1Rows(d) {
+    var host = $("e1Rows");
+    if (!host) return;
+    if (!d.rows || !d.rows.length) { host.innerHTML = ""; return; }
+    host.innerHTML = '<table class="data" style="margin-top:10px"><thead><tr>'
+      + '<th>Configuration</th><th>Motion</th><th class="n">Seconds</th>'
+      + '<th>Check</th></tr></thead><tbody>'
+      + d.rows.map(function (r) {
+          return "<tr><td>" + esc(CFG_WORDS[r.config] || r.config) + "</td><td>"
+            + esc(r.what || r.kind) + '</td><td class="n">'
+            + (r.seconds != null ? r.seconds : "—") + "</td><td>"
+            + (r.ok === false ? esc("does not fit: " + (r.why || ""))
+               : r.ok ? "inside the envelope" : "—") + "</td></tr>";
+        }).join("") + "</tbody></table>";
+  }
+  S.on("camp_res", function (d) {
+    if (d.e1) renderE1Progress(d.e1);
+    if (d.cmd !== "e1_preview" && d.cmd !== "e1_run") return;
+    renderE1Rows(d);
+    var probs = d.problems || [];
+    if (d.cmd === "e1_preview") {
+      if (probs.length) say("e1Msg", "Not ready: " + probs.join(" · "), "bad");
+      else if (!d.runs) say("e1Msg", "Every run of this set is already done.", "ok");
+      else say("e1Msg", d.runs + " runs left in this set, about " + d.minutes
+        + " minutes. Every motion checked against the safe envelope.", "ok");
+    } else {
+      say("e1Msg", d.ok ? "Running " + d.runs + " runs, about " + d.minutes
         + " minutes. Progress shows in the bar at the top of every page."
         : (d.error || "Could not start."), d.ok ? "ok" : "bad");
     }

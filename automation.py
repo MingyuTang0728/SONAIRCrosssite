@@ -69,6 +69,8 @@ STEP_KINDS = (
     "preflight",        # run the checks; fail the job if any check fails
     "dwell",            # wait, so a move can settle before a capture
     "zero_ft",          # re-zero the wrist force sensor, arm at rest
+    "joint_excite",     # E1: one chirp / Fourier excitation, run on the controller
+    "e1_load",          # E1: check and note the payload on the flange
     "move",             # go to one tool pose
     "trajectory",       # go through a list of tool poses
     "joint_move",       # drive ONE joint at a commanded angular velocity
@@ -958,7 +960,7 @@ class Runner:
                          .get(Path(path).name, {}))
             res = cr.mark(step.get("state_path") or cr.STATE_PATH,
                           step.get("run_id", ""), int(step.get("session", 0)),
-                          path, audit)
+                          path, audit, bucket=step.get("bucket", ""))
             if res["ok"]:
                 self._say(f"{step.get('run_id')}: checked and marked done.", "ok")
             else:
@@ -967,6 +969,60 @@ class Runner:
                           + ". Running this session again re-records it.",
                           "warn")
             return True, ""
+
+        if kind == "e1_load":
+            import campaign_runner as cr
+            import ident_set
+            path = step.get("state_path") or cr.STATE_PATH
+            load = step.get("load", "bare")
+            car = self.ctx.carrier() or {}
+            why = ident_set.load_problem(load, cr.load_state(path), car)
+            if why:
+                return False, why
+            ident_set.stamp_load(load, car, path)
+            return True, ""
+
+        if kind == "joint_excite":
+            # E1: the whole excitation is one program on the controller. It
+            # is checked again here, from where the arm actually is, before
+            # it is sent -- the preview checked it from the taught pose.
+            import campaign_runner as cr
+            import ident_set
+            spec = step.get("spec") or {}
+            q0 = self.ctx.joints()
+            if not q0 or len(q0) < 6:
+                return False, "the robot is not reporting joint angles"
+            want = step.get("q0")
+            if want and max(abs(a - b) for a, b in zip(q0, want)) > math.radians(1.0):
+                return False, ("the arm is not at the start of this "
+                               "excitation; the move there did not finish")
+            run = getattr(self.ctx, "run_script", None)
+            if run is None:
+                return False, "this cell cannot run a program on the controller"
+            vmax = min(ident_set.V_MAX,
+                       float(self.ctx.max_joint_speed() or ident_set.V_MAX))
+            off = cr._tool_offset(q0, self.ctx.tcp_pose())
+            why = ident_set.check(spec, q0, self.ctx.pose_allowed, off, vmax)
+            if why:
+                return False, f"not sent: {why}"
+            secs = ident_set.program_seconds(spec, vmax)
+            self._say(f"Exciting {ident_set.words(spec)}; about {secs:.0f} s, "
+                      "then back to the start.")
+            t0 = time.monotonic()
+            ok, why = run(ident_set.urscript(spec, q0, vmax))
+            if not ok:
+                return False, why
+            # a chirp starts slowly: allow it time to make its first degree
+            ok, why = self._await_leave(q0, {"start_timeout_s": 8.0, **step})
+            if not ok or self._stop.is_set():
+                return ok, why
+            # The excitation passes back through its start again and again,
+            # so arrival there means nothing until the program is due to end.
+            self._stop.wait(max(0.0, t0 + secs - time.monotonic()))
+            if self._stop.is_set():
+                return True, ""
+            return self._await_joints(q0, {**step, "timeout_s": float(
+                step.get("timeout_s", 15.0))})
 
         if kind == "imu_excite":
             # Each joint out, stop, back past the start, stop, home, stop.
@@ -1194,6 +1250,8 @@ class Runner:
                 "operator": step.get("operator", "automation"),
                 "notes": step.get("notes") or job.notes,
             }
+            if step.get("experiment"):
+                args["experiment"] = step["experiment"]
             # What is bolted to the flange goes in every run, because the
             # simulated twin's payload is built from it. A run stamped 0 kg
             # gets a simulated bare flange, and the difference lands in the
@@ -1359,8 +1417,16 @@ class Runner:
             expect += (2 * math.sqrt(dist / a) if dist < ramp_d
                        else 2 * v / a + (dist - ramp_d) / v) + dw
             prev = t
+        ok, why = self._await_leave(q0, step)
+        if not ok or self._stop.is_set():
+            return ok, why
+        return self._await_joints(targets[-1], {
+            **step, "timeout_s": float(step.get("timeout_s", expect + 10.0))})
+
+    def _await_leave(self, q0, step) -> tuple[bool, str]:
+        """Wait for the arm to move away from q0 -- the program has started."""
         tol = math.radians(float(step.get("tolerance_deg", 0.5)))
-        away = max(2 * tol, math.radians(1.0))
+        away = max(2 * tol, math.radians(float(step.get("leave_deg", 1.0))))
         end = time.monotonic() + float(step.get("start_timeout_s", 5.0))
         while True:
             if self._stop.is_set():
@@ -1368,15 +1434,13 @@ class Runner:
             now = self.ctx.joints()
             if now and len(now) >= 6 and \
                     max(abs(now[i] - q0[i]) for i in range(6)) > away:
-                break
+                return True, ""
             if time.monotonic() > end:
                 return False, ("the arm did not start moving. The commonest "
                                "cause is the pendant being in Local mode, "
                                "where the robot accepts the connection and "
                                "ignores the command.")
             time.sleep(0.02)
-        return self._await_joints(targets[-1], {
-            **step, "timeout_s": float(step.get("timeout_s", expect + 10.0))})
 
     def _await_joints(self, target, step) -> tuple[bool, str]:
         """Wait until every joint is where it was sent, or say that it is not."""

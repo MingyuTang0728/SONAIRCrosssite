@@ -219,9 +219,27 @@ def main():
     assert not pv["ok"] and any("safe envelope" in p for p in pv["problems"]), pv
     print("  pass  refuses a configuration whose elbow travel leaves the envelope")
 
+    # a near_singular taught with the elbow bent 53 deg, as in the pilot: refused
+    q = list(cell.q)
+    q[2] = math.radians(53)
+    res = cr.teach("near_singular", q, 1, STATE)
+    assert not res["ok"] and "bent 53 deg" in res["error"], res
+    print("  pass  a near-singular configuration bent 53 deg is refused: "
+          + res["error"][:60] + "...")
+
     # teach three sound configurations
-    for cfg, dq in (("near_singular", -0.3), ("mid_workspace", 0.0),
+    import ur_control
+    sug = cr.suggest(cell.q, cell.tcp_pose(), ur_control.Envelope().as_dict(),
+                     cell.pose_allowed)
+    assert sug["ok"], sug["problems"]
+    for cfg, dq in (("near_singular", None), ("mid_workspace", 0.0),
                     ("extended", 0.4)):
+        if dq is None:
+            g = sug["configs"][cfg]
+            assert abs(math.degrees(g["q"][2])) <= cr.NEAR_SINGULAR_MAX_BEND_DEG
+            res = cr.teach(cfg, g["q"], g["direction"], STATE)
+            assert res["ok"], res
+            continue
         q = list(cell.q)
         q[1] += dq
         cr.teach(cfg, q, -1, STATE)

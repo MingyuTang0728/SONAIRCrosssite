@@ -1599,8 +1599,10 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     <p class="hint">Jog the arm into each configuration with the carrier clear of
     everything, choose which way the elbow has room to move, and press Teach
     here. The elbow travels up to about 65&deg; from the taught position in
-    that direction at the fastest speed, and every move is checked against the
-    safe envelope before it is sent.</p>
+    that direction (45&deg; for every speed), and every move is checked
+    against the safe envelope before it is sent. Near singular must be taught
+    with the elbow nearly straight (about 28&deg;, no more than 35&deg;) &mdash;
+    use <b>Suggest from here</b> to find it.</p>
 
     <div class="row" style="margin-top:12px;align-items:flex-end">
       <div class="field"><label>Session</label>
@@ -1614,6 +1616,36 @@ kbd{display:inline-block;min-width:20px;padding:2px 5px;border-radius:var(--r-xs
     </div>
     <div class="note info" id="campMsg">&mdash;</div>
     <div id="campCells" style="overflow-x:auto"></div>
+  </section>
+
+  <section class="block">
+    <h3>Identification set (E1) <span class="tag" id="e1Tag">&mdash;</span></h3>
+    <div class="note info">Training data for the people who use the benchmark:
+    every joint of the arm is moved, not only the elbow, so a simulator can be
+    tuned on these runs without ever seeing the runs it is scored on. Each joint
+    is swept from slow to fast in turn (about a minute each), then all six move
+    together in three different patterns at each configuration. It is recorded
+    twice: with the carrier alone, then with a known extra mass bolted on.
+    About 20 minutes each. The three configurations above must be taught first.</div>
+    <p class="hint">Every motion is worked out and checked against the safe
+    envelope before anything moves; one that would leave it is turned the other
+    way or made smaller, and if it still does not fit it is left out and you are
+    told why. The arm moves faster here than when you drive it to a position
+    &mdash; up to 0.8 rad/s at one joint &mdash; so <b>watch the first run with a
+    hand on the emergency stop</b>. For the second set: bolt on the mass, weigh
+    carrier and mass together, save that under <b>What is on the flange</b>,
+    and set the same payload on the pendant.</p>
+    <div class="row" style="margin-top:8px;align-items:flex-end">
+      <div class="field"><label>What is on the flange</label>
+        <select id="e1Load">
+          <option value="bare">Set 1: the carrier alone</option>
+          <option value="added">Set 2: the carrier with the added mass</option>
+        </select></div>
+      <button class="btn" id="btnE1Preview">Check this set</button>
+      <button class="btn go" id="btnE1Run">Run this set</button>
+    </div>
+    <div class="note info" id="e1Msg">&mdash;</div>
+    <div id="e1Rows" style="overflow-x:auto"></div>
   </section>
 
   <section class="block">
