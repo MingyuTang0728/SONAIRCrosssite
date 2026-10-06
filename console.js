@@ -123,6 +123,46 @@
     });
   })();
 
+  // THE LIVE ARM COLUMN. Open by default on a desk-width screen (it can be
+  // hidden, and the choice is remembered); a drawer on anything narrower.
+  // While it is open the jog panel sits inside it, under the view, instead
+  // of floating over the page.
+  (function liveArm() {
+    var KEY = "sonair.livearm";
+    var pref = null;
+    try { pref = localStorage.getItem(KEY); } catch (e) {}
+    var on = pref === null ? window.innerWidth >= 1280 : pref === "1";
+    function place() {
+      var dock = $("jogDock"), slot = $("monDockSlot");
+      if (!dock || !slot) return;
+      if (on) { if (dock.parentNode !== slot) slot.appendChild(dock); }
+      else if (dock.parentNode === slot) document.body.appendChild(dock);
+    }
+    function apply(save) {
+      document.body.classList.toggle("mon", on);
+      var b = $("btnMonitor");
+      if (b) { b.setAttribute("aria-pressed", on ? "true" : "false");
+               b.classList.toggle("on", on); }
+      place();
+      if (save) try { localStorage.setItem(KEY, on ? "1" : "0"); } catch (e) {}
+      setTimeout(resize3D, 0);
+    }
+    // the drawer opens under the header and status strip, however tall
+    // they have wrapped to on this screen
+    function chrome() {
+      var rb = $("runBar"), hd = document.querySelector("header.top");
+      var h = (hd ? hd.offsetHeight : 58) + (rb ? rb.offsetHeight : 34);
+      document.documentElement.style.setProperty("--chrome-h", h + "px");
+    }
+    window.addEventListener("resize", chrome);
+    chrome();
+    var b = $("btnMonitor");
+    if (b) b.addEventListener("click", function () { on = !on; apply(true); });
+    var h = $("btnMonHide");
+    if (h) h.addEventListener("click", function () { on = false; apply(true); });
+    apply(false);
+  })();
+
   /* -------------------------------------------------- navigation --------- */
   var PAGES = ["connect", "robot", "camera", "sensors", "calib", "auto", "inspect", "record"];
   var dockOffered = false;
@@ -497,6 +537,7 @@
     // picture of a robot, not a view of THIS robot.
     if (three && three.setJoints && s.actual_q) three.setJoints(s.actual_q);
     var p = s.actual_TCP_pose || [];
+    renderMonitor(s, p);
     $("tX").textContent = fmt(p[0] * 1000, 1);
     $("tY").textContent = fmt(p[1] * 1000, 1);
     $("tZ").textContent = fmt(p[2] * 1000, 1);
@@ -543,6 +584,35 @@
     renderIo("ioOut", s.digital_outputs, true);
     if (window.__setJoints && q.length === 6) window.__setJoints(q);
   }
+
+  // The Live arm column: the pose and state of the arm, on every page.
+  var monSeen = 0;
+  function renderMonitor(s, p) {
+    var set = function (id, t) { var e = $(id); if (e) e.textContent = t; };
+    set("monX", fmt(p[0] * 1000, 1));
+    set("monY", fmt(p[1] * 1000, 1));
+    set("monZ", fmt(p[2] * 1000, 1));
+    var q = s.actual_q || [];
+    for (var i = 0; i < 6; i++) set("monJ" + i, fmt(q[i] * 180 / Math.PI, 1));
+    set("monMode", friendlyMode(s.robot_mode_text));
+    set("monSafety", friendlySafety(s.safety_mode_text));
+    var safe = $("monSafety");
+    if (safe) safe.style.color = !s.safety_mode_text || s.safety_mode_text === "NORMAL"
+      ? "" : "var(--bad)";
+    if (s.speed_scaling !== undefined) set("monSpeed", fmt(s.speed_scaling * 100, 0) + " %");
+    if (q.length) {
+      monSeen = Date.now();
+      var tag = $("monAge");
+      if (tag) { tag.textContent = "live"; tag.className = "tag live"; }
+    }
+  }
+  setInterval(function () {
+    var tag = $("monAge");
+    if (tag && monSeen && Date.now() - monSeen > 1500) {
+      tag.textContent = "no update for " + Math.round((Date.now() - monSeen) / 1000) + " s";
+      tag.className = "tag stale";
+    }
+  }, 500);
 
   function friendlyMode(m) {
     return ({ RUNNING: "Ready", IDLE: "Idle", POWER_OFF: "Powered off",
@@ -1380,7 +1450,7 @@
       return;
     }
     var cv = $("stage3d");
-    var w = cv.clientWidth || 600, h = 400;
+    var w = cv.clientWidth || 600, h = cv.clientHeight || 300;
     var scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0e13);
     var cam = new THREE.PerspectiveCamera(48, w / h, 0.01, 60);
@@ -1591,20 +1661,24 @@
 
     (function loop() {
       requestAnimationFrame(loop);
-      // Rendering a hidden page spends GPU and main-thread time on pixels
-      // nobody sees, and that time comes out of the same budget the jog needs.
-      if (document.getElementById("page-robot").hidden) return;
+      // Rendering a view nobody can see spends GPU and main-thread time that
+      // comes out of the same budget the jog needs. The view lives in the
+      // Live arm column, so it is drawn whenever that column is open.
+      if (!cv.offsetParent) return;
       ctrl.update(); rend.render(scene, cam);
     })();
   }
   function resize3D() {
     if (!three) return;
     var cv = $("stage3d");
-    var w = cv.clientWidth || 600;
-    three.cam.aspect = w / 400; three.cam.updateProjectionMatrix();
-    three.rend.setSize(w, 400, false);
+    var w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;                   // hidden: sized when it reappears
+    three.cam.aspect = w / h; three.cam.updateProjectionMatrix();
+    three.rend.setSize(w, h, false);
   }
   window.addEventListener("resize", resize3D);
+  if (window.ResizeObserver && $("stage3d"))
+    new ResizeObserver(function () { resize3D(); }).observe($("stage3d"));
   $("btn3dPath").addEventListener("click", function () {
     if (!three) {
       say("cellMsg", "The 3D view has not loaded.", "warn"); return;

@@ -741,6 +741,50 @@ table.data td{padding:6px 9px}
 .dock{border-radius:3px;box-shadow:0 12px 36px rgba(0,0,0,.55);border-color:#4a525a}
 .dockbar{background:#2a2f35}
 .dockbar .t{font-family:var(--cond);font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+
+/* ---- the live arm column ---- */
+.monitor{flex:0 0 384px;width:384px;min-width:0;display:flex;flex-direction:column;
+  background:#14171a;border-left:1px solid var(--line-strong);overflow:hidden}
+body:not(.mon) .monitor{display:none}
+.monhead{display:flex;align-items:center;gap:8px;padding:0 10px 0 14px;min-height:36px;
+  background:var(--surface-2);border-bottom:1px solid var(--line)}
+.monhead .t{font:600 12.5px var(--cond);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--text-2)}
+.monhead .tag{margin-left:auto;font:10.5px var(--mono);padding:2px 8px;border-radius:2px;
+  background:#121417;border:1px solid var(--line-strong);color:var(--text-3)}
+.monhead .tag.live{color:var(--ok);border-color:var(--ok)}
+.monhead .tag.stale{color:var(--warn);border-color:var(--warn)}
+.monbody{flex:1;overflow-y:auto;padding:10px}
+.monitor .viewport{border-radius:2px}
+.monitor #stage3d{height:300px}
+.monitor .vtools{position:static;padding:6px;gap:4px;justify-content:flex-start;
+  background:#181b1e;border-bottom:1px solid var(--line)}
+.monitor .vtools .btn{min-height:0;padding:3px 8px;font-size:11.5px}
+.monread{margin-top:10px}
+.mgrp{font:600 10.5px var(--cond);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--text-3);margin:10px 0 5px;display:flex}
+.mgrp span{margin-left:auto;text-transform:none;letter-spacing:0;font-family:var(--mono)}
+.mcells{display:grid;gap:4px}
+.mcells.c3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.mcells > div{background:#0f1113;border:1px solid var(--line);padding:5px 8px;min-width:0}
+.mcells b{display:block;font:600 10px var(--cond);letter-spacing:.08em;color:var(--text-3);
+  text-transform:uppercase}
+.mcells span{display:block;font:600 15px var(--mono);font-variant-numeric:tabular-nums;
+  text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mstate{margin-top:8px}
+.mstate span{font:600 12.5px var(--cond);text-align:left}
+/* the jog panel, docked under the view instead of floating over the page */
+#monDockSlot .dock{position:static;width:auto;margin-top:12px;box-shadow:none}
+#monDockSlot .dock.min{width:auto}
+body.mon.dockopen main.page{padding-right:22px}
+body.mon main.page{padding-bottom:24px}
+/* below desk width the column is a drawer over the page, opened from the header */
+@media(max-width:1279px){
+  .monitor{position:fixed;right:0;top:var(--chrome-h,92px);bottom:0;z-index:70;
+    box-shadow:-12px 0 32px rgba(0,0,0,.5)}
+  body.mon main.page{padding-bottom:84px}
+}
+@media(max-width:820px){.monitor{width:100%;top:0}}
 </style>
 </head>
 <body>
@@ -762,6 +806,8 @@ table.data td{padding:6px 9px}
   </div>
   <div class="hdrtools">
     <div class="clock" id="hdrClock" aria-label="Station time">--:--:--</div>
+    <button class="btn guide" id="btnMonitor" aria-pressed="false"
+      title="Show or hide the live arm view on the right of every page">Live arm</button>
     <button class="btn guide" id="btnGuide" aria-pressed="false"
       title="Show or hide the explanations under each section">Guidance</button>
   </div>
@@ -919,25 +965,7 @@ table.data td{padding:6px 9px}
   <p class="lead">Live position, forces and health. Jog with the pads &mdash; motion
   stops the moment you let go.</p>
 
-  <div class="grid g2" style="align-items:start">
-    <section class="block" style="margin:0">
-      <h3>Cell view</h3>
-      <div class="viewport">
-        <div class="vlabel">Preview &mdash; not a measurement</div>
-        <div class="vtools">
-          <button class="btn" id="btn3dFit">Fit</button>
-          <button class="btn" id="btn3dPath">Show path</button>
-          <button class="btn" id="btn3dCheck">Check the view</button>
-          <button class="btn" id="btn3dLoad">Load a model</button>
-          <button class="btn" id="btn3dReset">Built-in UR5e</button>
-        </div>
-        <canvas id="stage3d"></canvas>
-        <div class="empty" id="stage3dEmpty">Loading the robot model&hellip;</div>
-      </div>
-      <input type="file" id="modelFile" accept=".glb,.gltf,.stl,.ply" hidden/>
-      <div class="note info" id="cellMsg">Drag to turn the view, scroll to zoom.
-      Press <b>Show path</b> once a scan has been planned.</div>
-    </section>
+  <div class="grid" style="align-items:start">
 
     <section class="block" style="margin:0">
       <h3>Tool position</h3>
@@ -2011,6 +2039,59 @@ table.data td{padding:6px 9px}
     <div class="note info" id="rcMsg">Not recording.</div>
   </section>
 </main>
+
+<!-- ============ the live arm: on every page ============
+     Watching the arm while working anywhere else in the console is one
+     task. The cell view lives here, not on the Robot page, so it is on
+     screen whatever page is open; the jog panel docks underneath it. -->
+<aside class="monitor" id="monitor" aria-label="Live arm">
+  <div class="monhead">
+    <span class="t">Live arm</span>
+    <span class="tag" id="monAge">no data</span>
+    <button class="helpbtn" id="btnMonHide" title="Hide this column (the Live arm button in the header brings it back)">Hide</button>
+  </div>
+  <div class="monbody">
+      <div class="viewport">
+      <div class="vlabel">Preview &mdash; not a measurement</div>
+      <div class="vtools">
+        <button class="btn" id="btn3dFit">Fit</button>
+        <button class="btn" id="btn3dPath">Show path</button>
+        <button class="btn" id="btn3dCheck">Check the view</button>
+        <button class="btn" id="btn3dLoad">Load a model</button>
+        <button class="btn" id="btn3dReset">Built-in UR5e</button>
+      </div>
+      <canvas id="stage3d"></canvas>
+      <div class="empty" id="stage3dEmpty">Loading the robot model&hellip;</div>
+    </div>
+    <input type="file" id="modelFile" accept=".glb,.gltf,.stl,.ply" hidden/>
+    <div class="note info" id="cellMsg">Drag to turn the view, scroll to zoom.
+    Press <b>Show path</b> once a scan has been planned.</div>
+
+    <div class="monread">
+      <div class="mgrp">Tool position <span>mm</span></div>
+      <div class="mcells c3">
+        <div><b>X</b><span id="monX">&mdash;</span></div>
+        <div><b>Y</b><span id="monY">&mdash;</span></div>
+        <div><b>Z</b><span id="monZ">&mdash;</span></div>
+      </div>
+      <div class="mgrp">Joints <span>degrees</span></div>
+      <div class="mcells c3">
+        <div><b>Base</b><span id="monJ0">&mdash;</span></div>
+        <div><b>Shoulder</b><span id="monJ1">&mdash;</span></div>
+        <div><b>Elbow</b><span id="monJ2">&mdash;</span></div>
+        <div><b>Wrist 1</b><span id="monJ3">&mdash;</span></div>
+        <div><b>Wrist 2</b><span id="monJ4">&mdash;</span></div>
+        <div><b>Wrist 3</b><span id="monJ5">&mdash;</span></div>
+      </div>
+      <div class="mcells c3 mstate">
+        <div><b>State</b><span id="monMode">&mdash;</span></div>
+        <div><b>Safety</b><span id="monSafety">&mdash;</span></div>
+        <div><b>Speed</b><span id="monSpeed">&mdash;</span></div>
+      </div>
+    </div>
+    <div id="monDockSlot"></div>
+  </div>
+</aside>
 </div></div>
 
 <!-- ==================== THE JOG DOCK ====================
