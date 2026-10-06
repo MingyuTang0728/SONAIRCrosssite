@@ -522,6 +522,14 @@
     var parts = [];
     if (l.state === "streaming") parts.push("Streaming from " + (l.sensor || "the sensor")
       + " at " + fmt(l.rate_hz, 0) + " a second");
+    else if (!l.connects && (l.state === "reconnecting" || l.state === "restarting"
+             || l.state === "starting"))
+      // Never had it: nothing was lost. The commonest reason by far is
+      // another program holding the sensor.
+      return "Cannot reach the sensor yet" + (l.error ? " (" + l.error + ")" : "")
+        + ". Close LPMS-Control and FusionHub — only one program can hold the "
+        + "sensor at a time — and make sure it is switched on. This keeps "
+        + "trying by itself.";
     else if (l.state === "reconnecting" || l.state === "restarting")
       parts.push("Lost the sensor " + fmt(l.down_for_s, 1) + " s ago — reconnecting by itself");
     else if (l.state === "failed") parts.push("Stopped: " + (l.error || "unknown"));

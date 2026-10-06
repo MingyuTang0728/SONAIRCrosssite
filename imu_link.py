@@ -2099,6 +2099,7 @@ class OpenZenLink(_Base):
         total = self.frames_seen + self.frames_lost
         h.update({
             "state": self.state, "sensor": self.sensor_name,
+            "connects": self.connects,
             "battery": self.battery, "reconnects": self.reconnects,
             "reader_restarts": self.restarts,
             "outages_10min": len(recent),

@@ -1634,12 +1634,15 @@
     var live = ws && ws.readyState === WebSocket.OPEN;
 
     if (!live) { lamp("lampRobot", "lampRobotV", "", "Not connected"); }
-    else if (now - state.urAge < 2000) {
+    else if (now - state.urAge < 2000 && state.ur && state.ur.actual_q
+             && state.ur.actual_q.length) {
+      // Green only on actual joint readings. A status message with nothing
+      // in it lit this lamp green over a robot that could not be reached.
       var s = state.ur || {};
       var bad = /STOP|FAULT|VIOLATION/.test(s.safety_mode_text || "");
       lamp("lampRobot", "lampRobotV", bad ? "bad" : "ok",
         bad ? friendlySafety(s.safety_mode_text) : friendlyMode(s.robot_mode_text));
-    } else { lamp("lampRobot", "lampRobotV", "warn", "No data"); }
+    } else { lamp("lampRobot", "lampRobotV", "warn", "No data from the robot"); }
 
     if (!live) { lamp("lampCam", "lampCamV", "", "Not connected"); }
     else if (state.camNoCamera) { lamp("lampCam", "lampCamV", "bad", "Not available"); }
