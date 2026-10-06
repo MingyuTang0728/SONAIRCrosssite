@@ -828,6 +828,10 @@
     row("Orientation sense", !u || !u.quat ? "—"
       : u.quat_convention === "conjugate" ? "published back-to-front, turned "
         + "the right way round here"
+      : u.quat_convention === "direct_zdown" ? "published with the world's z axis "
+        + "pointing down, turned upright here"
+      : u.quat_convention === "conjugate_zdown" ? "published back-to-front with the "
+        + "world's z axis pointing down, turned the right way round here"
       : u.quat_convention === "direct" ? "published the usual way round"
       : "working it out");
     if (u && u.quat_gravity_residual_deg != null) {
@@ -945,6 +949,9 @@
     } else if (u.quat_convention === "conjugate") {
       chips.push(["ok", "orientation published back-to-front by this sensor, "
         + "and turned the right way round here"]);
+    } else if (/_zdown$/.test(u.quat_convention || "")) {
+      chips.push(["ok", "orientation published with the world's z axis pointing "
+        + "down by this sensor, and turned upright here"]);
     }
     if (att.pb) chips.push(["ok", "binary stream, channels identified"]);
     if ($("attChips")) {

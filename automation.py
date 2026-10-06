@@ -311,8 +311,8 @@ def preflight(ctx, requires=None) -> dict:
     for u, v in live.items():
         if str(v.get("gyro_units") or "") not in ("deg", "rad"):
             pending_units.append(u)
-        if v.get("quat") and str(v.get("quat_convention") or "") not in \
-                ("direct", "conjugate"):
+        if v.get("quat") and str(v.get("quat_convention") or "") in \
+                ("", "deciding"):
             pending_quat.append(u)
     if pending_units or pending_quat:
         bits = []

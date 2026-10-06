@@ -332,15 +332,32 @@ class QuatConvention:
     STATIC_TOL = 0.08       # |a|/g within this of 1.0 counts as near-static
     MARGIN_DEG = 2.0        # the two senses must differ by at least this much
 
+    # The four ways a unit-quaternion orientation is published in practice:
+    # either sense (sensor->world or world->sensor), and a world frame whose
+    # z axis points UP or DOWN. The LPMS-B2 through FusionHub is
+    # world->sensor, z up. The same sensor through LP-Research's OpenZen is
+    # sensor->world with z DOWN: it reported roll -178 deg lying flat, and
+    # with only the first two candidates the test chose the less wrong of two
+    # wrong answers -- gravity was ADDED to the accelerometer (19.75 m/s^2 of
+    # "linear acceleration" on a unit standing still).
+    CANDIDATES = ("direct", "conjugate", "direct_zdown", "conjugate_zdown")
+    _FLIP = [0.0, 1.0, 0.0, 0.0]          # 180 deg about x, on the world side
+
     def __init__(self, pinned: str = "auto"):
-        self.pinned = pinned if pinned in ("direct", "conjugate") else ""
+        self.pinned = pinned if pinned in self.CANDIDATES else ""
         self.decided = self.pinned or ""
         self.n_evidence = 0
-        self._direct: deque = deque(maxlen=200)
-        self._conj: deque = deque(maxlen=200)
+        self._err = {c: deque(maxlen=200) for c in self.CANDIDATES}
         self.residual_deg = 0.0
         self.rejected_deg = 0.0
         self.basis = "pinned by the operator" if self.pinned else ""
+
+    @classmethod
+    def transform(cls, name: str, dev_q):
+        q = q_conjugate(dev_q) if name.startswith("conjugate") else list(dev_q)
+        if name.endswith("_zdown"):
+            q = q_multiply(cls._FLIP, q)
+        return q
 
     @staticmethod
     def _tilt_err_deg(q, accel) -> float | None:
@@ -359,39 +376,38 @@ class QuatConvention:
         n = math.sqrt(sum(float(v) * float(v) for v in accel)) / GRAVITY
         if abs(n - 1.0) > self.STATIC_TOL:
             return          # accelerating: it is not measuring gravity alone
-        a = self._tilt_err_deg(dev_q, accel)
-        b = self._tilt_err_deg(q_conjugate(dev_q), accel)
-        if a is None or b is None:
+        errs = {c: self._tilt_err_deg(self.transform(c, dev_q), accel)
+                for c in self.CANDIDATES}
+        if any(e is None for e in errs.values()):
             return
-        self._direct.append(a)
-        self._conj.append(b)
+        for c, e in errs.items():
+            self._err[c].append(e)
         self.n_evidence += 1
         if self.n_evidence < self.DECIDE_AFTER:
             return
-        da = _median(self._direct)
-        db = _median(self._conj)
-        if abs(da - db) < self.MARGIN_DEG:
-            # Symmetric case: the unit is lying almost level, where the two
-            # senses agree to within the noise. Nothing to choose between
-            # them, and no harm either -- keep watching until the carrier is
-            # tilted enough to tell, instead of committing on a coin flip.
+        med = sorted((_median(self._err[c]), c) for c in self.CANDIDATES)
+        (best, name), (second, _) = med[0], med[1]
+        if second - best < self.MARGIN_DEG:
+            # Symmetric case: lying almost level, where the two senses agree
+            # to within the noise. Nothing to choose between them yet --
+            # keep watching until the carrier is tilted enough to tell,
+            # instead of committing on a coin flip.
             self.n_evidence = self.DECIDE_AFTER - 10
             return
-        if db < da:
-            self.decided, self.residual_deg, self.rejected_deg = "conjugate", db, da
-            self.basis = (f"its quaternion disagreed with its own accelerometer "
-                          f"by {da:.1f} deg as published and {db:.1f} deg inverted, "
-                          f"so it is published world-to-sensor and is inverted on "
-                          f"the way in")
-        else:
-            self.decided, self.residual_deg, self.rejected_deg = "direct", da, db
-            self.basis = (f"its quaternion agrees with its own accelerometer to "
-                          f"{da:.1f} deg as published")
+        direct = _median(self._err["direct"])
+        self.decided, self.residual_deg, self.rejected_deg = name, best, second
+        words = {"direct": "as published",
+                 "conjugate": "inverted (it is published world-to-sensor)",
+                 "direct_zdown": "with its world frame's z axis pointing down",
+                 "conjugate_zdown": "inverted, with its world z axis pointing down"}
+        self.basis = (f"its quaternion agrees with its own accelerometer to "
+                      f"{best:.1f} deg read {words[name]}, against "
+                      f"{direct:.1f} deg as published")
 
     def apply(self, dev_q):
         """The device quaternion in this module's sensor-to-world convention."""
-        if self.decided == "conjugate":
-            return q_conjugate(dev_q)
+        if self.decided and self.decided != "direct":
+            return self.transform(self.decided, dev_q)
         return dev_q
 
     def status(self) -> dict:
