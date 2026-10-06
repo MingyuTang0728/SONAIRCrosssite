@@ -341,6 +341,11 @@ def preflight(ctx, requires=None) -> dict:
             unit_word = ("degrees per second" if v.get("gyro_units") == "deg"
                          else "radians per second")
             detail.append(f"{u} publishes {unit_word}")
+            if v.get("quat") and v.get("quat_convention_remembered") and \
+                    not v.get("quat_convention_confirmed"):
+                detail.append(f"{u}'s orientation sense is remembered from an "
+                              f"earlier session and is re-checked as the arm "
+                              f"moves")
         checks.append(Check("imu_units", "Sensor scales established", "pass",
                             "; ".join(detail) + " — measured, not assumed."))
 

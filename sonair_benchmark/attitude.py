@@ -351,6 +351,21 @@ class QuatConvention:
         self.residual_deg = 0.0
         self.rejected_deg = 0.0
         self.basis = "pinned by the operator" if self.pinned else ""
+        # A convention remembered from an earlier session of the SAME sensor
+        # over the SAME transport. Used at once, and checked again as the
+        # evidence comes in: if the data disagrees, the data wins.
+        self.verifying = False
+        self.remembered = False
+        self.revised = False
+
+    def remember(self, name: str, when: str = "") -> None:
+        if self.pinned or name not in self.CANDIDATES:
+            return
+        self.decided = name
+        self.verifying = True
+        self.remembered = True
+        self.basis = (f"remembered from {when or 'an earlier session'} for this "
+                      f"sensor and connection; being re-checked as the arm moves")
 
     @classmethod
     def transform(cls, name: str, dev_q):
@@ -371,7 +386,7 @@ class QuatConvention:
 
     def feed(self, dev_q, accel) -> None:
         """Accumulate evidence from one sample. Cheap; safe to call always."""
-        if self.decided or not dev_q or not accel:
+        if (self.decided and not self.verifying) or not dev_q or not accel:
             return
         n = math.sqrt(sum(float(v) * float(v) for v in accel)) / GRAVITY
         if abs(n - 1.0) > self.STATIC_TOL:
@@ -395,6 +410,14 @@ class QuatConvention:
             self.n_evidence = self.DECIDE_AFTER - 10
             return
         direct = _median(self._err["direct"])
+        if self.verifying:
+            self.verifying = False
+            self.revised = name != self.decided
+            if not self.revised:
+                self.residual_deg, self.rejected_deg = best, second
+                self.basis = (f"remembered, and confirmed: its quaternion agrees "
+                              f"with its own accelerometer to {best:.1f} deg")
+                return
         self.decided, self.residual_deg, self.rejected_deg = name, best, second
         words = {"direct": "as published",
                  "conjugate": "inverted (it is published world-to-sensor)",
@@ -413,6 +436,8 @@ class QuatConvention:
     def status(self) -> dict:
         return {"quat_convention": self.decided or "deciding",
                 "quat_convention_basis": self.basis,
+                "quat_convention_remembered": self.remembered,
+                "quat_convention_confirmed": bool(self.decided) and not self.verifying,
                 "quat_gravity_residual_deg": round(self.residual_deg, 3)
                 if self.decided else None}
 

@@ -71,7 +71,60 @@ def test_every_convention_from_tilted_poses():
           f"(nearly symmetric poses), none decided wrongly")
 
 
+def test_remembered_then_checked():
+    raw = [0.0160, 0.3276, 0.9445, -0.0161]
+    acc = [-0.18, 0.41, 9.96]
+    # remembered right: usable at once, then confirmed by the data
+    c = QC()
+    c.remember("conjugate_zdown", "2026-10-01")
+    assert c.decided == "conjugate_zdown" and c.status()["quat_convention_remembered"]
+    assert not c.status()["quat_convention_confirmed"]
+    for _ in range(40):
+        c.feed(raw, acc)
+    assert c.decided == "conjugate_zdown" and c.status()["quat_convention_confirmed"]
+    assert not c.revised
+    # remembered wrong (the FusionHub answer, for the OpenZen stream): the data wins
+    c = QC()
+    c.remember("conjugate")
+    for _ in range(40):
+        c.feed(raw, acc)
+    assert c.decided == "conjugate_zdown" and c.revised, c.status()
+    print("  pass  a remembered convention is used at once and re-checked; "
+          "a wrong one is overruled by the data")
+
+
+def test_agent_remembers_across_restarts():
+    import os
+    import tempfile
+    os.chdir(tempfile.mkdtemp())
+    import bench_agent
+    raw = [0.0160, 0.3276, 0.9445, -0.0161]
+    acc = [-0.18, 0.41, 9.96]
+    hub = bench_agent.ImuHub()
+    hub.set_source("ind0", "openzen")
+    for k in range(40):
+        hub.push("ind0", k * 0.01, {"quat": raw, "accel": acc,
+                                     "gyro": [0.0, 0.0, 0.0]})
+    st = hub.tracker_status()["ind0"]
+    assert st["quat_convention"] == "conjugate_zdown", st
+    book = bench_agent.json.loads(hub.CONV_PATH.read_text())
+    assert book["ind0"]["openzen"]["convention"] == "conjugate_zdown", book
+    # the agent restarts: known at once, before the arm has moved
+    hub2 = bench_agent.ImuHub()
+    hub2.set_source("ind0", "openzen")
+    st = hub2.tracker_status()["ind0"]
+    assert st["quat_convention"] == "conjugate_zdown" and \
+        st["quat_convention_remembered"], st
+    # a different connection starts again
+    hub2.set_source("ind0", "udp-listen")
+    assert hub2.tracker_status()["ind0"]["quat_convention"] == "deciding"
+    print("  pass  the agent remembers the convention per sensor and "
+          "connection across a restart; a new connection decides afresh")
+
+
 if __name__ == "__main__":
     test_the_real_lpms_b2_over_openzen()
     test_every_convention_from_tilted_poses()
+    test_remembered_then_checked()
+    test_agent_remembers_across_restarts()
     print("all passed")

@@ -371,11 +371,72 @@ class ImuHub:
                     log.debug("no accelerometer calibration for %s: %s", unit, e)
             return tr
 
+    # Which way round each sensor publishes its quaternion, per connection
+    # kind, as measured in earlier sessions. It is a property of the sensor's
+    # firmware and the software in between (FusionHub and OpenZen differ),
+    # not of how it is mounted -- so it is remembered, and the operator does
+    # not have to move the arm to re-learn it after every restart. It is still
+    # re-checked from the data each session.
+    CONV_PATH = Path("calib") / "quat_convention.json"
+
+    def _conv_book(self) -> dict:
+        try:
+            return json.loads(self.CONV_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def set_source(self, unit: str, kind: str) -> None:
+        """
+        A unit is about to be read over `kind`. A different connection may
+        publish the quaternion the other way round, so the convention starts
+        again -- from what was measured last time over that same connection,
+        if anything was.
+        """
+        if AttitudeTracker is None:
+            return
+        tr = self.tracker(unit)
+        if tr is None or getattr(tr, "_source", None) == kind:
+            return
+        from sonair_benchmark.attitude import QuatConvention
+        tr.convention = QuatConvention("auto")
+        tr._source = kind
+        tr._conv_saved = False
+        rec = (self._conv_book().get(unit) or {}).get(kind) or {}
+        if rec.get("convention"):
+            tr.convention.remember(rec["convention"], rec.get("decided_utc", ""))
+            tr._conv_saved = True
+            log.info("%s over %s: quaternion convention %s, remembered",
+                     unit, kind, rec["convention"])
+
+    def _maybe_save_convention(self, unit: str, tr) -> None:
+        conv = tr.convention
+        kind = getattr(tr, "_source", None)
+        if not kind or not conv.decided or conv.verifying or conv.pinned:
+            return
+        if getattr(tr, "_conv_saved", False) and not conv.revised:
+            return
+        tr._conv_saved = True
+        conv.revised = False
+        book = self._conv_book()
+        book.setdefault(unit, {})[kind] = {
+            "convention": conv.decided,
+            "residual_deg": round(conv.residual_deg, 3),
+            "decided_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime()) + " UTC"}
+        try:
+            self.CONV_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self.CONV_PATH.write_text(json.dumps(book, indent=2), encoding="utf-8")
+        except OSError as e:
+            log.warning("could not save the quaternion convention: %s", e)
+
     def reset_tracker(self, unit: str) -> bool:
         if AttitudeTracker is None:
             return False
         with self._tlock:
+            old = self._trackers.get(unit)
             self._trackers[unit] = AttitudeTracker(unit)
+        src = getattr(old, "_source", None)
+        if src:
+            self.set_source(unit, src)
         return True
 
     def tracker_status(self) -> dict:
@@ -391,6 +452,7 @@ class ImuHub:
         if tr is not None:
             try:
                 rec = {**rec, **tr.update(t_master, rec)}
+                self._maybe_save_convention(unit, tr)
             except Exception as e:      # noqa: BLE001
                 log.debug("attitude update failed for %s: %s", unit, e)
         with self._lock:
@@ -1084,6 +1146,7 @@ class FusionHubBridge:
         # exactly; every other transport has to earn one (see SourceClock).
         MASTER.reset_channel(self.unit, -MASTER._t0 if self.kind == "openzen"
                              else None)
+        HUB.set_source(self.unit, self.kind)
         try:
             self.link = imu_link.make_link(
                 self.kind, self.unit, gyro_units=self.gyro_units,
@@ -1656,6 +1719,7 @@ def unit_report() -> dict:
             row.setdefault("running", True)
         tr = trackers.get(u) or {}
         for k in ("quat_convention", "quat_convention_basis",
+                  "quat_convention_remembered", "quat_convention_confirmed",
                   "quat_gravity_residual_deg", "quat_source", "sensor_clock_ok",
                   "clock_jumps", "accel_calibrated", "accel_scale_spread_pct",
                   "accel_still_median", "accel_still_samples"):
