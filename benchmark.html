@@ -389,6 +389,11 @@ footer a{color:var(--muted)}
      <code>aux.controller_t</code> is the controller's own clock, unaffected by the recording
      PC. Units: metres, radians, seconds, newton-metres, m/s&sup2;.</p>
 
+  <h3>Checking a download</h3>
+  <p>Every release carries a <code>manifest.json</code> with its versions and a SHA-256 for
+     every file. <code>python -m sonair_benchmark verify-release &lt;folder&gt;</code> checks the
+     copy you have against it &mdash; and confirms that no held-out real data is in it.</p>
+
   <h3>How the recording is kept honest</h3>
   <ul>
     <li>Every run is read back as it closes; one that does not reach its labelled speed, holds

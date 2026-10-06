@@ -83,9 +83,13 @@ def cmd_budget(args) -> int:
     return 0
 
 
+def _many(dirs):
+    return dirs if isinstance(dirs, (list, tuple)) else [dirs]
+
+
 def _load_pairs(real_dir, sim_dir):
-    real = read_dataset(real_dir, side="real")
-    sim = read_dataset(sim_dir, side="sim")
+    real = [r for d in _many(real_dir) for r in read_dataset(d, side="real")]
+    sim = [r for d in _many(sim_dir) for r in read_dataset(d, side="sim")]
     # The identification set (E1) is training data: published so submissions
     # can be fitted on it, and for that reason never part of what they are
     # scored on.
@@ -175,7 +179,7 @@ def _named(spec: str) -> tuple[str, str]:
 
 def dataset_summary(real_dir, held=None) -> dict:
     """What the scores were computed over, for the page's Data section."""
-    runs = [r for r in read_dataset(real_dir, side="real")
+    runs = [r for d in _many(real_dir) for r in read_dataset(d, side="real")
             if not str(r.manifest.notes).startswith("SIMULATED CELL")]
     by_exp: dict[str, int] = {}
     for r in runs:
@@ -199,8 +203,19 @@ def cmd_score(args) -> int:
         plan_doc = json.loads(Path(args.plan).read_text(encoding="utf-8"))
         held = set(plan_doc["meta"].get("held_out_cells") or [])
         fit_pairs = [p for p in pairs if p[0].manifest.cell_key() not in held]
+        if not fit_pairs:
+            # B1 is FITTED, and fitting it on the cells it is scored on would
+            # hand the baseline the answers. With no published cell given it
+            # is fitted on nothing (a zero offset) and says so.
+            print("WARNING: no published-cell runs given, so B1 has nothing to "
+                  "be fitted on. Pass the public release's published folders "
+                  "too: --real <public>/E2/published/real <private>/E2/heldout/real",
+                  file=sys.stderr)
     else:
         fit_pairs = pairs
+        print("WARNING: no --plan, so every cell is scored and B1 is fitted on "
+              "all of them -- fine for a check, not for a leaderboard",
+              file=sys.stderr)
 
     entries = [
         score_submission(pairs, None, "S0 · MuJoCo menagerie UR5e, unchanged",
@@ -256,6 +271,49 @@ def cmd_simulate(args) -> int:
     return sim_mujoco.main(argv)
 
 
+def cmd_release(args) -> int:
+    from .release import build_release
+    try:
+        res = build_release(args.runs, args.out, sim_dir=args.sim, plan_path=args.plan,
+                            state_path=args.state, private_out=args.private_out,
+                            menagerie=args.menagerie, make_s0=not args.no_make_s0,
+                            version=args.version, imu_cal_path=args.imu_cal,
+                            tcp_offset=[float(v) for v in args.tcp_offset.split(",")]
+                            if args.tcp_offset else None)
+    except FileExistsError as e:
+        print(e, file=sys.stderr)
+        return 2
+    c = res["counts"]
+    print(f"public release : {res['out']}\n"
+          f"  E1 {c['E1']} runs, E2 published {c['E2_published']}, "
+          f"E2 held-out {c['E2_heldout']} (commands + S0 only)\n"
+          f"private set    : {res['private']}  -- never publish\n"
+          f"  E2 held-out real {c['E2_heldout']}, E3 {c['E3']}")
+    for s in res["skipped"]:
+        print("  left out: " + s)
+    if res["problems"]:
+        print("\nNOT SAFE TO PUBLISH:", file=sys.stderr)
+        for p in res["problems"]:
+            print("  " + p, file=sys.stderr)
+        return 1
+    print("\nverified: nothing from a held-out cell or E3 is in the public folder, "
+          "and every file matches its checksum")
+    return 0
+
+
+def cmd_verify_release(args) -> int:
+    from .release import verify_release
+    problems = verify_release(args.folder)
+    if problems:
+        print("NOT SAFE TO PUBLISH:")
+        for p in problems:
+            print("  " + p)
+        return 1
+    print(f"{args.folder}: safe to publish -- no held-out or E3 real data, no logs, "
+          "every file matches its checksum")
+    return 0
+
+
 def cmd_demo(args) -> int:
     """Synthetic end-to-end run: proves the whole chain before real data exists."""
     from .demo import build_demo
@@ -303,8 +361,10 @@ def main(argv=None) -> int:
     p.set_defaults(func=cmd_gap)
 
     p = sub.add_parser("score", help="Phase 6: score submissions, emit leaderboard.json")
-    p.add_argument("--real", required=True)
-    p.add_argument("--sim", required=True)
+    p.add_argument("--real", required=True, nargs="+",
+                   help="real run folder(s): e.g. the public published cells and "
+                        "the private held-out cells together")
+    p.add_argument("--sim", required=True, nargs="+", help="S0 run folder(s)")
     p.add_argument("--budget")
     p.add_argument("--plan", help="campaign plan, for the held-out cell list")
     p.add_argument("--submission", help="a Track B prediction file (legacy form)")
@@ -325,6 +385,29 @@ def main(argv=None) -> int:
     p.add_argument("--menagerie", default="")
     p.add_argument("--tcp-offset", default="")
     p.set_defaults(func=cmd_simulate)
+
+    p = sub.add_parser("release", help="build the public dataset release and its "
+                                       "private scoring set")
+    p.add_argument("--runs", default="bench_runs", help="the recorded run files")
+    p.add_argument("--out", required=True, help="a new folder for the public release")
+    p.add_argument("--private-out", default="",
+                   help="where the private scoring set goes (default: <out>_PRIVATE)")
+    p.add_argument("--sim", default="", help="existing S0 simulations, if any")
+    p.add_argument("--plan", default="", help="campaign plan (held-out cells)")
+    p.add_argument("--state", default="campaign/state.json",
+                   help="campaign state: only runs it accepted are released")
+    p.add_argument("--menagerie", default="")
+    p.add_argument("--tcp-offset", default="",
+                   help="the pendant's TCP, x,y,z[,rx,ry,rz] -- as for sim_mujoco")
+    p.add_argument("--imu-cal", default="calib/imu_cal.json")
+    p.add_argument("--no-make-s0", action="store_true",
+                   help="do not simulate missing S0 runs; leave those runs out")
+    p.add_argument("--version", default="")
+    p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("verify-release", help="check a release folder is safe to publish")
+    p.add_argument("folder")
+    p.set_defaults(func=cmd_verify_release)
 
     p = sub.add_parser("demo", help="synthetic end-to-end demonstration")
     p.add_argument("--out", default="demo")

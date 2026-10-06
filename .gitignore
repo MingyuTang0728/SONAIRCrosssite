@@ -22,3 +22,7 @@ node_modules/
 # the MuJoCo model library (install_sim.py fetches it)
 mujoco_menagerie/
 MUJOCO_LOG.TXT
+
+# dataset releases (public and PRIVATE) are built locally, never committed
+release/
+*_PRIVATE/

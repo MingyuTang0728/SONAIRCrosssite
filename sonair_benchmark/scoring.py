@@ -385,7 +385,7 @@ def baseline_constant_offset(pairs, fit_pairs=None) -> dict[str, SubmissionRun]:
     possibly work, so any submitted model that does not beat it has not
     demonstrated anything, and the leaderboard should say so plainly.
     """
-    src = fit_pairs if fit_pairs is not None else pairs
+    src = fit_pairs if fit_pairs is not None else pairs     # [] fits nothing
     dx = dy = dz = 0.0
     n = 0
     for real, sim in src:
