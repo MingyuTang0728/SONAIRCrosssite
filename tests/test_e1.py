@@ -42,8 +42,12 @@ Q_MID = [0.0, -1.85005, 1.85005, -1.57, -1.57, 0.0]
 
 
 def to_python(prog: str) -> str:
-    """URScript as ident_set writes it is Python once its `end`s are gone."""
-    return "\n".join(l for l in prog.splitlines() if l.strip() != "end")
+    """URScript as ident_set writes it is Python once its `end`s are gone --
+    and the program is called, as the controller does with a def block."""
+    import re
+    py = "\n".join(l for l in prog.splitlines() if l.strip() != "end")
+    name = re.match(r"def (\w+)\(\):", prog.strip()).group(1)
+    return py + f"\n{name}()\n"
 
 
 def execute(prog: str, q0, speedj=None, movej=None):

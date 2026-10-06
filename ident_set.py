@@ -289,8 +289,7 @@ def urscript(spec: dict, q0, vmax: float = V_MAX) -> str:
           f"  stopj({_f(SPEEDJ_ACCEL)})",
           "  movej([" + ", ".join(_f(x) for x in q0[:6]) +
           f"], a={_f(RETURN_ACCEL)}, v={_f(RETURN_SPEED)})",
-          "end",
-          "sonair_excite()"]
+          "end"]
     return "\n".join(L)
 
 

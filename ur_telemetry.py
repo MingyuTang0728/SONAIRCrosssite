@@ -129,6 +129,24 @@ RUNTIME_STATE = {0: "STOPPING", 1: "STOPPED", 2: "PLAYING", 3: "PAUSED", 4: "RES
 # RTDE client
 # =============================================================================
 
+def parse_text_message(body: bytes) -> str:
+    """
+    An RTDE text message, in either of the layouts controllers send.
+
+    PolyScope 5.2x: message length, message, source length, source, level.
+    PolyScope 5.11: level, then the message. Read one way when it is the other,
+    "SafetySetup has not been confirmed yet" came out as "Sa".
+    """
+    if not body:
+        return ""
+    n = body[0]
+    if 1 + n < len(body):
+        m = body[1 + n]
+        if 1 + n + 1 + m + 1 == len(body):
+            return body[1:1 + n].decode("utf-8", "ignore").strip()
+    return body[1:].decode("utf-8", "ignore").strip()
+
+
 class RTDEClient:
     """
     Minimal, dependency-free RTDE client. Only the output half is implemented:
@@ -138,6 +156,7 @@ class RTDEClient:
     def __init__(self, host: str, port: int = RTDE_PORT, frequency: float = 125.0):
         self.host = host
         self.port = port
+        self.last_message = ""
         self.frequency = frequency
         self.sock: socket.socket | None = None
         self.protocol_version = 2
@@ -171,6 +190,28 @@ class RTDEClient:
         body = self._recv_exact(size - 3) if size > 3 else b""
         return cmd, body
 
+    def _recv_reply(self, expected: int, limit: int = 20) -> tuple[int, bytes]:
+        """
+        The reply to a handshake request, skipping the controller's own text
+        messages on the way.
+
+        A controller is free to send a text message at any time, including in
+        the middle of the handshake -- PolyScope 5.2x does it straight after
+        the protocol-version reply ("SafetySetup has not been confirmed yet").
+        Taking that message for the reply put every later reply one step out
+        of order: the version came back where the recipe was expected, the
+        recipe was refused, and the cell fell back to port 30003. The last
+        message is kept, because it is usually the reason something is refused.
+        """
+        for _ in range(limit):
+            cmd, body = self._recv_packet()
+            if cmd == RTDE_TEXT_MESSAGE:
+                self.last_message = parse_text_message(body)
+                log.info("RTDE message from controller: %s", self.last_message)
+                continue
+            return cmd, body
+        raise ConnectionError("the controller sent only messages, no reply")
+
     # --- handshake -----------------------------------------------------------
 
     def connect(self, timeout: float = 5.0) -> None:
@@ -179,12 +220,12 @@ class RTDEClient:
         self.sock.settimeout(timeout)
 
         self._send(RTDE_REQUEST_PROTOCOL_VERSION, struct.pack(">H", 2))
-        cmd, body = self._recv_packet()
+        cmd, body = self._recv_reply(RTDE_REQUEST_PROTOCOL_VERSION)
         if cmd != RTDE_REQUEST_PROTOCOL_VERSION or not body or body[0] != 1:
             raise ConnectionError("controller refused RTDE protocol version 2")
 
         self._send(RTDE_GET_URCONTROL_VERSION)
-        cmd, body = self._recv_packet()
+        cmd, body = self._recv_reply(RTDE_GET_URCONTROL_VERSION)
         if cmd == RTDE_GET_URCONTROL_VERSION and len(body) >= 16:
             maj, mi, bug, build = struct.unpack(">IIII", body[:16])
             self.controller_version = f"{maj}.{mi}.{bug}.{build}"
@@ -216,9 +257,11 @@ class RTDEClient:
         names = ",".join(n for n, _ in recipe)
         payload = struct.pack(">d", self.frequency) + names.encode("utf-8")
         self._send(RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS, payload)
-        cmd, body = self._recv_packet()
+        cmd, body = self._recv_reply(RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS)
         if cmd != RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS:
-            raise ConnectionError("RTDE output setup failed")
+            raise ConnectionError("RTDE output setup failed"
+                                  + (f": the controller says \"{self.last_message}\""
+                                     if self.last_message else ""))
         # body: recipe id (1 byte) + comma-separated granted types
         types = body[1:].decode("utf-8").split(",")
         granted = []
@@ -251,9 +294,11 @@ class RTDEClient:
 
     def start(self) -> None:
         self._send(RTDE_CONTROL_PACKAGE_START)
-        cmd, body = self._recv_packet()
+        cmd, body = self._recv_reply(RTDE_CONTROL_PACKAGE_START)
         if cmd != RTDE_CONTROL_PACKAGE_START or not body or body[0] != 1:
-            raise ConnectionError("controller refused to start the RTDE stream")
+            raise ConnectionError("controller refused to start the RTDE stream"
+                                  + (f": it says \"{self.last_message}\""
+                                     if self.last_message else ""))
 
     def pause(self) -> None:
         if self.sock is None:
@@ -270,7 +315,8 @@ class RTDEClient:
         cmd, body = self._recv_packet()
         if cmd == RTDE_TEXT_MESSAGE:
             if body:
-                log.info("RTDE message from controller: %s", body[1:].decode("utf-8", "ignore"))
+                self.last_message = parse_text_message(body)
+                log.info("RTDE message from controller: %s", self.last_message)
             return None
         if cmd != RTDE_DATA_PACKAGE:
             return None
@@ -362,6 +408,11 @@ def parse_primary_packet(data: bytes) -> dict | None:
 class TelemetryHealth:
     source: str = "none"            # "rtde" | "primary-30003" | "none"
     connected: bool = False
+    # True when the "robot" is SONAIR's simulated cell (sim_cell.py), which
+    # says so in the RTDE handshake. Everything recorded is then labelled
+    # simulated, so it can never be mixed into the real dataset.
+    simulated: bool = False
+    controller_message: str = ""    # the last text message the controller sent
     controller_version: str = ""
     rate_hz: float = 0.0
     packets: int = 0
@@ -658,6 +709,8 @@ class URTelemetry:
             self.health.source = "rtde"
             self.health.connected = True
             self.health.controller_version = client.controller_version
+            self.health.controller_message = client.last_message
+            self.health.simulated = "SONAIR simulated cell" in (client.last_message or "")
             self.health.fields = [n for n, _ in granted]
             self.health.dropped_fields = list(getattr(client, "dropped", []))
             self.health.rtde_unavailable_reason = ""

@@ -413,6 +413,11 @@ class ImuHub:
         kind = getattr(tr, "_source", None)
         if not kind or not conv.decided or conv.verifying or conv.pinned:
             return
+        # Never learned from the simulated cell: its IMU arrives over UDP like
+        # FusionHub's, and a simulator's convention remembered for a real
+        # sensor would be applied to it at the next start.
+        if _sim_prefix():
+            return
         if getattr(tr, "_conv_saved", False) and not conv.revised:
             return
         tr._conv_saved = True
@@ -577,6 +582,21 @@ def _at(rec, key, i):
         return None
 
 
+# Is the "robot" SONAIR's simulated cell (sim_cell.py)? Set by the bridge
+# from the robot link, which reads the cell's own announcement in the RTDE
+# handshake. Everything recorded while it is True is labelled simulated and
+# written apart from the real data, so the two can never be mixed.
+SIMULATED = lambda: False      # noqa: E731
+SIM_WORDS = "SIMULATED CELL (URSim controller + MuJoCo plant)"
+
+
+def _sim_prefix() -> str:
+    try:
+        return "simcell_" if SIMULATED() else ""
+    except Exception:       # noqa: BLE001
+        return ""
+
+
 def _cell(v) -> str:
     """
     One CSV cell. Floats keep their precision.
@@ -722,7 +742,7 @@ class UrLogger:
                     "the robot link has not been started, so there is nothing "
                     "to log. Connect to the robot first."}
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        name = path or f"ur_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        name = path or f"{_sim_prefix()}ur_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         target = self.out_dir / name
         try:
             fh = target.open("w", encoding="utf-8", newline="")
@@ -846,7 +866,7 @@ class ImuLogger:
             folder.mkdir(parents=True, exist_ok=True)
         except Exception as e:      # noqa: BLE001
             return {"ok": False, "error": f"could not create {folder}: {e}"}
-        name = path or f"imu_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        name = path or f"{_sim_prefix()}imu_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         target = Path(name)
         if not target.is_absolute() and target.parent == Path("."):
             target = folder / target
@@ -1326,8 +1346,15 @@ class BenchRecorder:
         if self.is_recording():
             return {"ok": False, "error": "already recording; stop the current run first"}
 
+        simulated = bool(_sim_prefix())
+        if simulated:
+            # A run on the simulated cell is a SIMULATION, whatever job made
+            # it: labelled so in its manifest, said so in its notes, and kept
+            # in its own folder.
+            notes = SIM_WORDS + ("; " + notes if notes else "")
         manifest = RunManifest(
-            run_id=run_id, side="real", calib_version=calib_version,
+            run_id=run_id, side="sim" if simulated else "real",
+            calib_version=calib_version,
             joint_vel=float(joint_vel), arm_config=arm_config,
             traj_type=traj_type, repeat_idx=int(repeat_idx),
             carrier_id=carrier_id, carrier_mass_kg=float(carrier_mass_kg),
@@ -1373,7 +1400,7 @@ class BenchRecorder:
             except Exception:
                 pass
 
-        path = self.out_dir / f"{run_id}.jsonl"
+        path = (self.out_dir / "simcell" if simulated else self.out_dir) / f"{run_id}.jsonl"
         if path.exists():
             # A run recorded again -- rejected, or re-recorded under a revised
             # protocol -- never overwrites the earlier file. It is kept beside

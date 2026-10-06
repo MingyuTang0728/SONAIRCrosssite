@@ -51,9 +51,13 @@ def commanded_accel(prog: str) -> list[float]:
             dv = max(-a * TICK, min(a * TICK, target - v))
             v += dv
             out.append(dv / TICK)
+    import re
     py = "\n".join(l for l in prog.splitlines() if l.strip() != "end")
+    py += "\n" + re.match(r"def (\w+)\(\):", prog.strip()).group(1) + "()\n"
     exec(compile(py, "<urscript>", "exec"),
-         {"sin": math.sin, "speedj": speedj, "stopj": lambda a: None})
+         {"sin": math.sin, "speedj": speedj, "stopj": lambda a: None,
+          "get_target_joint_positions": lambda: [0.0] * 6,
+          "movej": lambda q, a=1.2, v=0.3: None})
     return out
 
 

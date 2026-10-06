@@ -1919,7 +1919,50 @@ def _handle_automation(data: dict):
     if str(mtype).startswith("camp_"):
         return _handle_campaign(mtype, data)
 
+    if str(mtype).startswith("twin_"):
+        return _handle_twin(mtype)
+
     return None
+
+
+def _twin_start() -> dict:
+    """The live digital twin (twin.py) on the running robot link."""
+    import twin
+    if not (_HAS_EXT and ur_bridge_ext.UR.enabled and
+            getattr(ur_bridge_ext.UR, "telemetry", None)):
+        return {"ok": False, "error": "connect to the robot first"}
+    car = CELL.carrier() or {}
+    return twin.TWIN.start(ur_bridge_ext.UR.telemetry,
+                           float(car.get("carrier_mass_kg") or 0.0))
+
+
+_TWIN_TRIED = {"host": None}
+
+
+def _twin_auto() -> None:
+    """Start the twin once per robot link, by itself, when MuJoCo is here."""
+    import twin
+    if twin.TWIN.enabled or not (_HAS_EXT and ur_bridge_ext.UR.enabled):
+        return
+    host = getattr(ur_bridge_ext.UR, "host", None)
+    if _TWIN_TRIED["host"] == host:
+        return
+    _TWIN_TRIED["host"] = host
+    res = _twin_start()
+    if not res.get("ok"):
+        log.info(" Twin:         not running (%s)", res.get("error"))
+
+
+def _handle_twin(mtype: str) -> dict:
+    import twin
+    if mtype == "twin_start":
+        res = _twin_start()
+    elif mtype == "twin_stop":
+        twin.TWIN.stop()
+        res = {"ok": True}
+    else:
+        res = {"ok": True}
+    return {"type": "twin_status", **res, **twin.TWIN.snapshot()}
 
 
 _CAMP_SUGGESTED: dict = {}
@@ -1943,14 +1986,35 @@ def _camp_guide():
     return _CAMP_GUIDE
 
 
+def _camp_path():
+    """
+    Where the campaign's progress is kept. On the simulated cell it is a book
+    of its own, so a rehearsal never marks a real run done; the taught
+    configurations are copied over from the real book the first time, so a
+    rehearsal drives to the same positions the real cell would.
+    """
+    import campaign_runner as cr
+    if not bench_agent.SIMULATED():
+        return cr.STATE_PATH
+    p = Path(cr.STATE_PATH).with_name("state_simcell.json")
+    if not p.exists():
+        st = cr.load_state(p)
+        st["configs"] = dict(cr.load_state(cr.STATE_PATH).get("configs", {}))
+        st["note"] = "simulated cell -- rehearsal only, never real data"
+        cr.save_state(st, p)
+    return p
+
+
 def _handle_campaign(mtype: str, data: dict) -> dict:
     """The planned campaign: teach configurations, preview, run, progress."""
     import campaign_runner as cr
-    st = cr.load_state()
+    path = _camp_path()
+    st = cr.load_state(path)
     session = int(data.get("session", 0) or 0)
     if mtype == "camp_status":
         import ident_set
         return {"type": "camp_res", "cmd": "status", "ok": True,
+                "simulated": bench_agent.SIMULATED(),
                 **cr.progress(st), "e1": ident_set.progress(st)}
     if mtype in ("camp_e1_preview", "camp_e1_run"):
         import ident_set
@@ -1974,13 +2038,13 @@ def _handle_campaign(mtype: str, data: dict) -> dict:
         if pv["runs"] == 0:
             return {**out, "ok": False,
                     "error": "every run of this set is already done"}
-        job = ident_set.build_job(load, st, fitted)
+        job = ident_set.build_job(load, st, fitted, path)
         return {**out, **RUNNER.start(job)}
     if mtype == "camp_teach":
         res = cr.teach(data.get("config", ""), CELL.joints(),
-                       int(data.get("direction", 1) or 1))
+                       int(data.get("direction", 1) or 1), path)
         return {"type": "camp_res", "cmd": "teach", **res,
-                **cr.progress(cr.load_state())}
+                **cr.progress(cr.load_state(path))}
     if mtype == "camp_suggest":
         env = CELL._envelope()
         if env is None:
@@ -2028,7 +2092,7 @@ def _handle_campaign(mtype: str, data: dict) -> dict:
         if pv["runs"] == 0:
             return {"type": "camp_res", "cmd": "run", "ok": False,
                     "error": f"every run of session {session} is already done"}
-        job = cr.build_job(session, st)
+        job = cr.build_job(session, st, path)
         return {"type": "camp_res", "cmd": "run", **RUNNER.start(job),
                 "runs": pv["runs"], "minutes": pv["minutes"]}
     return {"type": "camp_res", "ok": False, "error": f"unknown {mtype}"}
@@ -2152,6 +2216,16 @@ async def local_handler(websocket):
                     st = ur_bridge_ext.UR.state()
                     if st:
                         await websocket.send(json.dumps({"type": "ur_state", "s": st}))
+                    # the live digital twin, alongside the real arm
+                    try:
+                        import twin
+                        if now_h - last_health < 0.05:
+                            await asyncio.to_thread(_twin_auto)
+                        if twin.TWIN.enabled:
+                            await websocket.send(json.dumps(
+                                {"type": "twin_state", **twin.TWIN.snapshot()}))
+                    except Exception as e:      # noqa: BLE001
+                        log.debug("twin: %s", e)
                 await asyncio.sleep(period)
             except asyncio.CancelledError:
                 break
@@ -2398,7 +2472,7 @@ async def _dispatch(websocket, data, mtype, prefs):
     # that no route reaches is indistinguishable, from the operator's side,
     # from a handler that is not there, and it presents as a button that spins
     # forever.
-    if str(mtype or "").startswith(("auto_", "carrier_", "camp_")):
+    if str(mtype or "").startswith(("auto_", "carrier_", "camp_", "twin_")):
         reply = await asyncio.to_thread(_handle_automation, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
@@ -2709,6 +2783,9 @@ async def main():
         bench_agent.RECORDER.state_fn = _robot_state
         # Every RTDE packet becomes one recorded row when the full telemetry
         # stream is up; the timer-driven poll of _robot_state is the fallback.
+        bench_agent.SIMULATED = lambda: bool(
+            _HAS_EXT and getattr(ur_bridge_ext.UR, "telemetry", None)
+            and ur_bridge_ext.UR.telemetry.health.simulated)
         bench_agent.RECORDER.packet_source = lambda: (
             ur_bridge_ext.UR.telemetry
             if _HAS_EXT and getattr(ur_bridge_ext.UR, "enabled", False)

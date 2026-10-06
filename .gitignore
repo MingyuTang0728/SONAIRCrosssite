@@ -18,3 +18,7 @@ node_modules/
 # absolute path to your interpreter — neither travels between machines).
 .idea/*
 !.idea/runConfigurations/
+
+# the MuJoCo model library (install_sim.py fetches it)
+mujoco_menagerie/
+MUJOCO_LOG.TXT

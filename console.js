@@ -390,6 +390,7 @@
       case "stream_prefs_res": break;
       case "cell_health": onHealth(d); break;
       case "ur_state": state.ur = d.s; state.urAge = performance.now(); renderRobot(d.s); break;
+      case "twin_state": case "twin_status": renderTwin(d); break;
       case "state": state.urAge = performance.now(); break;
       case "tcp_pose": state.urAge = performance.now(); dockPose(d.q); break;
       case "camera_frame": onFrame(d); break;
@@ -512,12 +513,20 @@
   /* -------------------------------------------------- robot -------------- */
   function renderUrService(d) {
     var h = d.health || {};
+    var sim = !!(d.enabled && h.simulated);
+    document.body.classList.toggle("simcell", sim);
+    if ($("simBadge")) $("simBadge").hidden = !sim;
     if (!d.enabled) {
       $("devRobot").className = "dev bad";
       $("devRobotD").textContent = "The agent has not started the robot link.";
       return;
     }
-    if (h.connected) {
+    if (h.connected && sim) {
+      $("devRobot").className = "dev ok";
+      $("devRobotD").textContent = "SIMULATED CELL: " + (h.controller_message
+        || "URSim + MuJoCo").replace(/^SONAIR simulated cell:\s*/, "")
+        + ". Runs are labelled simulated and kept apart from real data.";
+    } else if (h.connected) {
       $("devRobot").className = "dev ok";
       $("devRobotD").textContent = "Connected, reading " + Math.round(h.rate_hz)
         + " updates a second" + (h.source === "primary-30003"
@@ -584,6 +593,49 @@
     renderIo("ioOut", s.digital_outputs, true);
     if (window.__setJoints && q.length === 6) window.__setJoints(q);
   }
+
+  // THE LIVE DIGITAL TWIN: the benchmark's MuJoCo model, fed the robot's own
+  // commanded joints, drawn as a ghost over the real arm; its difference from
+  // the real arm is the sim-to-real gap as it happens.
+  var twinShown = true;
+  try { twinShown = localStorage.getItem("sonair.twin") !== "0"; } catch (e) {}
+  function renderTwin(d) {
+    var box = $("twinBox"), msg = $("twinMsg"), b = $("btnTwin");
+    var on = !!(d.enabled && d.q);
+    if (b) b.setAttribute("aria-pressed", on && twinShown ? "true" : "false");
+    if (box) box.hidden = !(on && twinShown);
+    if (msg) {
+      msg.hidden = on || !d.why;
+      if (!on && d.why) say("twinMsg", "Twin not running: " + d.why, "warn");
+    }
+    if (three && three.setGhost) {
+      three.showGhost(on && twinShown);
+      if (on) three.setGhost(d.q);
+    }
+    if (!on) return;
+    for (var i = 0; i < 6; i++) {
+      var el = $("twD" + i); if (!el) continue;
+      var v = (d.rms_deg || [])[i];
+      el.textContent = fmt(v, 2) + "°";
+      el.className = v > 1.0 ? "hi" : "";
+    }
+    var t = $("twTcp");
+    if (t) t.textContent = (d.tcp_mm == null ? "—" : fmt(d.tcp_mm, 1)) + " / "
+      + (d.tcp_rms_mm == null ? "—" : fmt(d.tcp_rms_mm, 1)) + " mm";
+    var m = $("twModel"); if (m) m.title = d.model || "";
+  }
+  (function twinToggle() {
+    var b = $("btnTwin");
+    if (!b) return;
+    b.addEventListener("click", function () {
+      twinShown = !twinShown;
+      try { localStorage.setItem("sonair.twin", twinShown ? "1" : "0"); } catch (e) {}
+      if (twinShown) send({ type: "twin_start" });
+      if (!twinShown && three && three.showGhost) three.showGhost(false);
+      if ($("twinBox")) $("twinBox").hidden = !twinShown;
+      b.setAttribute("aria-pressed", twinShown ? "true" : "false");
+    });
+  })();
 
   // The Live arm column: the pose and state of the arm, on every page.
   var monSeen = 0;
@@ -1147,10 +1199,26 @@
 
   function onImu(d) {
     var units = Object.keys(d.units || {});
-    if (units.length) {
-      lamp("lampImu", "lampImuV", "ok", units.length + " sensor" + (units.length > 1 ? "s" : ""));
+    if (!units.length) return;
+    // Green only for a sensor that is DELIVERING. A configured unit whose last
+    // reading is two minutes old used to light this lamp, with its last rate
+    // still showing, while nothing was arriving at all.
+    var live = units.filter(function (u) {
+      var a = (d.units[u] || {}).age_s;
+      return a !== undefined && a !== null && a < 2.0;
+    });
+    if (live.length) {
+      lamp("lampImu", "lampImuV", "ok", live.length + " sensor" + (live.length > 1 ? "s" : ""));
       $("devImu").className = "dev ok";
-      $("devImuD").textContent = "Reading from: " + units.join(", ") + ".";
+      $("devImuD").textContent = "Reading from: " + live.join(", ") + ".";
+    } else {
+      var age = Math.min.apply(null, units.map(function (u) {
+        var a = (d.units[u] || {}).age_s; return a == null ? 1e9 : a; }));
+      var txt = age < 1e8 ? "No data for " + Math.round(age) + " s" : "No data";
+      lamp("lampImu", "lampImuV", "warn", txt);
+      $("devImu").className = "dev warn";
+      $("devImuD").textContent = txt + " from " + units.join(", ")
+        + ". Check the sensor is on and connected (Sensors page).";
     }
   }
 
@@ -1566,6 +1634,7 @@
       }
       scene.add(group);
       rig = { group: group, bones: bones, rest: rest, animated: animated };
+      buildGhost(root, u, animated);
       three.target = group;
       three.fit(group);
       $("stage3dEmpty").hidden = true;
@@ -1579,6 +1648,45 @@
         animated ? "ok" : "warn");
       if (state.ur && state.ur.actual_q) three.setJoints(state.ur.actual_q);
     }
+
+    // The twin's arm: the same model, cloned, in a translucent amber so the
+    // real arm reads through it. Hidden until the twin is running.
+    var ghost = null;
+    function buildGhost(root, u, animated) {
+      if (ghost) {
+        scene.remove(ghost.group);
+        ghost.group.traverse(function (o) {
+          if (o.material) [].concat(o.material).forEach(function (m) { m.dispose(); });
+        });
+        ghost = null;
+      }
+      if (!animated) return;
+      var copy = root.clone(true);
+      var mat = new THREE.MeshStandardMaterial({ color: 0xf0a040, transparent: true,
+        opacity: 0.33, depthWrite: false, roughness: 0.6 });
+      var bones = [], rest = [];
+      copy.traverse(function (o) {
+        if (o.isMesh) o.material = mat;
+        JOINT_BONES.forEach(function (n, i) {
+          if ((o.name || "").indexOf(n) === 0) { bones[i] = o; rest[i] = o.quaternion.clone(); }
+        });
+      });
+      var g = new THREE.Group();
+      g.scale.setScalar(u.s); g.rotation.y = Math.PI; g.add(copy);
+      g.visible = false;
+      g.renderOrder = 2;
+      scene.add(g);
+      ghost = { group: g, bones: bones, rest: rest };
+    }
+    three.setGhost = function (q) {
+      if (!ghost || !q || q.length < 6) return;
+      for (var i = 0; i < 6; i++) {
+        if (!ghost.bones[i]) continue;
+        ghost.bones[i].quaternion.copy(ghost.rest[i])
+          .multiply(new THREE.Quaternion().setFromAxisAngle(Y_AXIS, q[i]));
+      }
+    };
+    three.showGhost = function (on) { if (ghost) ghost.group.visible = !!on; };
 
     three.setJoints = function (q) {
       if (!rig || !rig.animated || !q || q.length < 6) return;

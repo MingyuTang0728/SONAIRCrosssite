@@ -216,7 +216,7 @@ class RTDEInputChannel:
         c.connect()
         names = "speed_slider_mask,speed_slider_fraction"
         c._send(RTDE_CONTROL_PACKAGE_SETUP_INPUTS, names.encode("utf-8"))
-        cmd, body = c._recv_packet()
+        cmd, body = c._recv_reply(RTDE_CONTROL_PACKAGE_SETUP_INPUTS)
         if cmd != RTDE_CONTROL_PACKAGE_SETUP_INPUTS or not body:
             raise ConnectionError("controller refused the RTDE input recipe")
         types = body[1:].decode("utf-8")
@@ -321,8 +321,11 @@ class URController:
             lines.append(
                 f"  movel(p[{f(p[0])},{f(p[1])},{f(p[2])},"
                 f"{f(p[3])},{f(p[4])},{f(p[5])}], a={f(a)}, v={f(v)}, r={f(r)})")
+        # The def block alone: the controller runs a script that defines one
+        # program as that program. A call line after it is compiled as a
+        # SECOND program, in which the name is not defined, and logged as a
+        # compile error on every send.
         lines.append("end")
-        lines.append("sonair_path()")
         return self.script.send("\n".join(lines))
 
     def joint_sine(self, joint: int, amp: float, w: float, cycles: int,
@@ -358,16 +361,21 @@ class URController:
         T = cycles * 2 * math.pi / w
         vec = ",".join(f"{f(amp * w)}*sin({f(w)}*t)" if i == joint else "0"
                        for i in range(6))
+        # Ends with a move back to where it started. Integrating the speedj
+        # steps leaves a residual in the real controller -- 15 mrad (0.9 deg)
+        # after two cycles at 0.9 rad/s in URSim 5.11 -- which a run's
+        # read-back tolerates but the next run should not inherit.
         prog = "\n".join([
             "def sonair_sine():",
+            "  q_start = get_target_joint_positions()",
             "  t = 0.0",
             f"  while t < {f(T)}:",
             f"    speedj([{vec}], {f(a)}, {f(dt)})",
             f"    t = t + {f(dt)}",
             "  end",
             f"  stopj({f(a)})",
+            "  movej(q_start, a=1.2, v=0.3)",
             "end",
-            "sonair_sine()",
         ])
         return self.script.send(prog)
 
@@ -398,7 +406,7 @@ class URController:
                          f"], a={f(a)}, v={f(v)}, r=0)")
             if d > 0:
                 lines.append(f"  sleep({f(d)})")
-        lines += ["end", "sonair_seq()"]
+        lines += ["end"]
         return self.script.send("\n".join(lines))
 
     def movej(self, q, a=1.0, v=0.5, r=0.0, is_pose=False) -> tuple[bool, str]:

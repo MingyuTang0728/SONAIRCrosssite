@@ -785,6 +785,18 @@ body.mon main.page{padding-bottom:24px}
   body.mon main.page{padding-bottom:84px}
 }
 @media(max-width:820px){.monitor{width:100%;top:0}}
+
+/* ---- simulated cell, and the twin ---- */
+.simbadge{align-self:center;display:flex;flex-direction:column;align-items:center;
+  line-height:1;padding:6px 12px;margin-left:8px;font:700 13px var(--cond);
+  letter-spacing:.14em;color:#d6ecff;border:2px solid #5aa9e6;
+  background:repeating-linear-gradient(-45deg,#14324a 0 6px,#102638 6px 12px)}
+.simbadge small{font-size:9.5px;letter-spacing:.16em;margin-top:3px;color:#9cc9ee}
+body.simcell .runbar{box-shadow:inset 0 -2px 0 #5aa9e6}
+.helpbtn[aria-pressed="true"]{color:#ffd9a8;border-color:#f0a040;background:#3a2a14}
+.mcells.twin span{font-size:13.5px}
+.mcells.twin span.hi{color:var(--warn)}
+#twinBox .mgrp{color:#f0b060}
 </style>
 </head>
 <body>
@@ -798,6 +810,9 @@ body.mon main.page{padding-bottom:24px}
       <span class="sub">Sim-to-real cell &middot; UR5e &middot; LPMS-B2 &middot; RealSense</span>
     </div>
   </div>
+  <div class="simbadge" id="simBadge" hidden
+    title="The robot is SONAIR's simulated cell: URSim runs the controller, MuJoCo the arm. Everything recorded is labelled simulated and kept apart from real data.">
+    SIMULATED CELL<small>URSim + MuJoCo</small></div>
   <div class="lamps">
     <div class="lamp" id="lampAgent"><i></i><div><div class="lt">Agent</div><div class="lv" id="lampAgentV">Not connected</div></div></div>
     <div class="lamp" id="lampRobot"><i></i><div><div class="lt">Robot</div><div class="lv" id="lampRobotV">Not connected</div></div></div>
@@ -2048,6 +2063,8 @@ body.mon main.page{padding-bottom:24px}
   <div class="monhead">
     <span class="t">Live arm</span>
     <span class="tag" id="monAge">no data</span>
+    <button class="helpbtn" id="btnTwin" aria-pressed="false"
+      title="The live digital twin: the benchmark's MuJoCo model, fed the robot's own commanded joints, drawn as a ghost over the real arm">Twin</button>
     <button class="helpbtn" id="btnMonHide" title="Hide this column (the Live arm button in the header brings it back)">Hide</button>
   </div>
   <div class="monbody">
@@ -2083,6 +2100,22 @@ body.mon main.page{padding-bottom:24px}
         <div><b>Wrist 2</b><span id="monJ4">&mdash;</span></div>
         <div><b>Wrist 3</b><span id="monJ5">&mdash;</span></div>
       </div>
+      <div id="twinBox" hidden>
+        <div class="mgrp">Twin &minus; real <span id="twinWin">last 5 s, RMS</span></div>
+        <div class="mcells c3 twin">
+          <div><b>Base</b><span id="twD0">&mdash;</span></div>
+          <div><b>Shoulder</b><span id="twD1">&mdash;</span></div>
+          <div><b>Elbow</b><span id="twD2">&mdash;</span></div>
+          <div><b>Wrist 1</b><span id="twD3">&mdash;</span></div>
+          <div><b>Wrist 2</b><span id="twD4">&mdash;</span></div>
+          <div><b>Wrist 3</b><span id="twD5">&mdash;</span></div>
+        </div>
+        <div class="mcells c3 twin" style="margin-top:4px">
+          <div style="grid-column:span 2"><b>Tool point, now / RMS</b><span id="twTcp">&mdash;</span></div>
+          <div><b>Model</b><span id="twModel" title="">S0</span></div>
+        </div>
+      </div>
+      <div class="note info" id="twinMsg" hidden></div>
       <div class="mcells c3 mstate">
         <div><b>State</b><span id="monMode">&mdash;</span></div>
         <div><b>Safety</b><span id="monSafety">&mdash;</span></div>
