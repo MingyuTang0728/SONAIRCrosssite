@@ -2447,6 +2447,15 @@
     } else if (d.remaining_deg != null) {
       cell.textContent = (d.cmd === "release" || d.moving === false
         ? "stopped, " : "moving, ") + d.remaining_deg + "° to go";
+      if (d.cmd === "release" && d.remaining_deg > 0.3) {
+        // A click is not a hold. Say how long the hold takes, in seconds,
+        // because "75.5° to go" does not tell anyone to keep pressing.
+        var secs = Math.ceil(d.remaining_deg / 8.6);
+        say("campGuideMsg", CFG_WORDS[c] + ": stopped " + d.remaining_deg
+          + "° short. Press and HOLD the button until the row says "
+          + "\u201carrived\u201d \u2014 about " + secs + " s more at this "
+          + "speed. Letting go stops the arm at once.", "warn");
+      }
     }
   }
 

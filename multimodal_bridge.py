@@ -297,6 +297,66 @@ _CAMERA_LAST_ERROR = ""     # last startup failure, already explained
 global_ir1_frame   = None   # D435i left IR
 global_ir2_frame   = None   # D435i right IR
 global_frame_meta  = {}     # per-frame timestamps and the clock domain
+
+# ---------------------------------------------------------------------------
+# THE CAMERA WORKS AT FULL RATE ONLY WHILE SOMETHING USES IT.
+#
+# Aligning a 1280x720 colour frame, running three depth filters and
+# colourising the result costs ~35 ms of CPU a frame, and pyrealsense2 holds
+# the Python interpreter lock for much of it. At 30 frames a second that is
+# more than a whole second of work every second: measured on a software
+# camera, every other Python thread in the agent lost 72% of its throughput.
+# Those threads are the robot reader, the jog loop, the hold-to-move
+# watchdog and the socket to the browser -- so with the camera running and
+# nobody looking at it, the joint readings lagged, the arm stuttered under
+# the jog, freedrive answered late and a held button's heartbeats arrived
+# too late to keep a guided move going.
+#
+# So frames are still taken from the camera every time (that is cheap and it
+# keeps the driver's queue empty), but they are aligned, filtered and
+# published at full rate only while a page is showing a picture, a camera
+# handler has been asked for something, or a job that needs the camera is
+# running. Otherwise one frame a second is published, which keeps the
+# health lamp and the channel registry honest.
+# ---------------------------------------------------------------------------
+CAM_IDLE_PERIOD_S = 1.0
+_cam_demand_until = 0.0     # monotonic; full rate until then
+_cam_frame_mono   = 0.0     # monotonic time the last frame was published
+
+
+def camera_wanted(hold_s: float = 10.0) -> bool:
+    """Ask for full-rate frames for `hold_s`. Returns True if it was idle."""
+    global _cam_demand_until
+    now = time.monotonic()
+    was_idle = now >= _cam_demand_until
+    _cam_demand_until = max(_cam_demand_until, now + hold_s)
+    return was_idle
+
+
+def _camera_active() -> bool:
+    if time.monotonic() < _cam_demand_until:
+        return True
+    r = globals().get("RUNNER")
+    job = getattr(r, "job", None) if r is not None else None
+    if job is not None and getattr(r, "state", "") in ("running", "starting",
+                                                        "stopping"):
+        return "camera" in (getattr(job, "requires", None) or ["camera"])
+    return False
+
+
+async def camera_fresh(timeout_s: float = 1.5) -> None:
+    """
+    Before a camera handler reads a frame: if the camera was idle, wait for
+    one taken AFTER this moment. An idle frame can be a second old, and a
+    hand-eye pose paired with a picture from before the arm moved is a wrong
+    calibration nobody would notice.
+    """
+    t0 = time.monotonic()
+    if not camera_wanted(30.0) or not _HAS_VISION:
+        return
+    end = t0 + timeout_s
+    while _cam_frame_mono <= t0 and time.monotonic() < end:
+        await asyncio.sleep(0.02)
 global_rs_profile  = None   # live pipeline profile, for extrinsics
 _FILTERS           = None   # rs_features.FilterChain, built on pipeline start
 global_actual_q    = [0.0] * 6
@@ -507,15 +567,25 @@ def ur_control_thread():
             time.sleep(1.0)
 
 
+_URP_FAIL = {"host": None, "until": 0.0}
+
+
 def fetch_urp_list():
+    # e-Series controllers usually refuse anonymous FTP, and only after a
+    # timeout. Asking again on every visit to the Robot page cost seconds
+    # each time, so a refusal is remembered for a minute per address.
+    host = robot_host()
+    if _URP_FAIL["host"] == host and time.monotonic() < _URP_FAIL["until"]:
+        return []
     try:
-        ftp = FTP(robot_host(), timeout=3)
+        ftp = FTP(host, timeout=3)
         ftp.login()
         ftp.cwd("/programs")
         files = ftp.nlst()
         ftp.quit()
         return [f for f in files if f.endswith(".urp")]
     except Exception:
+        _URP_FAIL.update(host=host, until=time.monotonic() + 60.0)
         return []
 
 
@@ -566,15 +636,31 @@ def ur_io_thread():
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(5.0)          # generous connect timeout
             s.connect((host, 30003))
-            s.settimeout(30.0)         # recv timeout — long enough to survive brief UR pauses
+            # Short receive timeout, checked in a loop: this connection exists
+            # only until the UR service is up, and it used to sit 30 s in one
+            # recv() after the service had taken over -- then log a "protective
+            # stop or local mode" warning about a robot that was fine.
+            s.settimeout(1.0)
             ur_socket_tx = s
             log.info("UR 30003 connected")
             buffer = b""
+            quiet = 0
             while True:
                 if robot_addr_gen() != gen:
                     log.info("robot address changed — dropping 30003 to %s", host)
                     break
-                chunk = s.recv(4096)
+                if _HAS_EXT and ur_bridge_ext.UR.enabled:
+                    log.info("UR service is reading the robot — closing the "
+                             "spare 30003 connection")
+                    break
+                try:
+                    chunk = s.recv(4096)
+                    quiet = 0
+                except socket.timeout:
+                    quiet += 1
+                    if quiet >= 30:
+                        raise
+                    continue
                 if not chunk:
                     log.warning("UR 30003 closed by robot (empty recv)")
                     break
@@ -606,6 +692,11 @@ def ur_io_thread():
                                 _logged_size.add(packet_len)
                     else:
                         break
+            try:
+                s.close()
+            except Exception:
+                pass
+            ur_socket_tx = None
         except socket.timeout:
             log.warning("UR 30003 recv timeout — UR may be in protective stop or local mode")
             ur_socket_tx = None
@@ -652,6 +743,7 @@ def camera_thread():
     if not _HAS_VISION:
         return
     global global_rgb_frame, global_depth_frame, global_ir1_frame, global_ir2_frame
+    global _cam_frame_mono
     global global_depth_raw, global_depth_intr, global_color_intr, global_frame_meta
 
     while True:  # outer loop: restart pipeline on config change
@@ -838,6 +930,10 @@ def camera_thread():
         while not _rs_restart_evt.is_set():
             try:
                 frames  = pipeline.wait_for_frames(timeout_ms=3000)
+                t_frame = time.monotonic()
+                if not _camera_active() and \
+                        t_frame - _cam_frame_mono < CAM_IDLE_PERIOD_S:
+                    continue        # taken and dropped: see camera_wanted()
                 aligned = align.process(frames)
 
                 color_f = aligned.get_color_frame() if cfg_snap["rgb_en"] else None
@@ -886,6 +982,7 @@ def camera_thread():
                     global_depth_raw   = depth_raw
                     global_ir1_frame   = ir1_arr
                     global_ir2_frame   = ir2_arr
+                _cam_frame_mono = t_frame
 
             except RuntimeError as e:
                 log.debug("rs wait_for_frames timeout: %s", e)
@@ -2098,6 +2195,16 @@ def _handle_campaign(mtype: str, data: dict) -> dict:
     return {"type": "camp_res", "ok": False, "error": f"unknown {mtype}"}
 
 
+# Messages that only read state. Safe to answer out of order, and never worth
+# making a command wait for. `camp_suggest` is NOT here: a "move there" sent
+# straight after it must find the suggestion already made.
+READ_ONLY_MESSAGES = frozenset({
+    "get_urp_list", "ur_service_status", "bench_status", "jog_status",
+    "auto_status", "camp_status", "sensors_report", "imu_transports",
+    "imu_log_status", "get_camera_config",
+})
+
+
 async def local_handler(websocket):
     log.info("local browser connected")
 
@@ -2111,15 +2218,21 @@ async def local_handler(websocket):
     # agent what it is actually displaying and gets that and nothing else.
     prefs = {"streams": set(), "width": 720, "quality": 55}
 
-    async def stream():
-        errors = 0
+    # Pictures and numbers travel in SEPARATE loops. They used to share one,
+    # and the loop's period stretched (up to half a second) whenever the
+    # browser was slow to take a picture -- so the joint readings, the IMU
+    # and the twin slowed down with it, and the arm looked as if it lagged.
+    # The numbers now go at a steady 20 Hz whatever the pictures are doing,
+    # and the pictures drop frames rather than queue behind each other.
+    cam_period = [0.05]
+
+    async def camera_stream():
         slow = 0
-        period = 0.05
-        last_health = 0.0
-        now_h_meta = [None]      # when the per-unit meta block last rode along
         while True:
             try:
+                period = cam_period[0]
                 if _HAS_VISION and prefs["streams"]:
+                    camera_wanted(2.0)
                     with camera_lock:
                         avail = {"rgb": global_rgb_frame,
                                  "depth": global_depth_frame,
@@ -2127,30 +2240,58 @@ async def local_handler(websocket):
                                  "ir2": global_ir2_frame}
                     want = {k: v for k, v in avail.items()
                             if v is not None and k in prefs["streams"]}
-                    if want:
-                        # Encoding happens OFF the event loop. Four JPEGs a
-                        # tick is tens of milliseconds of CPU, and doing it
-                        # here meant the loop that also answers the keepalive
-                        # ping spent most of every 50 ms inside libjpeg.
+                    backlog = 0
+                    try:
+                        backlog = websocket.transport.get_write_buffer_size()
+                    except Exception:       # noqa: BLE001
+                        pass
+                    if want and backlog < 256 * 1024:
                         frame_msg = await asyncio.to_thread(
                             _encode_preview, want, prefs["width"], prefs["quality"])
                         t_send = time.monotonic()
                         await websocket.send(json.dumps(frame_msg))
-                        # Adaptive: if the client cannot drain what we send,
-                        # `send` blocks on the transport. Slow down rather
-                        # than queue -- a backlog delays the keepalive too,
-                        # and a missed keepalive closes the connection, which
-                        # is indistinguishable at the browser from a crash.
                         took = time.monotonic() - t_send
                         if took > 0.10:
-                            period = min(0.5, period * 1.5)
+                            cam_period[0] = min(0.5, period * 1.5)
                             slow += 1
                             if slow in (5, 25, 100):
                                 log.warning("browser is not keeping up "
                                             "(%.0f ms to send) — preview now "
-                                            "%.0f fps", took * 1000, 1 / period)
+                                            "%.0f fps", took * 1000,
+                                            1 / cam_period[0])
                         elif period > 0.05 and took < 0.02:
-                            period = max(0.05, period / 1.2)
+                            cam_period[0] = max(0.05, period / 1.2)
+                await asyncio.sleep(cam_period[0])
+            except (asyncio.CancelledError,
+                    websockets.exceptions.ConnectionClosed):
+                break
+            except Exception as exc:                         # noqa: BLE001
+                record_fault("camera stream", exc)
+                await asyncio.sleep(0.5)
+
+    twin_busy = [False]
+
+    async def twin_check():
+        # Starting the twin loads and compiles a MuJoCo model: about a second.
+        # Done beside the stream, never inside it.
+        if twin_busy[0]:
+            return
+        twin_busy[0] = True
+        try:
+            await asyncio.to_thread(_twin_auto)
+        except Exception as e:      # noqa: BLE001
+            log.debug("twin: %s", e)
+        finally:
+            twin_busy[0] = False
+
+    async def stream():
+        errors = 0
+        period = 0.05
+        last_health = 0.0
+        now_h_meta = [None]      # when the per-unit meta block last rode along
+        next_t = time.monotonic()
+        while True:
+            try:
                 with data_lock:
                     q   = global_actual_q
                     tcp = global_tcp_pose
@@ -2206,7 +2347,7 @@ async def local_handler(websocket):
                         "robot": {"host": robot_host(),
                                   "enabled": bool(_HAS_EXT and ur_bridge_ext.UR.enabled)},
                         "streams": sorted(prefs["streams"]),
-                        "preview_fps": round(1.0 / period, 1),
+                        "preview_fps": round(1.0 / cam_period[0], 1),
                     }))
 
                 if _HAS_EXT and ur_bridge_ext.UR.enabled:
@@ -2219,14 +2360,20 @@ async def local_handler(websocket):
                     # the live digital twin, alongside the real arm
                     try:
                         import twin
-                        if now_h - last_health < 0.05:
-                            await asyncio.to_thread(_twin_auto)
+                        if now_h - last_health < 0.05 and not twin.TWIN.enabled:
+                            asyncio.create_task(twin_check())
                         if twin.TWIN.enabled:
                             await websocket.send(json.dumps(
                                 {"type": "twin_state", **twin.TWIN.snapshot()}))
                     except Exception as e:      # noqa: BLE001
                         log.debug("twin: %s", e)
-                await asyncio.sleep(period)
+                # A steady beat: sleep to the next tick, not a fixed 50 ms on
+                # top of however long the sends took.
+                next_t += period
+                now_s = time.monotonic()
+                if next_t < now_s - 0.5:
+                    next_t = now_s
+                await asyncio.sleep(max(0.0, next_t - now_s))
             except asyncio.CancelledError:
                 break
             except websockets.exceptions.ConnectionClosed:
@@ -2256,6 +2403,7 @@ async def local_handler(websocket):
                 await asyncio.sleep(0.5)
 
     stream_task = asyncio.create_task(stream())
+    camera_task = asyncio.create_task(camera_stream())
 
     async def guarded(data, mtype):
         # ONE MESSAGE MUST NEVER TAKE THE CONNECTION WITH IT.
@@ -2297,6 +2445,21 @@ async def local_handler(websocket):
             await guarded(data, mtype)
 
     worker_task = asyncio.create_task(worker())
+
+    # Questions that change nothing are answered BESIDE the queue, not in it.
+    # The console asks four of them every second, and the Robot page asks for
+    # the pendant's program list -- an FTP login that an e-Series controller
+    # usually refuses only after a timeout of several seconds. In the queue,
+    # every command behind it waited: freedrive answered seconds late. A
+    # question already being answered is not asked twice.
+    inflight: set = set()
+
+    async def answer(data, mtype):
+        try:
+            await guarded(data, mtype)
+        finally:
+            inflight.discard(mtype)
+
     try:
         async for raw in websocket:
             try:
@@ -2314,6 +2477,11 @@ async def local_handler(websocket):
                              "error": str(exc)}
                 await websocket.send(json.dumps(reply))
                 continue
+            if mtype in READ_ONLY_MESSAGES:
+                if mtype not in inflight:
+                    inflight.add(mtype)
+                    asyncio.create_task(answer(data, mtype))
+                continue
             await queue.put((data, mtype))
 
     except websockets.exceptions.ConnectionClosed:
@@ -2322,6 +2490,7 @@ async def local_handler(websocket):
         record_fault("local_handler", exc, None)
     finally:
         stream_task.cancel()
+        camera_task.cancel()
         worker_task.cancel()
         log.info("local browser disconnected")
 
@@ -2470,11 +2639,13 @@ async def _dispatch(websocket, data, mtype, prefs):
                         "the vision dependencies are installed", _VISION_ERR)
         return
     if str(mtype or "").startswith("handeye_"):
+        await camera_fresh()
         reply = await asyncio.to_thread(_handle_handeye, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
         return
     if str(mtype or "").startswith("mv_"):
+        await camera_fresh()
         reply = await asyncio.to_thread(_handle_multiview, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
@@ -2492,11 +2663,13 @@ async def _dispatch(websocket, data, mtype, prefs):
         return
 
     if str(mtype or "").startswith("rs_"):
+        await camera_fresh()
         reply = await asyncio.to_thread(_handle_rs, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
         return
     if _HAS_VISINSP and str(mtype or "").startswith("inspect_"):
+        await camera_fresh()
         reply = await asyncio.to_thread(_handle_inspect, data)
         if reply is not None:
             await websocket.send(json.dumps(reply))
@@ -2504,6 +2677,7 @@ async def _dispatch(websocket, data, mtype, prefs):
 
     if _HAS_CAMSVC and mtype in ("camera_probe", "camera_stats",
                                  "camera_point", "camera_option"):
+        await camera_fresh()
         with camera_lock:
             depth_raw = global_depth_raw
             intr = global_depth_intr
@@ -2599,6 +2773,7 @@ async def relay_uplink():
                     while not stop_evt.is_set():
                         try:
                             if _HAS_VISION:
+                                camera_wanted(2.0)   # the relay is watching
                                 with camera_lock:
                                     rgb   = global_rgb_frame
                                     depth = global_depth_frame
@@ -2720,6 +2895,7 @@ async def main():
 
         # Wire the 3D reconstruction to the live camera and the live TCP pose.
         def _depth_now():
+            camera_wanted(10.0)
             with camera_lock:
                 return global_depth_raw
 

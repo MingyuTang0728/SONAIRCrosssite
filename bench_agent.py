@@ -486,8 +486,13 @@ class ImuHub:
                 log.debug("imu sink failed: %s", e)
 
     def latest(self) -> dict:
+        # `age_s` rides along because the console's lamp goes by it: green
+        # only for a unit that is delivering. Without it the lamp read "No
+        # data" over a sensor streaming at 100 Hz.
+        now = MASTER.now()
         with self._lock:
-            return {u: {"t": round(t, 5), **rec} for u, (t, rec) in self._latest.items()}
+            return {u: {"t": round(t, 5), **rec, "age_s": round(now - t, 3)}
+                    for u, (t, rec) in self._latest.items()}
 
     def snapshot(self) -> dict:
         """
