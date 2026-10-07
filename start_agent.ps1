@@ -16,6 +16,7 @@ $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
 . "$PSScriptRoot\_pick_python.ps1"
+if (-not $vpy) { exit 1 }
 
 $env:UR_IP = $UrIp
 $env:BENCH_FUSIONHUB_PORT = "$FusionHubPort"

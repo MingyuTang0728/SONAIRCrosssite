@@ -13,6 +13,7 @@ $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
 . "$PSScriptRoot\_pick_python.ps1"
+if (-not $vpy) { exit 1 }
 
 $url = "http://localhost:$Port/SONAIR_Console.html"
 Write-Host "Serving $PSScriptRoot on port $Port" -ForegroundColor Cyan

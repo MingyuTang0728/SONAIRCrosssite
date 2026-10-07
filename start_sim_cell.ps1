@@ -14,6 +14,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 . "$PSScriptRoot\_pick_python.ps1"
+if (-not $vpy) { exit 1 }
 
 Write-Host "SONAIR simulated cell" -ForegroundColor Cyan
 Write-Host "  controller : URSim 5.11.11 (Docker, ports on 127.0.0.1)"
