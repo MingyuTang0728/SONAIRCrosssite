@@ -209,7 +209,10 @@ def test_twin():
             assert res["error"]
             print(f"  skipped  twin (and said why: {res['error'][:60]}...)")
             return
-    os.environ["MENAGERIE"] = menagerie()
+        t.stop()             # the twin found a model of its own: test with it
+    else:
+        os.environ["MENAGERIE"] = str(menagerie())
+    t = twin.Twin()
     feed = Feed()
     assert t.start(feed)["ok"], t.why
     q0 = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]

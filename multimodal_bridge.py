@@ -2388,6 +2388,19 @@ async def _dispatch(websocket, data, mtype, prefs):
     # use it. Doing it here rather than inside ur_bridge_ext keeps the
     # one setter in the one module that owns the other four channels.
     if mtype == "ur_service_start":
+        # Leaving the simulated cell for another address can make a REAL arm
+        # move. That happened once by accident, from a default left in the
+        # address box, so it now needs the operator to say so on the page.
+        cur = robot_host()
+        new = str(data.get("host") or "").strip()
+        tel = ur_bridge_ext.UR.telemetry if _HAS_EXT else None
+        on_sim = bool(tel and getattr(tel, "health", None) and tel.health.simulated)
+        if on_sim and new and new != cur and not data.get("leave_sim"):
+            await websocket.send(json.dumps({
+                "type": "ur_service_start_res", "ok": False, "code": "leaving_sim",
+                "host": new, "current": cur,
+                "error": "connected to the simulated cell; confirm to leave it"}))
+            return
         moved = await asyncio.to_thread(set_robot_host, data.get("host"))
         if moved.get("error"):
             await websocket.send(json.dumps({

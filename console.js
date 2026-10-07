@@ -343,6 +343,13 @@
     if (fs) fs.textContent = (d.streams && d.streams.length)
       ? d.streams.join(", ") + " @ " + d.preview_fps + " fps" : "none";
     if (d.robot && d.robot.host && $("faultHost")) $("faultHost").textContent = d.robot.host;
+    // The address box shows the address the agent is ACTUALLY using -- the one
+    // it was started with -- until the operator types a different one. A fixed
+    // default here once sent a console connected to the simulated cell to a
+    // real robot's address at the press of "Connect".
+    var uh = $("urHost");
+    if (uh && d.robot && d.robot.host && !uh.dataset.edited && document.activeElement !== uh)
+      uh.value = d.robot.host;
   }
 
   function closeReason(ev) {

@@ -1699,7 +1699,8 @@
   }
 
   /* ---- starting the link -------------------------------------------- */
-  on("btnUrStart", "click", function () {
+  on("urHost", "input", function () { $("urHost").dataset.edited = "1"; });
+  function startLink(leaveSim) {
     if (!S.require("urStartMsg")) return;
     var host = (($("urHost") || {}).value || "").trim();
     if (!host) { say("urStartMsg", "Enter the robot's IP address.", "bad"); return; }
@@ -1710,11 +1711,36 @@
     // shows nothing. The agent's own comment says so; the console was passing
     // true and defeating it. The only thing it buys is the speed slider,
     // which the speed control now asks for on demand instead.
-    send({ type: "ur_service_start", host: host,
+    send({ type: "ur_service_start", host: host, leave_sim: !!leaveSim,
            frequency: num("urRate", 125), rtde_inputs: false });
+  }
+  on("btnUrStart", "click", function () { startLink(false); });
+  document.addEventListener("click", function (ev) {
+    if (ev.target && ev.target.id === "btnUrLeaveSim") startLink(true);
+    if (ev.target && ev.target.id === "btnUrStaySim") {
+      var uh = $("urHost"); if (uh) delete uh.dataset.edited;
+      say("urStartMsg", "Staying on the simulated cell.", "ok");
+    }
   });
 
   S.on("ur_service_start_res", function (d) {
+    if (d.code === "leaving_sim") {
+      // Moving from the simulated cell to a real controller is the one
+      // address change that can make a real arm move, so it is asked, here
+      // on the page, never assumed.
+      var box = $("urStartMsg"); if (!box) return;
+      box.className = "note warn"; box.textContent = "";
+      box.appendChild(document.createTextNode("You are on the SIMULATED CELL ("
+        + (d.current || "") + "). Connecting to " + (d.host || "")
+        + " will drive a REAL robot from now on. "));
+      [["btnUrLeaveSim", "btn danger", "Connect to the real robot"],
+       ["btnUrStaySim", "btn", "Stay on the simulated cell"]].forEach(function (b) {
+        var e = document.createElement("button");
+        e.id = b[0]; e.className = b[1]; e.textContent = b[2];
+        e.style.marginLeft = "8px"; box.appendChild(e);
+      });
+      return;
+    }
     if (d.ok === false || d.error) {
       say("urStartMsg", plainLinkError(d.error || d.msg), "bad");
       return;
