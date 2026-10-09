@@ -797,6 +797,21 @@ body.simcell .runbar{box-shadow:inset 0 -2px 0 #5aa9e6}
 .mcells.twin span{font-size:13.5px}
 .mcells.twin span.hi{color:var(--warn)}
 #twinBox .mgrp{color:#f0b060}
+#twinBox .mgrp.lb-head{margin-top:10px;color:var(--text-2)}
+.lbt{width:100%;border-collapse:collapse;font:12.5px var(--mono);font-variant-numeric:tabular-nums}
+.lbt th{font:600 10.5px var(--cond);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-3);text-align:right;padding:3px 4px;border-bottom:1px solid var(--line)}
+.lbt th:first-child,.lbt td:first-child{text-align:left}
+.lbt td{text-align:right;padding:3px 4px;border-bottom:1px solid var(--line)}
+.lbt td.lb-none{text-align:left;color:var(--text-3);font-family:var(--sans)}
+.lbt tr.ref td:first-child{color:#f0b060}
+.lbt td.good{color:var(--ok-text)} .lbt td.bad{color:var(--bad-text)}
+.lb-sess{font-size:12px;color:var(--text-2);margin:6px 0;line-height:1.45}
+.lb-sess b{color:var(--text);font-variant-numeric:tabular-nums}
+.lb-cand{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.lb-cand input{flex:1 1 100%;min-width:0;font:12px var(--mono)}
+.lb-cand .btn{padding:4px 9px;font-size:12px}
+.lb-note{font-size:10.5px;color:var(--text-3);margin-top:6px}
 </style>
 </head>
 <body>
@@ -2114,6 +2129,23 @@ body.simcell .runbar{box-shadow:inset 0 -2px 0 #5aa9e6}
           <div style="grid-column:span 2"><b>Tool point, now / RMS</b><span id="twTcp">&mdash;</span></div>
           <div><b>Model</b><span id="twModel" title="">S0</span></div>
         </div>
+        <!-- THE BENCHMARK, LIVE. Scored by the offline harness's own rules:
+             tool-position error, median and 95th percentile, GCR against S0. -->
+        <div class="mgrp lb-head">Live benchmark <span id="lbWin">vs S0 &middot; last 5 s</span></div>
+        <table class="lbt" id="lbTable">
+          <thead><tr><th>Model</th><th>p95 mm</th><th>med mm</th><th>GCR p95</th></tr></thead>
+          <tbody id="lbBody"><tr><td colspan="4" class="lb-none">waiting for the twin</td></tr></tbody>
+        </table>
+        <div class="lb-sess" id="lbSess">No run scored yet. Record a run and it is scored the moment it ends.</div>
+        <div class="lb-cand">
+          <input id="lbCandPath" placeholder="Candidate model: path to a MuJoCo .xml"
+                 spellcheck="false" aria-label="Candidate model file"/>
+          <button class="btn" id="btnLbCand">Run beside S0</button>
+          <button class="btn" id="btnLbCandOff" hidden>Remove</button>
+          <button class="btn" id="btnLbReset" title="Start a new live session">New session</button>
+        </div>
+        <div class="note" id="lbMsg" hidden></div>
+        <div class="lb-note">Live preview. The score of record is the offline replay of each run file.</div>
       </div>
       <div class="note info" id="twinMsg" hidden></div>
       <div class="mcells c3 mstate">

@@ -193,6 +193,7 @@ footer a{color:var(--muted)}
     </div>
     <nav class="tabs" role="tablist">
       <button role="tab" aria-selected="true" data-tab="leaderboard">Leaderboard</button>
+      <button role="tab" aria-selected="false" data-tab="live">Live</button>
       <button role="tab" aria-selected="false" data-tab="tracks">Tracks</button>
       <button role="tab" aria-selected="false" data-tab="data">Data</button>
       <button role="tab" aria-selected="false" data-tab="gap">Gap map</button>
@@ -238,6 +239,33 @@ footer a{color:var(--muted)}
   </div>
   <p class="note" id="loadStatus">&mdash;</p>
   <p class="note" id="lbNotes"></p>
+</section>
+
+<!-- ================= LIVE ================= -->
+<section id="tab-live" hidden>
+  <h2>The benchmark, live from the cell</h2>
+  <p>While the cell runs, the reference simulation S0 &mdash; and any candidate model
+     loaded beside it &mdash; is driven by the real controller's own commanded joints,
+     packet by packet. Every recorded run is scored the moment it ends, by the same rules
+     as the leaderboard: tool-position error, median and 95th percentile, and
+     GCR&nbsp;=&nbsp;1&nbsp;&minus;&nbsp;err(candidate)&nbsp;/&nbsp;err(S0).
+     This is a <b>live preview</b>; the score of record is the offline replay of each
+     run file. Shown when this page is served by the SONAIR platform on the cell PC.</p>
+  <div class="grid c4" id="liveStats"></div>
+  <h2>Right now <span class="note" id="liveWin" style="font-weight:400"></span></h2>
+  <div class="tablewrap"><table id="liveNow">
+    <thead><tr><th>Model</th><th class="num">Tool error p95 (mm)</th>
+      <th class="num">Median (mm)</th><th class="num">GCR p95</th></tr></thead>
+    <tbody><tr><td colspan="4" style="color:var(--muted)">Waiting for the cell&hellip;</td></tr></tbody>
+  </table></div>
+  <h2>This session, by condition cell</h2>
+  <div class="tablewrap"><table id="liveCells">
+    <thead><tr><th>Cell (rad/s &middot; configuration &middot; trajectory)</th>
+      <th class="num">Runs</th><th class="num">S0 p95 (mm)</th>
+      <th>Candidate</th><th class="num">GCR p95</th></tr></thead>
+    <tbody><tr><td colspan="5" style="color:var(--muted)">No run scored yet.</td></tr></tbody>
+  </table></div>
+  <p class="note" id="liveStatus">&mdash;</p>
 </section>
 
 <!-- ================= TRACKS ================= -->
@@ -518,7 +546,7 @@ python -m sonair_benchmark score --real data/real --sim data/sim_s0 \
   var $ = function(id){ return document.getElementById(id); };
   var DOC = null;
   var FILTER = "all";
-  var TABS = ['leaderboard','tracks','data','gap','floor','submit'];
+  var TABS = ['leaderboard','live','tracks','data','gap','floor','submit'];
 
   /* ---------------- tabs ---------------- */
   var tabs = document.querySelectorAll('nav.tabs button');
@@ -785,6 +813,68 @@ python -m sonair_benchmark score --real data/real --sim data/sim_s0 \
     rd.readAsText(f);
   });
   $('btnLoadDefault').click();
+
+  /* ---------------- live ---------------- */
+  function liveCellName(k){
+    var p = String(k||'').split('|');
+    return p.length === 3 ? Number(p[0]).toFixed(2) + ' · ' + p[1].replace(/_/g,' ') +
+      ' · ' + p[2].replace(/_/g,' ') : k;
+  }
+  function gcrTd(v){
+    return '<td class="num">' + (v === null || v === undefined ? '—'
+      : (v >= 0 ? '+' : '') + fmt(v, 2) + ' ' + bar(v, 'a')) + '</td>';
+  }
+  function renderLive(d){
+    var sess = d.session || {}, ov = sess.overall || {}, runs = sess.runs || [];
+    var cand = Object.keys(ov).filter(function(k){ return k !== 'S0'; })[0] ||
+               Object.keys(d.models || {})[0];
+    var cards = [
+      {k:'Runs scored', v: runs.length, d: Object.keys(sess.cells||{}).length + ' cell(s) this session'},
+      {k:'S0 tool error p95', v: ov.S0 ? fmt(ov.S0.p95_mm, 1) : '—', u:'mm', d:'mean over runs'},
+      {cls:'a', k:'Candidate GCR p95', v: cand && ov[cand] && ov[cand].gcr_p95 !== undefined
+        ? fmt(ov[cand].gcr_p95, 2) : '—', d: cand || 'no candidate loaded'},
+      {k:'Recording', v: d.recording ? 'yes' : 'no',
+       d: d.recording ? d.recording.run_id : 'between runs'}
+    ];
+    $('liveStats').innerHTML = cards.map(function(c){
+      return '<div class="stat '+(c.cls||'')+'"><div class="k">'+c.k+'</div><div class="v">'+
+        escapeHtml(c.v) + (c.u ? '<span class="u">'+c.u+'</span>' : '') +
+        '</div><div class="d">'+escapeHtml(c.d)+'</div></div>';
+    }).join('');
+    $('liveWin').textContent = '— the last ' + Math.round(d.window_s || 5) + ' s';
+    var live = d.live || {}, names = Object.keys(live).sort(function(a,b){
+      return a === 'S0' ? -1 : b === 'S0' ? 1 : (a < b ? -1 : 1); });
+    $('liveNow').querySelector('tbody').innerHTML = names.length ? names.map(function(n){
+      var r = live[n];
+      return '<tr><td>' + escapeHtml(n) + (n === 'S0' ? ' <span class="note">reference</span>' : '') +
+        '</td><td class="num">' + fmt(r.p95_mm, 1) + '</td><td class="num">' + fmt(r.median_mm, 1) +
+        '</td>' + (n === 'S0' ? '<td class="num">0</td>' : gcrTd(r.gcr_p95)) + '</tr>';
+    }).join('') : '<tr><td colspan="4" style="color:var(--muted)">The twin is not running.</td></tr>';
+    var cells = sess.cells || {}, keys = Object.keys(cells).sort();
+    $('liveCells').querySelector('tbody').innerHTML = keys.length ? keys.map(function(k){
+      var c = cells[k], s0 = c.models.S0 || {};
+      var cn = Object.keys(c.models).filter(function(m){ return m !== 'S0'; })[0];
+      return '<tr><td>' + escapeHtml(liveCellName(k)) + '</td><td class="num">' + c.runs +
+        '</td><td class="num">' + fmt(s0.p95_mm, 1) + '</td><td>' + escapeHtml(cn || '—') +
+        '</td>' + gcrTd(cn ? c.models[cn].gcr_p95 : null) + '</tr>';
+    }).join('') : '<tr><td colspan="5" style="color:var(--muted)">No run scored yet.</td></tr>';
+    var reh = ((d.rehearsal || {}).runs || []).length;
+    $('liveStatus').textContent = (d.note || '') + (reh ? ' ' + reh +
+      ' simulated-cell rehearsal run(s) are kept apart and not shown here.' : '') +
+      (d.saved_utc ? ' Updated ' + d.saved_utc.replace('T',' ').replace('Z',' UTC') + '.' : '');
+  }
+  window.__sonairBenchLive = renderLive;     // for the test harness
+  function pollLive(){
+    if ($('tab-live').hidden) return;
+    tryFetch('results/live_score.json?t=' + Date.now()).then(function(d){
+      if (d) renderLive(d);
+      else $('liveStatus').textContent = 'No live session on this machine. Live scores appear ' +
+        'here when this page is served by the SONAIR platform while the cell runs.';
+    });
+  }
+  setInterval(pollLive, 3000);
+  tabs.forEach(function(btn){ if (btn.dataset.tab === 'live') btn.addEventListener('click', pollLive); });
+  pollLive();
 })();
 </script>
 </body>

@@ -1431,7 +1431,11 @@ class BenchRecorder:
 
         self._stop.clear()
         self.current = {"run_id": run_id, "path": str(path),
-                        "started": MASTER.now(), "rate_hz": rate_hz, "n": 0}
+                        "started": MASTER.now(), "rate_hz": rate_hz, "n": 0,
+                        # for the live benchmark, which scores the run as it
+                        # is recorded and groups it the way scoring does
+                        "cell": manifest.cell_key(), "experiment": experiment,
+                        "simulated": simulated}
         svc = None
         if self.packet_source is not None:
             try:

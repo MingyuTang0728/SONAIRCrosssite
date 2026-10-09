@@ -397,7 +397,13 @@
       case "stream_prefs_res": break;
       case "cell_health": onHealth(d); break;
       case "ur_state": state.ur = d.s; state.urAge = performance.now(); renderRobot(d.s); break;
-      case "twin_state": case "twin_status": renderTwin(d); break;
+      case "twin_state": case "twin_status": renderTwin(d);
+        if (d.live) renderLive(d.live);
+        if (d.cmd === "twin_candidate") lbSay(d.ok === false ? d.error
+          : "Running " + d.name + " beside S0. Its score appears as runs are recorded.",
+          d.ok === false ? "bad" : "ok");
+        break;
+      case "live_bench": renderLive(d); break;
       case "state": state.urAge = performance.now(); break;
       case "tcp_pose": state.urAge = performance.now(); dockPose(d.q); break;
       case "camera_frame": onFrame(d); break;
@@ -631,6 +637,72 @@
       + (d.tcp_rms_mm == null ? "—" : fmt(d.tcp_rms_mm, 1)) + " mm";
     var m = $("twModel"); if (m) m.title = d.model || "";
   }
+  /* ---- the benchmark, live --------------------------------------------- */
+  function gcrCell(v) {
+    if (v == null) return "<td>&mdash;</td>";
+    var cls = v > 0.02 ? "good" : v < -0.02 ? "bad" : "";
+    return '<td class="' + cls + '">' + (v >= 0 ? "+" : "") + v.toFixed(2) + "</td>";
+  }
+  function lbSay(t, kind) {
+    var m = $("lbMsg"); if (!m) return;
+    say("lbMsg", t, kind); m.hidden = false;
+  }
+  function renderLive(d) {
+    var body = $("lbBody"); if (!body) return;
+    var live = d.live || {}, names = Object.keys(live);
+    names.sort(function (a, b) { return a === "S0" ? -1 : b === "S0" ? 1 : a < b ? -1 : 1; });
+    if (!names.length) {
+      body.innerHTML = '<tr><td colspan="4" class="lb-none">waiting for the twin</td></tr>';
+    } else {
+      body.innerHTML = names.map(function (n) {
+        var r = live[n];
+        return '<tr class="' + (n === "S0" ? "ref" : "") + '"><td>' + esc(n)
+          + (n === "S0" ? " (ref)" : "") + "</td><td>" + fmt(r.p95_mm, 1)
+          + "</td><td>" + fmt(r.median_mm, 1) + "</td>"
+          + (n === "S0" ? "<td>0</td>" : gcrCell(r.gcr_p95)) + "</tr>";
+      }).join("");
+    }
+    if ($("lbWin")) $("lbWin").textContent = "vs S0 \u00b7 last " + Math.round(d.window_s || 5) + " s";
+    var s = $("lbSess");
+    if (s) {
+      var sess = d.session || {}, n = (sess.runs || []).length, ov = sess.overall || {};
+      var parts = [];
+      if (d.recording) parts.push("Scoring <b>" + esc(d.recording.run_id) + "</b> as it records\u2026");
+      if (n) {
+        var cand = Object.keys(ov).filter(function (k) { return k !== "S0"; });
+        var line = "This session: <b>" + n + "</b> run" + (n > 1 ? "s" : "") + " in <b>"
+          + Object.keys(sess.cells || {}).length + "</b> cell" + (Object.keys(sess.cells || {}).length > 1 ? "s" : "")
+          + ", S0 p95 <b>" + fmt((ov.S0 || {}).p95_mm, 1) + " mm</b>";
+        cand.forEach(function (k) {
+          if (ov[k].gcr_p95 != null) line += ", " + esc(k) + " GCR-p95 <b>" + ov[k].gcr_p95.toFixed(2) + "</b>";
+        });
+        parts.push(line + ".");
+      } else if (!d.recording) {
+        parts.push("No run scored yet. Record a run and it is scored the moment it ends.");
+      }
+      var reh = (d.rehearsal || {}).runs || [];
+      if (reh.length) parts.push("Rehearsal (simulated cell): " + reh.length + " run" + (reh.length > 1 ? "s" : "") + ", kept apart.");
+      s.innerHTML = parts.join(" ");
+    }
+    var hasCand = Object.keys(d.models || {}).length > 0;
+    if ($("btnLbCandOff")) $("btnLbCandOff").hidden = !hasCand;
+  }
+  window.__sonairLive = renderLive;      // for the test harness
+  (function liveControls() {
+    var b = $("btnLbCand");
+    if (b) b.addEventListener("click", function () {
+      if (!requireLink("lbMsg")) { $("lbMsg").hidden = false; return; }
+      var p = ($("lbCandPath") || {}).value || "";
+      if (!p.trim()) { lbSay("Type the path of a MuJoCo model file first.", "warn"); return; }
+      lbSay("Loading the model\u2026", "info");
+      send({ type: "twin_candidate", path: p.trim() });
+    });
+    var off = $("btnLbCandOff");
+    if (off) off.addEventListener("click", function () { send({ type: "twin_candidate_clear" }); });
+    var r = $("btnLbReset");
+    if (r) r.addEventListener("click", function () { send({ type: "twin_live_reset" }); });
+  })();
+
   (function twinToggle() {
     var b = $("btnTwin");
     if (!b) return;

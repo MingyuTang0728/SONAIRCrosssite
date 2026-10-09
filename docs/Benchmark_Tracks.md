@@ -57,10 +57,24 @@ Each simulated run's notes name the model that produced it.
 its `target_q`, in the run-file format (`"side": "sim"`, same `run_id`, cell
 and repeat), and pass the folder to `--track-a`.
 
-**Live, on the real cell.** A Track A model can also be the cell's digital
-twin. Start the agent with `SONAIR_TWIN_MODEL=path\to\ur5e.xml`. The model
-then runs on the robot's commanded joints beside the real arm and is drawn
-over it in the console's Live arm column, with the difference shown live.
+**Live, on the real cell.** A Track A model can be scored while the cell
+runs. In the console's Live arm column, type the model's path under *Live
+benchmark* and press **Run beside S0** (or start the agent with
+`SONAIR_TWIN_MODEL=path\to\ur5e.xml`). S0 and the candidate are then both
+driven by the robot's own commanded joints, packet by packet, and:
+
+* the table shows each model's tool-position error over the last 5 s, and the
+  candidate's GCR against S0;
+* every recorded run is scored the moment it ends, by the offline rules
+  (median and p95 per run, GCR per run, mean per cell and overall), and the
+  session is written to `results/live_score.json`;
+* `benchmark.html`, served from the cell PC, shows the same thing under
+  **Live**.
+
+On two test runs the live GCR-p95 agreed with the offline harness to 0.01
+(`tests/test_live_bench.py`). It is still a preview: the score of record is
+the offline replay of each run file. Simulated-cell rehearsals are scored
+too, and kept apart. **New session** starts the tally again.
 
 ## Track B: a correction
 

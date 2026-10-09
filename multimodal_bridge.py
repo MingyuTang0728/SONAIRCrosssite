@@ -2017,7 +2017,7 @@ def _handle_automation(data: dict):
         return _handle_campaign(mtype, data)
 
     if str(mtype).startswith("twin_"):
-        return _handle_twin(mtype)
+        return _handle_twin(mtype, data)
 
     return None
 
@@ -2029,6 +2029,11 @@ def _twin_start() -> dict:
             getattr(ur_bridge_ext.UR, "telemetry", None)):
         return {"ok": False, "error": "connect to the robot first"}
     car = CELL.carrier() or {}
+    if _HAS_BENCH:
+        # the live benchmark scores each recorded run under its own cell
+        twin.TWIN.run_fn = lambda: (bench_agent.RECORDER.current
+                                    if bench_agent.RECORDER.is_recording()
+                                    else None)
     return twin.TWIN.start(ur_bridge_ext.UR,
                            float(car.get("carrier_mass_kg") or 0.0))
 
@@ -2050,16 +2055,30 @@ def _twin_auto() -> None:
         log.info(" Twin:         not running (%s)", res.get("error"))
 
 
-def _handle_twin(mtype: str) -> dict:
+def _handle_twin(mtype: str, data: dict | None = None) -> dict:
     import twin
+    import live_bench
+    data = data or {}
     if mtype == "twin_start":
         res = _twin_start()
     elif mtype == "twin_stop":
         twin.TWIN.stop()
         res = {"ok": True}
+    elif mtype == "twin_candidate":
+        if twin.TWIN.arm is None and not twin.TWIN.load(
+                float((CELL.carrier() or {}).get("carrier_mass_kg") or 0.0)):
+            res = {"ok": False, "error": twin.TWIN.why}
+        else:
+            res = twin.TWIN.set_candidate(data.get("path", ""), data.get("name", ""))
+    elif mtype == "twin_candidate_clear":
+        res = twin.TWIN.clear_candidate()
+    elif mtype == "twin_live_reset":
+        live_bench.LIVE.reset_session()
+        res = {"ok": True}
     else:
         res = {"ok": True}
-    return {"type": "twin_status", **res, **twin.TWIN.snapshot()}
+    return {"type": "twin_status", "cmd": mtype, **twin.TWIN.snapshot(), **res,
+            "live": live_bench.LIVE.snapshot()}
 
 
 _CAMP_SUGGESTED: dict = {}
@@ -2365,6 +2384,11 @@ async def local_handler(websocket):
                         if twin.TWIN.enabled:
                             await websocket.send(json.dumps(
                                 {"type": "twin_state", **twin.TWIN.snapshot()}))
+                            if now_h - last_health < 0.05:
+                                import live_bench
+                                await websocket.send(json.dumps(
+                                    {"type": "live_bench",
+                                     **live_bench.LIVE.snapshot()}))
                     except Exception as e:      # noqa: BLE001
                         log.debug("twin: %s", e)
                 # A steady beat: sleep to the next tick, not a fixed 50 ms on
