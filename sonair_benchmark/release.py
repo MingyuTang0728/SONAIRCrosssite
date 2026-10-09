@@ -227,6 +227,9 @@ def build_release(runs_dir, out, sim_dir=None, plan_path=None, state_path=None,
         elif exp == "E3":
             _copy(p, private / "E3" / "real" / p.name)
             counts["E3"] += 1
+        elif exp == "U":
+            skipped.append(f"{rid}: a user's own data (intake), never released")
+            continue
         else:
             s0 = s0_for(rid, p, r)
             if s0 is None:

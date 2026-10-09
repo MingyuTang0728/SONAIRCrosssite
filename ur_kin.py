@@ -30,6 +30,20 @@ UR5E_DH = {
     "alpha": (np.pi / 2, 0.0, 0.0, np.pi / 2, -np.pi / 2, 0.0),
 }
 
+_ALPHA = (np.pi / 2, 0.0, 0.0, np.pi / 2, -np.pi / 2, 0.0)
+
+# The rest of the e-Series, from the same Universal Robots table, for data
+# brought in from other arms (sonair_benchmark.intake). Same convention.
+DH = {
+    "ur3e": {"a": (0.0, -0.24355, -0.2132, 0.0, 0.0, 0.0),
+             "d": (0.15185, 0.0, 0.0, 0.13105, 0.08535, 0.0921), "alpha": _ALPHA},
+    "ur5e": UR5E_DH,
+    "ur10e": {"a": (0.0, -0.6127, -0.57155, 0.0, 0.0, 0.0),
+              "d": (0.1807, 0.0, 0.0, 0.17415, 0.11985, 0.11655), "alpha": _ALPHA},
+    "ur16e": {"a": (0.0, -0.4784, -0.36, 0.0, 0.0, 0.0),
+              "d": (0.1807, 0.0, 0.0, 0.17415, 0.11985, 0.11655), "alpha": _ALPHA},
+}
+
 
 def _dh(theta, d, a, alpha):
     ct, st = np.cos(theta), np.sin(theta)

@@ -54,8 +54,9 @@ def mujoco() -> bool:
     return True
 
 
-def menagerie() -> bool:
-    step("UR5e model (MuJoCo Menagerie)")
+def menagerie(model_dir: str = MODEL_DIR, label: str = "UR5e") -> bool:
+    step(f"{label} model (MuJoCo Menagerie)")
+    MODEL_DIR = model_dir           # noqa: N806 -- the folder this call fetches
     target = MENAGERIE / MODEL_DIR
     if (target / "scene.xml").exists():
         print(f"  already in {target}")
@@ -129,13 +130,19 @@ def ursim() -> bool:
 
 def main() -> int:
     print(f"Simulation components -> {HOME}")
-    got = {"MuJoCo": mujoco(), "UR5e model": menagerie(), "URSim": ursim()}
+    # The UR10e is for users bringing their own robot's data (intake); the
+    # cell itself needs only the UR5e.
+    got = {"MuJoCo": mujoco(), "UR5e model": menagerie(),
+           "UR10e model": menagerie("universal_robots_ur10e", "UR10e"),
+           "URSim": ursim()}
     print("\n" + "\n".join(f"  {k:<11} {'ready' if v else 'NOT ready'}"
                            for k, v in got.items()))
     print("\nWhat each enables:\n"
           "  offline replay + live twin : MuJoCo + UR5e model\n"
-          "  simulated cell             : all three -- then run start_sim_cell.ps1\n"
-          "                               and connect the console to robot 127.0.0.2")
+          "  your own robot's data      : MuJoCo + the model of that arm (intake)\n"
+          "  simulated cell             : MuJoCo + UR5e model + URSim -- then run\n"
+          "                               start_sim_cell.ps1 and connect the\n"
+          "                               console to robot 127.0.0.2")
     return 0 if got["MuJoCo"] and got["UR5e model"] else 1
 
 

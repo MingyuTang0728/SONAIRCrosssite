@@ -32,8 +32,16 @@ TRAJ_TYPES = ("point_to_point", "contour", "stop_start")
 # as TRAINING data -- every joint excited, not bound to the sweep's cells --
 # so a submission can be fitted without ever touching the runs it is scored
 # on. Runs from before this field existed are E2.
-EXPERIMENTS = ("E1", "E2", "E3")
+EXPERIMENTS = ("E1", "E2", "E3", "U")
 ID_TRAJ_TYPES = ("chirp", "fourier")
+
+# "U" is a USER's own robot data, brought in through sonair_benchmark.intake
+# to be measured against the reference simulation. It is never part of the
+# benchmark's dataset: never scored on a leaderboard, never released. Its
+# motions were not planned by us, so its arm configuration and trajectory
+# type are usually unknown, and say so.
+USER_UNSPECIFIED = "unspecified"
+ROBOTS = ("ur3e", "ur5e", "ur10e", "ur16e")
 
 # Which side of the gap a run was recorded on.
 SIDES = ("real", "sim")
@@ -59,6 +67,7 @@ class RunManifest:
     notes: str = ""
     schema: str = SCHEMA_VERSION
     experiment: str = "E2"          # one of EXPERIMENTS
+    robot: str = "ur5e"             # which arm: decides the model it is replayed on
 
     def cell(self) -> tuple:
         """The condition cell, ignoring repeat index. Used for held-out splits."""
@@ -72,11 +81,16 @@ class RunManifest:
         problems = []
         if self.side not in SIDES:
             problems.append(f"side must be one of {SIDES}, got {self.side!r}")
-        if self.arm_config not in ARM_CONFIGS:
-            problems.append(f"arm_config must be one of {ARM_CONFIGS}, got {self.arm_config!r}")
+        user = self.experiment == "U"
+        configs = ARM_CONFIGS + ((USER_UNSPECIFIED,) if user else ())
+        if self.arm_config not in configs:
+            problems.append(f"arm_config must be one of {configs}, got {self.arm_config!r}")
         if self.experiment not in EXPERIMENTS:
             problems.append(f"experiment must be one of {EXPERIMENTS}, got {self.experiment!r}")
-        allowed = TRAJ_TYPES + (ID_TRAJ_TYPES if self.experiment == "E1" else ())
+        if self.robot not in ROBOTS:
+            problems.append(f"robot must be one of {ROBOTS}, got {self.robot!r}")
+        allowed = TRAJ_TYPES + (ID_TRAJ_TYPES if self.experiment == "E1" else ()) \
+            + ((USER_UNSPECIFIED,) if user else ())
         if self.traj_type not in allowed:
             problems.append(f"traj_type must be one of {allowed}, got {self.traj_type!r}")
         if not self.calib_version:

@@ -98,6 +98,12 @@ def _load_pairs(real_dir, sim_dir):
         print(f"{n_id} identification runs (E1) left out of scoring")
     real = [r for r in real if r.manifest.experiment != "E1"]
     sim = [r for r in sim if r.manifest.experiment != "E1"]
+    # A user's own robot data (intake) is measured, never benchmarked.
+    n_user = sum(1 for r in real + sim if r.manifest.experiment == "U")
+    if n_user:
+        print(f"{n_user} user-data runs (intake) left out of scoring")
+    real = [r for r in real if r.manifest.experiment != "U"]
+    sim = [r for r in sim if r.manifest.experiment != "U"]
     # Runs from the simulated cell (sim_cell.py) are rehearsals, never data.
     rehearsal = lambda r: str(r.manifest.notes).startswith("SIMULATED CELL")  # noqa: E731
     n_reh = sum(1 for r in real + sim if rehearsal(r))
@@ -314,6 +320,29 @@ def cmd_verify_release(args) -> int:
     return 0
 
 
+def cmd_intake(args) -> int:
+    """A robot owner's own log in; how far S0 is from their arm, out."""
+    from .intake import run_intake, IntakeError, robot_name
+    mapping = None
+    if args.mapping:
+        mapping = json.loads(Path(args.mapping).read_text(encoding="utf-8"))
+    try:
+        rep = run_intake(args.log, args.out, robot=args.robot, fmt=args.format,
+                         mapping=mapping, payload_kg=args.payload,
+                         menagerie=args.menagerie or None)
+    except IntakeError as e:
+        print(f"cannot analyse {args.log}:\n  {e}", file=sys.stderr)
+        return 2
+    ov = rep.get("overall")
+    if ov:
+        print(f"\nS0 against your {robot_name(rep['robot'])}: tool error "
+              f"{ov['tool_median_mm']:.1f} mm median, {ov['tool_p95_mm']:.1f} mm p95, "
+              f"over {ov['motions']} motions")
+    for p in rep.get("problems", []):
+        print("NOT DONE: " + p, file=sys.stderr)
+    return 0 if ov else 1
+
+
 def cmd_demo(args) -> int:
     """Synthetic end-to-end run: proves the whole chain before real data exists."""
     from .demo import build_demo
@@ -408,6 +437,21 @@ def main(argv=None) -> int:
     p = sub.add_parser("verify-release", help="check a release folder is safe to publish")
     p.add_argument("folder")
     p.set_defaults(func=cmd_verify_release)
+
+    p = sub.add_parser("intake", help="your own robot log: how far the reference "
+                       "simulation is from your arm, as a report")
+    p.add_argument("log", help="the log: a UR RTDE CSV, a SONAIR robot log, or any "
+                   "CSV with --mapping")
+    p.add_argument("--out", required=True, help="an empty folder for the report")
+    p.add_argument("--robot", default="ur5e", help="ur3e | ur5e | ur10e | ur16e")
+    p.add_argument("--format", default="auto",
+                   help="auto | ur-rtde | sonair-ur-log | csv")
+    p.add_argument("--mapping", default="", help="JSON naming the columns and units "
+                   "of a CSV the reader does not recognise")
+    p.add_argument("--payload", type=float, default=0.0,
+                   help="kg on the flange when the log was taken")
+    p.add_argument("--menagerie", default="", help="mujoco_menagerie clone")
+    p.set_defaults(func=cmd_intake)
 
     p = sub.add_parser("demo", help="synthetic end-to-end demonstration")
     p.add_argument("--out", default="demo")

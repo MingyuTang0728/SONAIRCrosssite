@@ -522,6 +522,20 @@ python -m sonair_benchmark score --real data/real --sim data/sim_s0 \
     --budget calib/budget.json --plan campaign/plan.json \
     --track-b "My model=my_predictions.jsonl" --out site/leaderboard.json</code></pre>
 
+  <h3>Own a robot? Measure the gap on yours</h3>
+  <p>Bring a log of your own arm &mdash; what it was commanded and what it did &mdash; and get
+     the same measurement, for your robot and your motions: every motion replayed through the
+     reference simulation, scored by this benchmark's rule, in a report you can keep.
+     A UR RTDE recording is read as it is; any other CSV needs a short mapping file naming its
+     columns and units. Your data stays yours: it is labelled as user data and never placed on
+     this leaderboard or released.</p>
+  <pre><code>python -m sonair_benchmark intake my_log.csv --robot ur5e --payload 1.2 --out my_report
+# then open my_report/report.html</code></pre>
+  <p class="note">The one thing a log must have is the <b>commanded</b> joints
+     (<code>target_q</code>): a simulator is fed what the robot was told, so a log of only what
+     it did measures nothing. UR5e and UR10e are supported now (the arms the MuJoCo Menagerie
+     models); UR3e and UR16e are read and checked, and replayed once their models are added.</p>
+
   <h3>Try the whole chain first</h3>
   <pre><code>python -m sonair_benchmark demo --out demo/    # synthetic data with a known, injected gap</code></pre>
 
