@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 import time
 
 log = logging.getLogger("ur.bridge_ext")
@@ -104,6 +105,34 @@ class URService:
         self.jog = None
         self.host = ""
         self.enabled = False
+        # Packet subscribers live HERE, not on one telemetry object. Every
+        # restart of the link builds a new reader, and subscribers that had
+        # attached to the old one -- the digital twin, the continuous robot
+        # log, a recording in progress -- were left on a reader that had
+        # stopped: the twin froze where it was, and nothing said so. They
+        # subscribe to the service, and the service hands every packet of
+        # whichever reader is current to all of them.
+        self._sinks: list = []
+        self._sinks_lock = threading.Lock()
+
+    def subscribe(self, fn) -> None:
+        with self._sinks_lock:
+            if fn not in self._sinks:
+                self._sinks.append(fn)
+
+    def unsubscribe(self, fn) -> None:
+        with self._sinks_lock:
+            if fn in self._sinks:
+                self._sinks.remove(fn)
+
+    def _fan_out(self, st: dict) -> None:
+        with self._sinks_lock:
+            sinks = list(self._sinks)
+        for fn in sinks:
+            try:
+                fn(st)
+            except Exception as e:      # noqa: BLE001
+                log.debug("UR packet subscriber failed: %s", e)
 
     def start(self, host: str, envelope: dict | None = None,
               frequency: float = 125.0, use_rtde_inputs: bool = False) -> dict:
@@ -128,6 +157,7 @@ class URService:
             # already holds one. Off by default for that reason.
             self.controller.attach_rtde_inputs(RTDEInputChannel(host))
         self.telemetry = URTelemetry(host, frequency=frequency)
+        self.telemetry.subscribe(self._fan_out)
         self.telemetry.start()
         # The jog controller owns the cadence of continuous motion. The browser
         # only ever tells it what velocity is wanted; it decides when to send.

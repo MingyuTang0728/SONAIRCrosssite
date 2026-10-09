@@ -731,7 +731,9 @@ class UrLogger:
         try:
             import ur_bridge_ext
             if ur_bridge_ext.UR.enabled and ur_bridge_ext.UR.telemetry:
-                return ur_bridge_ext.UR.telemetry
+                # the service, not today's reader: it survives a restart
+                svc = ur_bridge_ext.UR
+                return svc if hasattr(svc, "subscribe") else svc.telemetry
         except Exception:       # noqa: BLE001
             pass
         return None

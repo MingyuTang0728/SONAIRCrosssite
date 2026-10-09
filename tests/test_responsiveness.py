@@ -11,7 +11,10 @@ What made the console feel slow on the real cell, held fixed.
      command queue, never in it, so a slow FTP refusal cannot hold up
      freedrive or a move;
   4. the spare 30003 connection gives way to the UR service instead of
-     sitting in a 30 s receive.
+     sitting in a 30 s receive;
+  5. a packet subscriber (the twin, the robot log, a recording) keeps
+     receiving after the robot link is restarted -- the twin used to freeze
+     on the reader that had been replaced.
 
 Run:  python tests/test_responsiveness.py
 """
@@ -116,7 +119,39 @@ def test_spare_30003_gives_way():
           "the robot")
 
 
+def test_subscribers_survive_a_restart():
+    sys.path.insert(0, str(HERE))
+    import fake_ur
+    import ur_telemetry as urt
+    import ur_bridge_ext
+    fake = fake_ur.FakeRTDE()
+    old = urt.RTDE_PORT
+    urt.RTDE_PORT = fake.port
+    svc = ur_bridge_ext.URService()
+    got = []
+    svc.subscribe(lambda st: got.append(time.monotonic()))
+    try:
+        assert svc.start("127.0.0.1")["ok"]
+        end = time.time() + 8
+        while time.time() < end and len(got) < 50:
+            time.sleep(0.05)
+        n1 = len(got)
+        assert svc.start("127.0.0.1")["ok"]          # what "Connect" does
+        t_restart = time.monotonic()
+        end = time.time() + 8
+        while time.time() < end and sum(1 for t in got if t > t_restart) < 50:
+            time.sleep(0.05)
+        after = sum(1 for t in got if t > t_restart)
+    finally:
+        svc.stop()
+        urt.RTDE_PORT = old
+    assert n1 >= 50 and after >= 50, (n1, after)
+    print(f"  pass  a subscriber keeps receiving across a link restart "
+          f"({n1} packets before, {after} after)")
+
+
 def main():
+    test_subscribers_survive_a_restart()
     test_imu_age()
     test_camera_demand()
     test_queries_beside_the_queue()

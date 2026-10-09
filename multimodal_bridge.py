@@ -2029,7 +2029,7 @@ def _twin_start() -> dict:
             getattr(ur_bridge_ext.UR, "telemetry", None)):
         return {"ok": False, "error": "connect to the robot first"}
     car = CELL.carrier() or {}
-    return twin.TWIN.start(ur_bridge_ext.UR.telemetry,
+    return twin.TWIN.start(ur_bridge_ext.UR,
                            float(car.get("carrier_mass_kg") or 0.0))
 
 
@@ -2976,7 +2976,7 @@ async def main():
             _HAS_EXT and getattr(ur_bridge_ext.UR, "telemetry", None)
             and ur_bridge_ext.UR.telemetry.health.simulated)
         bench_agent.RECORDER.packet_source = lambda: (
-            ur_bridge_ext.UR.telemetry
+            ur_bridge_ext.UR
             if _HAS_EXT and getattr(ur_bridge_ext.UR, "enabled", False)
             else None)
         started = bench_agent.start_sources(
